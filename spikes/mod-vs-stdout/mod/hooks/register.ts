@@ -11,6 +11,12 @@ let seq = 0
 let receiver = ''
 let currentTurnId: string | undefined
 let polling = false
+// SPIKE_QUIET=1 stops reporting per-tool and per-command descriptions and the
+// $ calls of other mods, which otherwise flood the receiver at start-up.
+let quiet = false
+const QUIET_SKIP = new Set(['tool.describe', 'command.describe', 'agent.offer'])
+// Set by the abort-after-tool command: the next tool.call to return ends the turn.
+let abortAfterTool = false
 
 function clip(_key: string, value: unknown): unknown {
   if (typeof value === 'string' && value.length > MAX_STRING) {
@@ -68,8 +74,30 @@ async function runCommand($: EngineInterface, cmd: any) {
       (err) => post($, 'spike.command', 'error', { type: 'submit', message: String(err) }),
     )
     await post($, 'spike.command', 'submit-called', { text: cmd.text })
+  } else if (cmd.type === 'append') {
+    try {
+      const r = await $.session.append({ message: { type: 'user', content: [{ type: 'text', text: cmd.text }] } })
+      await post($, 'spike.command', 'done', { type: 'append', result: r })
+    } catch (err) {
+      await post($, 'spike.command', 'error', { type: 'append', message: String(err) })
+    }
+  } else if (cmd.type === 'abort-after-tool') {
+    abortAfterTool = true
+    await post($, 'spike.command', 'done', { type: 'abort-after-tool', armed: true })
   } else if (cmd.type === 'snapshot') {
     await post($, 'spike.command', 'done', await snapshot($))
+  }
+}
+
+async function abortAtToolBoundary($: EngineInterface, e: any) {
+  abortAfterTool = false
+  try {
+    if (!currentTurnId) throw new Error('no running turn recorded')
+    await post($, 'spike.command', 'abort-after-tool', { tool_use_id: e.tool_use_id, turnId: currentTurnId })
+    await $.turn.abort({ turnId: currentTurnId })
+    await post($, 'spike.command', 'done', { type: 'abort-after-tool', turnId: currentTurnId })
+  } catch (err) {
+    await post($, 'spike.command', 'error', { type: 'abort-after-tool', message: String(err) })
   }
 }
 
@@ -96,7 +124,11 @@ export const register: Register = (on) => {
     // $ is empty while the engine builds it.
     if (event === 'engine.create') return next(e)
 
-    if (!receiver) receiver = (await $.env.get('SPIKE_RECEIVER_URL')) ?? ''
+    if (!receiver) {
+      receiver = (await $.env.get('SPIKE_RECEIVER_URL')) ?? ''
+      quiet = (await $.env.get('SPIKE_QUIET')) === '1'
+    }
+    if (quiet && (QUIET_SKIP.has(event) || next.origin?.plugin !== 'engine')) return next(e)
 
     if (event === 'session.start') {
       await post($, event, 'before', e, { origin: next.origin })
@@ -125,6 +157,8 @@ export const register: Register = (on) => {
         await post($, event, 'decide-error', { message: String(err) })
       }
     }
+
+    if (event === 'tool.call' && abortAfterTool) await abortAtToolBoundary($, e)
 
     if (event === 'turn.complete') {
       await post($, 'spike.snapshot', 'turn.complete', {

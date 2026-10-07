@@ -3,7 +3,7 @@ stdin, records every stdout line, and serves as the HTTP receiver the
 spike-probe mod and the permission MCP server talk to. Everything lands in
 one events.jsonl with timestamps from one clock.
 
-Usage: python3 driver.py {observe,control,abort,mcp} [--out DIR]
+Usage: python3 driver.py SCENARIO [--out DIR]   (see SCENARIOS)
 """
 
 import argparse
@@ -22,6 +22,11 @@ MOD_DIR = HERE / "mod"
 MCP_SERVER = HERE / "perm_mcp.py"
 
 DENY_REASON = "Denied by the spike receiver acting as the daemon."
+
+
+class Server(ThreadingHTTPServer):
+    # The default backlog of 5 delayed concurrent mod reports by seconds.
+    request_queue_size = 128
 
 
 def now_ms():
@@ -129,13 +134,13 @@ class Run:
         self.out.mkdir(parents=True, exist_ok=True)
         self.log = Log(self.out / "events.jsonl")
         self.commands = []
-        self.server = ThreadingHTTPServer(("127.0.0.1", 0), make_handler(self.log, self.commands))
+        self.server = Server(("127.0.0.1", 0), make_handler(self.log, self.commands))
         threading.Thread(target=self.server.serve_forever, daemon=True).start()
         self.url = f"http://127.0.0.1:{self.server.server_address[1]}"
         self.workdir = Path(tempfile.mkdtemp(prefix=f"modspike-{scenario}-"))
         self.proc = None
 
-    def start(self, extra_args, with_mod):
+    def start(self, extra_args, with_mod, env=None):
         args = [
             "claude", "-p",
             "--input-format", "stream-json",
@@ -149,7 +154,7 @@ class Run:
         if with_mod:
             args += ["--plugin-dir", str(MOD_DIR)]
         args += extra_args
-        env = dict(os.environ, SPIKE_RECEIVER_URL=self.url)
+        env = dict(os.environ, SPIKE_RECEIVER_URL=self.url, **(env or {}))
         self.log.record("driver", note="spawn", argv=args, cwd=str(self.workdir), receiver=self.url)
         self.proc = subprocess.Popen(
             args, cwd=self.workdir, env=env, text=True, bufsize=1,
@@ -188,15 +193,19 @@ class Run:
 
     def wait_result(self, k, timeout=120):
         """Waits for the k-th stdout `result` message (1-based)."""
-        seen = [0]
 
-        def pred(r):
-            if r["src"] == "stdout" and r["msg"].get("type") == "result":
-                seen[0] += 1
-                return seen[0] >= k
-            return False
+        def is_result(r):
+            return r["src"] == "stdout" and r["msg"].get("type") == "result"
 
-        return self.log.wait(pred, timeout, label=f"result #{k}")
+        # Log.wait rescans from the start on every new record, so the
+        # predicate must not count across calls.
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            if self.log.count(is_result) >= k:
+                return True
+            time.sleep(0.1)
+        self.log.record("driver", note=f"timeout waiting for result #{k}")
+        return None
 
     def finish(self, timeout=30):
         time.sleep(2)
@@ -350,11 +359,89 @@ def scenario_mcp(run):
     run.finish()
 
 
+PROMPT_STEPS = (
+    "Use the Bash tool to run `ping -c 5 127.0.0.1` three times, one call after another, "
+    "never in parallel and never in the background. After each call finishes, write the single "
+    "word DONE-1, DONE-2 or DONE-3 before starting the next call. When all three are done, "
+    "reply with exactly FINISHED."
+)
+PROMPT_PAUSE = (
+    "Pause request from the operator: finish the step you are on, then stop. Do not start "
+    "another step. Reply with one sentence saying where you stopped."
+)
+PROMPT_RESUME = "Resume the task from where you stopped and finish it."
+
+
+def wait_idle(run, timeout=120):
+    """Waits until every turn the mod saw start has a stdout result."""
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        started = run.log.count(mod_event("turn.start", "before"))
+        results = run.log.count(lambda r: r["src"] == "stdout" and r["msg"].get("type") == "result")
+        if started and results >= started:
+            time.sleep(3)
+            if run.log.count(mod_event("turn.start", "before")) == started:
+                return results
+        time.sleep(0.2)
+    run.log.record("driver", note="timeout waiting for idle")
+    return None
+
+
+def pause_scenario(action):
+    """Starts the three-step turn, applies `action` 1 s into the first ping,
+    lets the session go idle, then resumes over stdin. `action` None is the
+    uninterrupted baseline."""
+
+    def scenario(run):
+        run.start(["--allowedTools", "Bash(ping:*)"], with_mod=True, env={"SPIKE_QUIET": "1"})
+        run.send(PROMPT_STEPS)
+        hit = run.log.wait(
+            mod_event("tool.call", "before", lambda r: bash_command(r).startswith("ping")),
+            180, label="first tool.call ping",
+        )
+        if hit and action:
+            time.sleep(1)
+            action(run)
+        n = wait_idle(run)
+        if action and n:
+            run.send(PROMPT_RESUME)
+            run.wait_result(n + 1, timeout=120)
+        run.finish()
+
+    return scenario
+
+
+def act_stdin(run):
+    run.send(PROMPT_PAUSE)
+
+
+def act_submit(run):
+    run.enqueue({"type": "submit", "text": PROMPT_PAUSE, "asUser": True})
+
+
+def act_append(run):
+    run.enqueue({"type": "append", "text": PROMPT_PAUSE})
+
+
+def act_abort_after_tool(run):
+    run.enqueue({"type": "abort-after-tool"})
+
+
+def act_interrupt(run):
+    run.send_raw({"type": "control_request", "request_id": "spike-int-1", "request": {"subtype": "interrupt"}})
+
+
 SCENARIOS = {
     "observe": scenario_observe,
     "control": scenario_control,
     "abort": scenario_abort,
     "mcp": scenario_mcp,
+    "pause-baseline": pause_scenario(None),
+    "pause-stdin": pause_scenario(act_stdin),
+    "pause-submit": pause_scenario(act_submit),
+    "pause-append": pause_scenario(act_append),
+    "pause-abort-after-tool": pause_scenario(act_abort_after_tool),
+    "pause-interrupt": pause_scenario(act_interrupt),
 }
 
 
