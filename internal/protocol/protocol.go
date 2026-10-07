@@ -1,6 +1,7 @@
-// Package protocol defines the harness-neutral records a daemon keeps per
-// task and will send to the server: the event envelope and the control
-// events the daemon originates (docs/adr/2026-10-07-client-protocol.md).
+// Package protocol defines the harness-neutral records a daemon and the
+// server exchange: the event envelope and the control events the daemon
+// originates, and the commands the server issues
+// (docs/adr/2026-10-07-client-protocol.md).
 //
 // Harness output travels as an opaque payload tagged with the harness name
 // and version; nothing here depends on a particular harness.
@@ -18,21 +19,41 @@ import (
 // "..".
 type TaskID string
 
-const maxTaskIDLength = 128
-
 var ErrInvalidTaskID = errors.New("invalid task id")
 
 func ParseTaskID(raw string) (TaskID, error) {
-	if raw == "" || raw == "." || raw == ".." || len(raw) > maxTaskIDLength {
+	if !isPathSafeID(raw) {
 		return "", fmt.Errorf("%w: %q", ErrInvalidTaskID, raw)
+	}
+	return TaskID(raw), nil
+}
+
+// DaemonID names a daemon. The daemon chooses it, and it appears in URL
+// paths, so it follows the same rules as TaskID.
+type DaemonID string
+
+var ErrInvalidDaemonID = errors.New("invalid daemon id")
+
+func ParseDaemonID(raw string) (DaemonID, error) {
+	if !isPathSafeID(raw) {
+		return "", fmt.Errorf("%w: %q", ErrInvalidDaemonID, raw)
+	}
+	return DaemonID(raw), nil
+}
+
+const maxIDLength = 128
+
+func isPathSafeID(raw string) bool {
+	if raw == "" || raw == "." || raw == ".." || len(raw) > maxIDLength {
+		return false
 	}
 	for _, r := range raw {
 		valid := r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || r == '.' || r == '_' || r == '-'
 		if !valid {
-			return "", fmt.Errorf("%w: %q", ErrInvalidTaskID, raw)
+			return false
 		}
 	}
-	return TaskID(raw), nil
+	return true
 }
 
 // Kind says what an event's payload holds.
