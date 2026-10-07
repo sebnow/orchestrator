@@ -5,6 +5,7 @@
 - Source: owner decision; closes the open question "How agents reach the
   server" in the [initial brainstorm](../design/2026-10-06-brainstorm.md),
   section "Open questions"
+- Amended by: [client protocol](2026-10-07-client-protocol.md), which keeps Claude-shaped types in a harness package shared by the daemon and the server, rather than inside the adapter
 
 ## Context
 
