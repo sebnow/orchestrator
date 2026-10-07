@@ -16,6 +16,13 @@ type PauseLimits struct {
 	Cleanup     time.Duration
 }
 
+func (l PauseLimits) validate() error {
+	if l.Acknowledge <= 0 || l.Cleanup <= 0 {
+		return fmt.Errorf("pause limits must be positive, got %+v", l)
+	}
+	return nil
+}
+
 // PauseState is where a task is in a pause.
 type PauseState string
 

@@ -108,13 +108,20 @@ type pendingPermission struct {
 // StartTask journals the task's start, starts its harness, and sends the
 // task's prompt. The harness is killed if ctx is cancelled.
 func (d *Daemon) StartTask(ctx context.Context, spec TaskSpec) (*Task, error) {
-	if spec.Pause.Acknowledge <= 0 || spec.Pause.Cleanup <= 0 {
-		return nil, fmt.Errorf("task %s: pause limits must be positive, got %+v", spec.ID, spec.Pause)
+	if err := spec.Pause.validate(); err != nil {
+		return nil, fmt.Errorf("task %s: %w", spec.ID, err)
 	}
 	j, err := createJournal(d.stateDir, spec.ID, d.harness.Info())
 	if err != nil {
 		return nil, err
 	}
+	return d.start(ctx, j, spec)
+}
+
+// start starts the harness of a task whose journal j holds no event yet.
+// If the harness cannot be started the journal records why in
+// harness_exited and is closed.
+func (d *Daemon) start(ctx context.Context, j *journal, spec TaskSpec) (*Task, error) {
 	t := &Task{
 		id:          spec.ID,
 		harness:     d.harness,
@@ -131,6 +138,7 @@ func (d *Daemon) StartTask(ctx context.Context, spec TaskSpec) (*Task, error) {
 		acknowledgePause: t.acknowledgePause,
 	})
 	if err != nil {
+		t.record(protocol.KindHarnessExited, protocol.HarnessExited{ExitCode: -1, Error: err.Error()})
 		j.close()
 		return nil, err
 	}
