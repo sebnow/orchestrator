@@ -18,6 +18,7 @@
 
         devShells.default = pkgs.mkShell {
           packages = [
+            pkgs.git
             pkgs.go
             pkgs.gopls
             pkgs.golangci-lint
