@@ -252,3 +252,25 @@ func (s *Store) task(ctx context.Context, task protocol.TaskID) (taskDetail, err
 	detail.Start.PauseLimits = protocol.PauseLimits{Acknowledge: time.Duration(acknowledge), Cleanup: time.Duration(cleanup)}
 	return detail, nil
 }
+
+// taskPrompts returns every task's prompt by id, for listing tasks by
+// what they were asked.
+func (s *Store) taskPrompts(ctx context.Context) (map[protocol.TaskID]string, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT id, prompt FROM tasks`)
+	if err != nil {
+		return nil, fmt.Errorf("read task prompts: %w", err)
+	}
+	defer rows.Close()
+	prompts := make(map[protocol.TaskID]string)
+	for rows.Next() {
+		var id, prompt string
+		if err := rows.Scan(&id, &prompt); err != nil {
+			return nil, fmt.Errorf("read task prompts: %w", err)
+		}
+		prompts[protocol.TaskID(id)] = prompt
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("read task prompts: %w", err)
+	}
+	return prompts, nil
+}

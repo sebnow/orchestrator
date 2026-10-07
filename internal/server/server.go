@@ -25,7 +25,8 @@ const (
 	keepaliveInterval = 15 * time.Second
 )
 
-// Server serves the daemon-facing and owner-facing HTTP APIs over a Store.
+// Server serves the daemon-facing and owner-facing HTTP APIs, and the
+// owner's GUI, over a Store.
 type Server struct {
 	store *Store
 	log   *slog.Logger
@@ -70,6 +71,7 @@ func New(store *Store, log *slog.Logger, defaultModel string) *Server {
 	s.mux.HandleFunc("GET /v1/tasks/{task}", s.getTask)
 	s.mux.HandleFunc("POST /v1/tasks/{task}/commands", s.postCommand)
 	s.mux.HandleFunc("GET /v1/tasks/{task}/events", s.getEvents)
+	s.routeGUI()
 	return s
 }
 

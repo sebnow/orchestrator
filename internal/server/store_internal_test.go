@@ -220,3 +220,50 @@ func TestGivenUnknownTaskWhenIssuingCommandThenErrUnknownTask(t *testing.T) {
 		t.Errorf("commands stored = %d, want 0", count)
 	}
 }
+
+func TestGivenQuotaReadingsInSeveralZonesWhenListingDaemonsThenEachHasItsNewestReading(t *testing.T) {
+	store, _ := openTestStore(t)
+	seedTask(t, store, "laptop", "task-1")
+	seedTask(t, store, "laptop", "task-2")
+	seedTask(t, store, "desktop", "task-3")
+	reading := func(task protocol.TaskID, seq uint64, at time.Time, utilization string) protocol.Event {
+		e := event(task, seq, `{"status":"allowed","windows":[{"name":"five_hour","utilization":`+utilization+`,"resets_at":"2026-10-07T17:00:00Z"}]}`)
+		e.Kind, e.Time = protocol.KindQuotaObserved, at
+		return e
+	}
+	cest := time.FixedZone("CEST", 2*60*60)
+	// As text the CEST times sort after the UTC one, yet they are earlier.
+	newest := time.Date(2026, 10, 7, 12, 0, 0, 123456789, time.UTC)
+	if _, _, err := store.appendEvents(t.Context(), "laptop", []protocol.Event{
+		reading("task-1", 1, time.Date(2026, 10, 7, 13, 59, 0, 0, cest), "0.1"),
+		reading("task-2", 1, newest, "0.3"),
+		reading("task-1", 2, time.Date(2026, 10, 7, 13, 30, 0, 0, cest), "0.2"),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.heldSeqs(t.Context(), "idle"); err != nil {
+		t.Fatal(err)
+	}
+
+	daemons, err := store.daemons(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	got := map[protocol.DaemonID]*protocol.QuotaObserved{}
+	for _, daemon := range daemons {
+		got[daemon.ID] = daemon.Quota
+		if daemon.ID == "laptop" && !daemon.QuotaAt.Equal(newest) {
+			t.Errorf("laptop reading at %v, want %v", daemon.QuotaAt, newest)
+		}
+		if daemon.ID == "laptop" && (daemon.Harness == nil || daemon.Harness.Name != "claude-code") {
+			t.Errorf("laptop harness = %+v", daemon.Harness)
+		}
+	}
+	if len(daemons) != 3 || got["desktop"] != nil || got["idle"] != nil {
+		t.Fatalf("daemons = %+v, want desktop, idle and laptop, only laptop with a reading", daemons)
+	}
+	if utilization := got["laptop"].Windows[0].Utilization; utilization != 0.3 {
+		t.Errorf("laptop utilization = %v, want the newest, 0.3", utilization)
+	}
+}

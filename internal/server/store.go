@@ -547,3 +547,67 @@ func queryEvents(ctx context.Context, tx *sql.Tx, task protocol.TaskID, after ui
 	}
 	return events, nil
 }
+
+// daemonSummary is a daemon as the daemon list shows it.
+type daemonSummary struct {
+	ID       protocol.DaemonID
+	LastSeen time.Time
+	// Harness is the one named by the latest event the daemon sent; nil
+	// until it sends one.
+	Harness *protocol.Harness
+	// Quota is the newest usage-limit reading among the daemon's events,
+	// observed at QuotaAt; nil when there is none.
+	Quota   *protocol.QuotaObserved
+	QuotaAt time.Time
+}
+
+// daemons returns every daemon that has been seen, by id, each with its
+// newest quota reading.
+//
+// Stored times keep the daemon's zone offset and trim trailing zeros, so
+// they do not sort as text; julianday compares the instants, to the
+// millisecond, and the row id, which follows storage order, breaks ties.
+func (s *Store) daemons(ctx context.Context) ([]daemonSummary, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		WITH readings AS (
+			SELECT t.daemon_id, e.time, e.payload,
+				row_number() OVER (PARTITION BY t.daemon_id ORDER BY julianday(e.time) DESC, e.rowid DESC) AS newest
+			FROM events e JOIN tasks t ON t.id = e.task_id
+			WHERE e.kind = ?)
+		SELECT d.id, d.last_seen, d.harness_name, d.harness_version, r.time, r.payload
+		FROM daemons d LEFT JOIN readings r ON r.daemon_id = d.id AND r.newest = 1
+		ORDER BY d.id`, string(protocol.KindQuotaObserved))
+	if err != nil {
+		return nil, fmt.Errorf("read daemons: %w", err)
+	}
+	defer rows.Close()
+	var daemons []daemonSummary
+	for rows.Next() {
+		var id, lastSeen string
+		var harnessName, harnessVersion, quotaTime, quotaPayload sql.NullString
+		if err := rows.Scan(&id, &lastSeen, &harnessName, &harnessVersion, &quotaTime, &quotaPayload); err != nil {
+			return nil, fmt.Errorf("read daemons: %w", err)
+		}
+		daemon := daemonSummary{ID: protocol.DaemonID(id)}
+		if daemon.LastSeen, err = parseTime(lastSeen); err != nil {
+			return nil, fmt.Errorf("read daemon %q: %w", id, err)
+		}
+		if harnessName.Valid {
+			daemon.Harness = &protocol.Harness{Name: harnessName.String, Version: harnessVersion.String}
+		}
+		if quotaPayload.Valid {
+			// A reading that does not decode is left out rather than
+			// failing the whole list; the raw event stays readable.
+			var quota protocol.QuotaObserved
+			at, err := parseTime(quotaTime.String)
+			if err == nil && json.Unmarshal([]byte(quotaPayload.String), &quota) == nil {
+				daemon.Quota, daemon.QuotaAt = &quota, at
+			}
+		}
+		daemons = append(daemons, daemon)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("read daemons: %w", err)
+	}
+	return daemons, nil
+}

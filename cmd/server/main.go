@@ -1,7 +1,8 @@
 // Command server runs the orchestrator's server: it keeps the record of
 // daemons, tasks, events and commands in a SQLite database and serves the
-// daemon-facing and owner-facing HTTP APIs. It has no authentication, so
-// it listens on loopback unless told otherwise.
+// daemon-facing and owner-facing HTTP APIs under /v1/ and the owner's GUI
+// at /. It has no authentication, so it listens on loopback unless told
+// otherwise.
 package main
 
 import (

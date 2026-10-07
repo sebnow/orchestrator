@@ -93,7 +93,7 @@ func TaskHeader(task Task, controls html.Node) html.Node {
 		return html.Fragment(html.El("dt", nil, html.Text(name)), html.El("dd", nil, value))
 	}
 	return html.El("header", attrs("class", "task-header"),
-		html.El("h1", nil, html.Text(excerpt(task.Prompt))),
+		html.El("h1", nil, link(taskURL(task.ID), excerpt(task.Prompt))),
 		html.El("dl", nil,
 			term("State", StateBadge(task.State)),
 			term("Daemon", html.Text(task.Daemon)),
