@@ -19,8 +19,10 @@ import (
 //
 // git runs with no credentials of the daemon's and with prompts turned
 // off, so a repository that needs credentials fails rather than waits
-// (docs/adr/2026-10-07-task-credentials.md). A failed clone leaves no
-// directory behind.
+// (docs/adr/2026-10-07-task-credentials.md). It ignores the user's and
+// the system's git configuration, whose credential helpers and URL
+// rewrites would otherwise apply. A failed clone leaves no directory
+// behind.
 func prepareWorkspace(ctx context.Context, dir string, ws *protocol.Workspace) error {
 	if ws == nil {
 		return os.MkdirAll(dir, 0o700)
@@ -50,7 +52,7 @@ func prepareWorkspace(ctx context.Context, dir string, ws *protocol.Workspace) e
 func runGit(ctx context.Context, dir string, args ...string) error {
 	cmd := exec.CommandContext(ctx, "git", args...)
 	cmd.Dir = dir
-	cmd.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0")
+	cmd.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0", "GIT_CONFIG_GLOBAL=/dev/null", "GIT_CONFIG_NOSYSTEM=1")
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
 	if err := cmd.Run(); err != nil {

@@ -141,3 +141,25 @@ func TestGivenRefThatLooksLikeAnOptionWhenPreparingThenItIsRefused(t *testing.T)
 		t.Errorf("err = %v", err)
 	}
 }
+
+// The owner's git configuration must not reach the clone: a URL rewrite
+// there sent a public https clone to an ssh remote, and a credential
+// helper there would lend the daemon's credentials.
+func TestGivenOwnerGitConfigThatRewritesTheRepositoryWhenPreparingThenTheCloneIgnoresIt(t *testing.T) {
+	repo := makeTestRepo(t)
+	config := filepath.Join(t.TempDir(), "gitconfig")
+	rewrite := "[url \"" + filepath.Join(t.TempDir(), "missing.git") + "\"]\n\tinsteadOf = " + repo.bare + "\n"
+	if err := os.WriteFile(config, []byte(rewrite), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("GIT_CONFIG_GLOBAL", config)
+	dir := filepath.Join(t.TempDir(), "task-1")
+
+	if err := prepareWorkspace(t.Context(), dir, &protocol.Workspace{Repo: repo.bare, Ref: "main"}); err != nil {
+		t.Fatal(err)
+	}
+
+	if head := git(t, dir, "rev-parse", "HEAD"); head != repo.second {
+		t.Errorf("HEAD = %s, want %s", head, repo.second)
+	}
+}
