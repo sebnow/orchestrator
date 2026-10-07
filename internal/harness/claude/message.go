@@ -1,6 +1,8 @@
 // Package claude holds every Claude Code-shaped type in the orchestrator:
 // the stream-json lines the CLI writes to stdout, the lines the daemon
-// writes to its stdin, and the process driver that exchanges them.
+// writes to its stdin, the process driver that exchanges them, and the
+// normaliser the server uses to turn the stdout lines into transcript
+// entries.
 //
 // Formats follow https://code.claude.com/docs/en/headless.md and the Agent
 // SDK TypeScript reference, https://code.claude.com/docs/en/agent-sdk/typescript.md,
