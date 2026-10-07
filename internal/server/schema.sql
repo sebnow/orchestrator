@@ -1,3 +1,6 @@
+-- Version 1 of the schema; the migrations in store.go bring it to the
+-- current version.
+--
 -- Times are RFC 3339 strings with nanoseconds. Payloads are JSON text.
 
 CREATE TABLE daemons (

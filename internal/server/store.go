@@ -24,12 +24,19 @@ import (
 //go:embed schema.sql
 var schema string
 
-// schemaVersion is the version schema.sql creates. A database at another
-// version is refused rather than guessed at.
-const schemaVersion = 1
+// migrations[n] takes the schema from version n+1 to version n+2. A new
+// database gets schema.sql, which is version 1, and then every migration,
+// so new and migrated databases have the same shape.
+var migrations = [...]string{
+	// Version 2 keeps what the task list shows without reading events.
+	`ALTER TABLE tasks ADD COLUMN last_activity_at TEXT NOT NULL DEFAULT '';
+	UPDATE tasks SET last_activity_at = created_at;
+	ALTER TABLE tasks ADD COLUMN cost_usd REAL NOT NULL DEFAULT 0;`,
+}
 
-// taskPending is the state of a task whose start has been issued.
-const taskPending = "pending"
+// schemaVersion is the version this server migrates databases to. A
+// database at a later version is refused rather than guessed at.
+const schemaVersion = 1 + len(migrations)
 
 var (
 	errUnknownDaemon = errors.New("unknown daemon")
@@ -98,13 +105,25 @@ func migrate(ctx context.Context, db *sql.DB) error {
 		if _, err := tx.ExecContext(ctx, schema); err != nil {
 			return fmt.Errorf("create schema: %w", err)
 		}
-		if _, err := tx.ExecContext(ctx, `INSERT INTO schema_version (version) VALUES (?)`, schemaVersion); err != nil {
+		if _, err := tx.ExecContext(ctx, `INSERT INTO schema_version (version) VALUES (1)`); err != nil {
 			return fmt.Errorf("record schema version: %w", err)
 		}
+		version = 1
 	case err != nil:
 		return fmt.Errorf("read schema version: %w", err)
-	case version != schemaVersion:
-		return fmt.Errorf("database has schema version %d; this server knows only version %d", version, schemaVersion)
+	case version < 1 || version > schemaVersion:
+		return fmt.Errorf("database has schema version %d; this server knows versions 1 to %d", version, schemaVersion)
+	}
+	if version == schemaVersion {
+		return tx.Commit()
+	}
+	for ; version < schemaVersion; version++ {
+		if _, err := tx.ExecContext(ctx, migrations[version-1]); err != nil {
+			return fmt.Errorf("migrate schema to version %d: %w", version+1, err)
+		}
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE schema_version SET version = ?`, schemaVersion); err != nil {
+		return fmt.Errorf("record schema version: %w", err)
 	}
 	return tx.Commit()
 }
@@ -179,6 +198,7 @@ func (s *Store) appendEvents(ctx context.Context, daemon protocol.DaemonID, even
 			tasks = append(tasks, event.TaskID)
 		}
 	}
+	progresses := make(map[protocol.TaskID]*progress, len(tasks))
 	for _, task := range tasks {
 		var owner string
 		err := tx.QueryRowContext(ctx, `SELECT daemon_id FROM tasks WHERE id = ?`, string(task)).Scan(&owner)
@@ -188,6 +208,11 @@ func (s *Store) appendEvents(ctx context.Context, daemon protocol.DaemonID, even
 		if err != nil {
 			return nil, nil, fmt.Errorf("look up task %q: %w", task, err)
 		}
+		p, err := loadProgress(ctx, tx, task)
+		if err != nil {
+			return nil, nil, err
+		}
+		progresses[task] = &p
 	}
 
 	var harness *protocol.Harness
@@ -213,6 +238,13 @@ func (s *Store) appendEvents(ctx context.Context, daemon protocol.DaemonID, even
 			return nil, nil, fmt.Errorf("store event %s/%d: %w", event.TaskID, event.Seq, err)
 		}
 		if inserted == 1 {
+			stopped := false
+			if event.Kind == protocol.KindHarnessExited {
+				if stopped, err = stopIssued(ctx, tx, event.TaskID); err != nil {
+					return nil, nil, err
+				}
+			}
+			progresses[event.TaskID].seeEvent(event, stopped)
 			continue
 		}
 		var kind, harnessName, harnessVersion, eventTime, payload string
@@ -226,6 +258,12 @@ func (s *Store) appendEvents(ctx context.Context, daemon protocol.DaemonID, even
 			eventTime == formatTime(event.Time) && payload == string(event.Payload)
 		if !same {
 			conflicts = append(conflicts, event)
+		}
+	}
+
+	for task, p := range progresses {
+		if err := saveProgress(ctx, tx, task, *p); err != nil {
+			return nil, nil, err
 		}
 	}
 
@@ -300,10 +338,11 @@ func (s *Store) createTask(ctx context.Context, daemon protocol.DaemonID, task p
 	if start.Workspace != nil {
 		repo, ref = start.Workspace.Repo, start.Workspace.Ref
 	}
+	created := formatTime(time.Now().UTC())
 	_, err = tx.ExecContext(ctx, `
-		INSERT INTO tasks (id, daemon_id, state, created_at, prompt, system_prompt, workspace_repo, workspace_ref, model, pause_acknowledge_ns, pause_cleanup_ns)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		string(task), string(daemon), taskPending, formatTime(time.Now().UTC()), start.Prompt, start.SystemPrompt, repo, ref,
+		INSERT INTO tasks (id, daemon_id, state, created_at, last_activity_at, prompt, system_prompt, workspace_repo, workspace_ref, model, pause_acknowledge_ns, pause_cleanup_ns)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		string(task), string(daemon), string(TaskPending), created, created, start.Prompt, start.SystemPrompt, repo, ref,
 		start.Model, int64(start.PauseLimits.Acknowledge), int64(start.PauseLimits.Cleanup))
 	if err != nil {
 		return protocol.Command{}, fmt.Errorf("create task %q: %w", task, err)
@@ -344,6 +383,8 @@ func (s *Store) issueCommand(ctx context.Context, task protocol.TaskID, kind pro
 	return command, nil
 }
 
+// insertCommand appends a command to the log and folds it into the task's
+// progress.
 func insertCommand(ctx context.Context, tx *sql.Tx, daemon protocol.DaemonID, task protocol.TaskID, kind protocol.CommandKind, payload json.RawMessage) (protocol.Command, error) {
 	command := protocol.Command{DaemonID: daemon, TaskID: task, Kind: kind, Time: time.Now().UTC(), Payload: payload}
 	var stored any
@@ -358,6 +399,14 @@ func insertCommand(ctx context.Context, tx *sql.Tx, daemon protocol.DaemonID, ta
 		return protocol.Command{}, fmt.Errorf("issue %s for task %q: %w", kind, task, err)
 	}
 	command.ID = uint64(id)
+	p, err := loadProgress(ctx, tx, task)
+	if err != nil {
+		return protocol.Command{}, err
+	}
+	p.seeCommand(command)
+	if err := saveProgress(ctx, tx, task, p); err != nil {
+		return protocol.Command{}, err
+	}
 	return command, nil
 }
 
