@@ -7,6 +7,7 @@ import (
 	"net"
 	"net/url"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -297,5 +298,40 @@ func TestGivenDaemonThatDiedWithATaskRunningWhenANewOneStartsOnItsStateThenTheTa
 	}
 	if got := mustLoadState(t, crashed).lastCommand(); got <= pause.ID {
 		t.Errorf("last command = %d, want past the pause %d", got, pause.ID)
+	}
+}
+
+func TestGivenTaskWithAWorkspaceWhenItStartsThenTheHarnessWorksInTheClone(t *testing.T) {
+	repo := makeTestRepo(t)
+	srv := startServer(t)
+	d := runDaemon(t, srv.url, t.TempDir())
+
+	srv.createTask(t, testDaemon, protocol.StartTask{
+		Prompt: "Do the work.", Workspace: &protocol.Workspace{Repo: repo.bare, Ref: "feature"}, PauseLimits: testPauseLimits,
+	})
+
+	proc := d.nextProcess(t)
+	if got := readWorkspaceFile(t, proc.spec.Workdir, "feature.txt"); got != "feature" {
+		t.Errorf("feature.txt = %q", got)
+	}
+}
+
+func TestGivenWorkspaceThatCannotBeClonedWhenTheTaskStartsThenItEndsWithGitsErrorAndNoHarness(t *testing.T) {
+	srv := startServer(t)
+	d := runDaemon(t, srv.url, t.TempDir())
+	missing := filepath.Join(t.TempDir(), "missing.git")
+
+	task := srv.createTask(t, testDaemon, protocol.StartTask{
+		Prompt: "Do the work.", Workspace: &protocol.Workspace{Repo: missing, Ref: "main"}, PauseLimits: testPauseLimits,
+	}).TaskID
+
+	events := srv.waitForEvent(t, task, "harness_exited", isKind(protocol.KindHarnessExited))
+	var exit protocol.HarnessExited
+	json.Unmarshal(events[0].Payload, &exit)
+	if len(events) != 1 || exit.ExitCode != -1 || !strings.Contains(exit.Error, "git clone") || !strings.Contains(exit.Error, "missing.git") {
+		t.Errorf("events: %s", describe(events))
+	}
+	if len(d.harness.started) != 0 {
+		t.Error("a harness started")
 	}
 }

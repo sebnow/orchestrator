@@ -293,10 +293,7 @@ func (s *service) startTask(command protocol.Command) *Task {
 		return fail(err)
 	}
 	workdir := workspacePath(s.cfg.StateDir, task)
-	if start.Workspace != nil {
-		return fail(errors.New("workspaces are not supported yet"))
-	}
-	if err := os.MkdirAll(workdir, 0o700); err != nil {
+	if err := prepareWorkspace(s.stopping, workdir, start.Workspace); err != nil {
 		return fail(fmt.Errorf("prepare workspace: %w", err))
 	}
 	// The harness outlives the daemon's context; shutting down stops it
