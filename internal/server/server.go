@@ -79,9 +79,9 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	s.mux.ServeHTTP(w, r)
 }
 
-// EndStreams ends every open command stream, and every stream opened
-// later once it has sent the commands it owed. Command streams never go
-// idle, so http.Server.Shutdown waits for them forever unless this is
+// EndStreams ends every open command stream and task page stream, and
+// every stream opened later once it has sent what it owed. Streams never
+// go idle, so http.Server.Shutdown waits for them forever unless this is
 // registered with http.Server.RegisterOnShutdown.
 func (s *Server) EndStreams() {
 	s.endOnce.Do(func() { close(s.ended) })

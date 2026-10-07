@@ -32,6 +32,8 @@ func (s *Server) routeGUI() {
 	s.mux.HandleFunc("GET /tasks/{task}", s.getTaskPage)
 	s.mux.HandleFunc("POST /tasks/{task}/commands", s.postCommandForm)
 	s.mux.HandleFunc("GET /tasks/{task}/raw", s.getRawPage)
+	s.mux.HandleFunc("GET /tasks/{task}/stream", s.streamTask)
+	s.mux.HandleFunc("GET /tasks/{task}/updates", s.getTaskUpdates)
 }
 
 // fromHTMX reports whether htmx made the request, in which case the

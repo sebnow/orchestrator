@@ -254,7 +254,14 @@ type sseEvent struct {
 // ends. lastEventID is sent when not empty.
 func openCommandStream(t *testing.T, srv testServer, daemon protocol.DaemonID, lastEventID string) <-chan sseEvent {
 	t.Helper()
-	request, err := http.NewRequestWithContext(t.Context(), http.MethodGet, srv.url+"/v1/daemons/"+string(daemon)+"/commands", nil)
+	return openEventStream(t, srv.url+"/v1/daemons/"+string(daemon)+"/commands", lastEventID)
+}
+
+// openEventStream connects to the event stream at url, as
+// openCommandStream does. An event's data lines are joined by line feeds.
+func openEventStream(t *testing.T, url, lastEventID string) <-chan sseEvent {
+	t.Helper()
+	request, err := http.NewRequestWithContext(t.Context(), http.MethodGet, url, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -275,11 +282,15 @@ func openCommandStream(t *testing.T, srv testServer, daemon protocol.DaemonID, l
 		defer close(events)
 		defer response.Body.Close()
 		scanner := bufio.NewScanner(response.Body)
+		scanner.Buffer(nil, 4<<20)
 		var current sseEvent
+		var data []string
 		for scanner.Scan() {
 			line := scanner.Text()
 			switch {
 			case line == "":
+				current.data = strings.Join(data, "\n")
+				data = nil
 				if current != (sseEvent{}) {
 					select {
 					case events <- current:
@@ -291,7 +302,7 @@ func openCommandStream(t *testing.T, srv testServer, daemon protocol.DaemonID, l
 			case strings.HasPrefix(line, "id: "):
 				current.id = strings.TrimPrefix(line, "id: ")
 			case strings.HasPrefix(line, "data: "):
-				current.data = strings.TrimPrefix(line, "data: ")
+				data = append(data, strings.TrimPrefix(line, "data: "))
 			}
 		}
 	}()

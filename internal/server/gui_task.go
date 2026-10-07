@@ -93,6 +93,7 @@ type refusal struct {
 }
 
 func (v taskView) page(refused refusal) html.Node {
+	_, at := cursor{}.after(v.entries)
 	var promptText, promptProblem, permissionProblem string
 	switch refused.kind {
 	case protocol.CommandPrompt:
@@ -103,7 +104,7 @@ func (v taskView) page(refused refusal) html.Node {
 	return component.Page("Task "+v.id(),
 		component.RegionOf(component.RegionTaskHeader, v.header()),
 		component.RegionOf(component.RegionPermission, v.permission(permissionProblem)),
-		component.Section("Transcript", component.Transcript(v.entries)),
+		component.Section("Transcript", component.Transcript(v.entries), component.LiveUpdates(v.id(), at.String())),
 		component.Section("Follow up", component.RegionOf(component.RegionPrompt, v.promptForm(promptText, promptProblem))),
 	)
 }
