@@ -401,13 +401,70 @@ func (s *Store) eventsAfter(ctx context.Context, task protocol.TaskID, after uin
 		return nil, fmt.Errorf("read events: %w", err)
 	}
 	defer tx.Rollback()
+	if err := requireTask(ctx, tx, task); err != nil {
+		return nil, err
+	}
+	return queryEvents(ctx, tx, task, after)
+}
+
+// taskHistory returns everything recorded for task: its events in seq
+// order and its commands in id order, read in one transaction.
+func (s *Store) taskHistory(ctx context.Context, task protocol.TaskID) ([]protocol.Event, []protocol.Command, error) {
+	tx, err := s.db.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
+	if err != nil {
+		return nil, nil, fmt.Errorf("read task history: %w", err)
+	}
+	defer tx.Rollback()
+	if err := requireTask(ctx, tx, task); err != nil {
+		return nil, nil, err
+	}
+	events, err := queryEvents(ctx, tx, task, 0)
+	if err != nil {
+		return nil, nil, err
+	}
+	rows, err := tx.QueryContext(ctx, `
+		SELECT id, daemon_id, kind, time, payload FROM commands WHERE task_id = ? ORDER BY id`, string(task))
+	if err != nil {
+		return nil, nil, fmt.Errorf("read commands of task %q: %w", task, err)
+	}
+	defer rows.Close()
+	var commands []protocol.Command
+	for rows.Next() {
+		var id int64
+		var daemon, kind, issued string
+		var payload []byte
+		if err := rows.Scan(&id, &daemon, &kind, &issued, &payload); err != nil {
+			return nil, nil, fmt.Errorf("read commands of task %q: %w", task, err)
+		}
+		at, err := parseTime(issued)
+		if err != nil {
+			return nil, nil, fmt.Errorf("read command %d: %w", id, err)
+		}
+		commands = append(commands, protocol.Command{
+			ID: uint64(id), DaemonID: protocol.DaemonID(daemon), TaskID: task, Kind: protocol.CommandKind(kind), Time: at, Payload: payload,
+		})
+	}
+	if err := rows.Err(); err != nil {
+		return nil, nil, fmt.Errorf("read commands of task %q: %w", task, err)
+	}
+	return events, commands, nil
+}
+
+// requireTask returns errUnknownTask when task is not recorded.
+func requireTask(ctx context.Context, tx *sql.Tx, task protocol.TaskID) error {
 	var known bool
 	if err := tx.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 FROM tasks WHERE id = ?)`, string(task)).Scan(&known); err != nil {
-		return nil, fmt.Errorf("look up task %q: %w", task, err)
+		return fmt.Errorf("look up task %q: %w", task, err)
 	}
 	if !known {
-		return nil, fmt.Errorf("%w: %q", errUnknownTask, task)
+		return fmt.Errorf("%w: %q", errUnknownTask, task)
 	}
+	return nil
+}
+
+// queryEvents returns task's events with a seq greater than after, in seq
+// order.
+func queryEvents(ctx context.Context, tx *sql.Tx, task protocol.TaskID, after uint64) ([]protocol.Event, error) {
 	rows, err := tx.QueryContext(ctx, `
 		SELECT seq, kind, harness_name, harness_version, time, payload FROM events WHERE task_id = ? AND seq > ? ORDER BY seq`,
 		string(task), int64(after))

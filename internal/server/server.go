@@ -35,6 +35,8 @@ type Server struct {
 	streams map[protocol.DaemonID]*commandStream
 	ended   chan struct{}
 	endOnce sync.Once
+
+	watchers watchers
 }
 
 // commandStream is the one open SSE stream of a daemon.
@@ -48,11 +50,12 @@ type commandStream struct {
 
 func New(store *Store, log *slog.Logger) *Server {
 	s := &Server{
-		store:   store,
-		log:     log,
-		mux:     http.NewServeMux(),
-		streams: make(map[protocol.DaemonID]*commandStream),
-		ended:   make(chan struct{}),
+		store:    store,
+		log:      log,
+		mux:      http.NewServeMux(),
+		streams:  make(map[protocol.DaemonID]*commandStream),
+		ended:    make(chan struct{}),
+		watchers: watchers{byTask: make(map[protocol.TaskID]map[chan struct{}]struct{})},
 	}
 	s.mux.HandleFunc("POST /v1/daemons/{daemon}/events", s.postEvents)
 	s.mux.HandleFunc("GET /v1/daemons/{daemon}/acks", s.getAcks)
@@ -101,6 +104,9 @@ func (s *Server) postEvents(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		s.internalError(w, err)
 		return
+	}
+	for task := range held {
+		s.taskChanged(task)
 	}
 	for _, event := range conflicts {
 		s.log.Warn("duplicate event differs from the stored one; kept the stored one",
@@ -267,6 +273,7 @@ func (s *Server) createTask(ctx context.Context, daemon protocol.DaemonID, task 
 		return protocol.Command{}, err
 	}
 	s.signalIssued(daemon)
+	s.taskChanged(task)
 	return command, nil
 }
 
@@ -277,6 +284,7 @@ func (s *Server) issueCommand(ctx context.Context, task protocol.TaskID, kind pr
 		return protocol.Command{}, err
 	}
 	s.signalIssued(command.DaemonID)
+	s.taskChanged(task)
 	return command, nil
 }
 
