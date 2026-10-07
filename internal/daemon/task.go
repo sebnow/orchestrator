@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"slices"
 	"sync"
 
 	"github.com/sebnow/orchestrator/internal/harness"
@@ -20,6 +21,9 @@ var (
 	// ErrStale reports an answer to a permission request that is no longer
 	// waiting: answered already, abandoned by the harness, or never made.
 	ErrStale = errors.New("permission request is not pending")
+	// ErrBusy reports a command that conflicts with a pause in progress.
+	// It can be retried once the pause has settled.
+	ErrBusy = errors.New("task is busy")
 )
 
 // Daemon runs tasks on this machine.
@@ -49,6 +53,7 @@ type TaskSpec struct {
 	Workdir      string
 	Model        string
 	SystemPrompt string
+	Pause        PauseLimits
 }
 
 // State is a snapshot of a task.
@@ -62,7 +67,13 @@ type State struct {
 	TurnsEnded  int
 	Permissions []protocol.PermissionRequested
 	// Exit is set once Running is false.
-	Exit *protocol.HarnessExited
+	Exit  *protocol.HarnessExited
+	Pause PauseState
+	// PausePickedUp is set once the harness shows a turn answering the
+	// pause request.
+	PausePickedUp bool
+	// StopNote is the agent's note from its latest pause acknowledgement.
+	StopNote string
 }
 
 // Task is one running harness and its journal.
@@ -85,6 +96,8 @@ type Task struct {
 	permissions map[string]*pendingPermission
 	turnsEnded  int
 	exit        *protocol.HarnessExited
+	limits      PauseLimits
+	pause       pause
 }
 
 type pendingPermission struct {
@@ -95,6 +108,9 @@ type pendingPermission struct {
 // StartTask journals the task's start, starts its harness, and sends the
 // task's prompt. The harness is killed if ctx is cancelled.
 func (d *Daemon) StartTask(ctx context.Context, spec TaskSpec) (*Task, error) {
+	if spec.Pause.Acknowledge <= 0 || spec.Pause.Cleanup <= 0 {
+		return nil, fmt.Errorf("task %s: pause limits must be positive, got %+v", spec.ID, spec.Pause)
+	}
 	j, err := createJournal(d.stateDir, spec.ID, d.harness.Info())
 	if err != nil {
 		return nil, err
@@ -108,6 +124,7 @@ func (d *Daemon) StartTask(ctx context.Context, spec TaskSpec) (*Task, error) {
 		changed:     make(chan struct{}),
 		outstanding: map[string]bool{},
 		permissions: map[string]*pendingPermission{},
+		limits:      spec.Pause,
 	}
 	url, unregister, err := d.gateway.register(spec.ID, gatewayTask{
 		permission:       t.askPermission,
@@ -199,6 +216,7 @@ func (t *Task) run(unregister func()) {
 
 	t.mu.Lock()
 	t.exit = &exit
+	t.pause.stopTimer()
 	t.notifyLocked()
 	t.mu.Unlock()
 	close(t.done)
@@ -207,12 +225,22 @@ func (t *Task) run(unregister func()) {
 func (t *Task) handleOutput(out harness.Output) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
+	if t.pause.unsettled() && !t.pause.pickedUp && slices.Contains(out.Answering, t.pause.id) {
+		t.pause.pickedUp = true
+		t.notifyLocked()
+	}
 	if !out.TurnEnded {
 		return
 	}
 	t.turnsEnded++
 	for _, id := range out.Answering {
 		delete(t.outstanding, id)
+	}
+	// The pause has taken effect once the turn that answers it has ended,
+	// whether the agent stopped by itself or was interrupted.
+	if t.pause.unsettled() && !t.outstanding[t.pause.id] {
+		t.pause.state = Paused
+		t.pause.stopTimer()
 	}
 	t.notifyLocked()
 }
@@ -232,10 +260,13 @@ func (t *Task) State() State {
 
 func (t *Task) stateLocked() State {
 	s := State{
-		Running:    t.exit == nil,
-		Busy:       len(t.outstanding) > 0,
-		TurnsEnded: t.turnsEnded,
-		Exit:       t.exit,
+		Running:       t.exit == nil,
+		Busy:          len(t.outstanding) > 0,
+		TurnsEnded:    t.turnsEnded,
+		Exit:          t.exit,
+		Pause:         t.pause.state,
+		PausePickedUp: t.pause.pickedUp,
+		StopNote:      t.pause.note,
 	}
 	for _, p := range t.permissions {
 		s.Permissions = append(s.Permissions, p.request)
@@ -267,22 +298,22 @@ func (t *Task) Done() <-chan struct{} {
 	return t.done
 }
 
-// Prompt sends text to the harness as a user prompt: a follow-up, or a
-// resume after a pause.
+// Prompt sends text to the harness as a user prompt: a follow-up, or the
+// resume of a paused task. While a pause is in progress it returns ErrBusy.
 func (t *Task) Prompt(text string) error {
 	t.commands.Lock()
 	defer t.commands.Unlock()
-	return t.sendPrompt(text)
-}
-
-// sendPrompt sends a prompt with a fresh id. t.commands must be held.
-func (t *Task) sendPrompt(text string) error {
 	id := newID()
 	t.mu.Lock()
 	if t.exit != nil {
 		t.mu.Unlock()
 		return ErrTaskEnded
 	}
+	if t.pause.unsettled() {
+		t.mu.Unlock()
+		return fmt.Errorf("%w: a pause is in progress", ErrBusy)
+	}
+	t.pause = pause{note: t.pause.note}
 	t.outstanding[id] = true
 	t.notifyLocked()
 	t.mu.Unlock()
@@ -391,16 +422,6 @@ func (t *Task) dropPermission(requestID string) {
 		t.notifyLocked()
 	}
 }
-
-// acknowledgePause serves the gateway's acknowledge_pause tool.
-func (t *Task) acknowledgePause(note string) (string, error) {
-	if _, err := t.record(protocol.KindPauseAcknowledged, protocol.PauseAcknowledged{Note: note}); err != nil {
-		return "", fmt.Errorf("acknowledgement not recorded: %w", err)
-	}
-	return pauseConfirmation, nil
-}
-
-const pauseConfirmation = "Pause acknowledged. Finish the step you are on, do not start another, then end your turn."
 
 // newID returns a random version 4 UUID. Prompt ids must be UUIDs: the
 // SDK reference types the uuid of a user message as one.

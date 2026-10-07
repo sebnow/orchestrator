@@ -41,7 +41,10 @@ func (l *eventLog) all() []protocol.Event {
 	return slices.Clone(l.events)
 }
 
-var testTaskSpec = TaskSpec{ID: "task-1", Prompt: "Do the work.", Workdir: "/work", Model: "fake-model", SystemPrompt: "Be brief."}
+var testTaskSpec = TaskSpec{
+	ID: "task-1", Prompt: "Do the work.", Workdir: "/work", Model: "fake-model", SystemPrompt: "Be brief.",
+	Pause: PauseLimits{Acknowledge: 2 * time.Minute, Cleanup: 5 * time.Minute},
+}
 
 func startTestTask(t *testing.T, gateway *Gateway, spec TaskSpec) taskFixture {
 	t.Helper()
