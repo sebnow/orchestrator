@@ -72,6 +72,8 @@ const (
 	KindPermissionRequested Kind = "permission_requested"
 	// KindPauseAcknowledged: PauseAcknowledged.
 	KindPauseAcknowledged Kind = "pause_acknowledged"
+	// KindPauseSettled: PauseSettled.
+	KindPauseSettled Kind = "pause_settled"
 	// KindQuotaObserved: QuotaObserved.
 	KindQuotaObserved Kind = "quota_observed"
 )
@@ -121,6 +123,17 @@ type PermissionRequested struct {
 // where it stopped.
 type PauseAcknowledged struct {
 	Note string `json:"note"`
+}
+
+// PauseSettled reports that a pause has taken effect: the turn answering
+// the pause request has ended, or no turn was running when the pause
+// arrived. Nothing else tells the server this, because the pause request's
+// id never leaves the daemon and a pause with no running turn produces no
+// harness output at all.
+type PauseSettled struct {
+	// Interrupted is true when a pause limit passed and the daemon
+	// interrupted the harness to settle the pause.
+	Interrupted bool `json:"interrupted"`
 }
 
 type QuotaStatus string

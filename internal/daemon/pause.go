@@ -88,6 +88,12 @@ func (t *Task) Pause() error {
 		t.pause = pause{state: Paused}
 		t.notifyLocked()
 		t.mu.Unlock()
+		// t.commands is still held, so no prompt can start a turn before
+		// the settlement is journaled.
+		if _, err := t.record(protocol.KindPauseSettled, protocol.PauseSettled{}); err != nil {
+			t.proc.Kill()
+			return fmt.Errorf("pause settlement not recorded: %w", err)
+		}
 		return nil
 	}
 	id := newID()

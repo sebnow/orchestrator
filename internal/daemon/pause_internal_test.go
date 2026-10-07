@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"errors"
+	"slices"
 	"testing"
 	"testing/synctest"
 	"time"
@@ -29,6 +30,26 @@ func endTurn(f taskFixture, ids ...string) {
 	f.proc.emit(harness.Output{Line: []byte(`{"type":"result"}`), TurnEnded: true, Answering: ids})
 }
 
+// requireSettledAfter checks that the journal holds exactly one
+// pause_settled, with payload want, and that it directly follows an event
+// of kind after.
+func requireSettledAfter(t *testing.T, events []protocol.Event, after protocol.Kind, want string) {
+	t.Helper()
+	var found []string
+	for idx, event := range events {
+		if event.Kind != protocol.KindPauseSettled {
+			continue
+		}
+		found = append(found, string(event.Payload))
+		if idx == 0 || events[idx-1].Kind != after {
+			t.Errorf("pause_settled follows %v, want %s", kinds(events[:idx]), after)
+		}
+	}
+	if len(found) != 1 || found[0] != want {
+		t.Errorf("pause_settled payloads = %q, want one %s", found, want)
+	}
+}
+
 func TestGivenIdleTaskWhenPausingThenItIsPausedAtOnceAndTheHarnessIsNotTold(t *testing.T) {
 	gateway := startTestGateway(t)
 	synctest.Test(t, func(t *testing.T) {
@@ -45,6 +66,7 @@ func TestGivenIdleTaskWhenPausingThenItIsPausedAtOnceAndTheHarnessIsNotTold(t *t
 		}
 		f.proc.noInput(t)
 		f.end(t, protocol.HarnessExited{})
+		requireSettledAfter(t, f.journal(t), protocol.KindHarnessOutput, `{"interrupted":false}`)
 	})
 }
 
@@ -82,6 +104,9 @@ func TestGivenPauseRequestWhenATurnEchoesItsIDThenThePickupIsRecorded(t *testing
 			t.Errorf("state = %+v", s)
 		}
 		f.end(t, protocol.HarnessExited{})
+		if got := kinds(f.journal(t)); slices.Contains(got, protocol.KindPauseSettled) {
+			t.Errorf("journal kinds = %v, want no pause_settled before the turn ends", got)
+		}
 	})
 }
 
@@ -120,6 +145,7 @@ func TestGivenAcknowledgedPauseWhenTheTurnEndsThenTheTaskIsPausedWithTheNoteAndN
 		if len(notes) != 1 || notes[0] != `{"note":"Stopped after step 1; steps 2 and 3 remain."}` {
 			t.Errorf("journaled acknowledgements = %q", notes)
 		}
+		requireSettledAfter(t, events, protocol.KindHarnessOutput, `{"interrupted":false}`)
 	})
 }
 
@@ -148,6 +174,7 @@ func TestGivenNoAcknowledgementWhenTheFirstLimitPassesThenTheHarnessIsInterrupte
 			t.Errorf("after the interrupted turn pause = %q, want paused", s.Pause)
 		}
 		f.end(t, protocol.HarnessExited{})
+		requireSettledAfter(t, f.journal(t), protocol.KindHarnessOutput, `{"interrupted":true}`)
 	})
 }
 

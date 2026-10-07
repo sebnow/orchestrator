@@ -209,7 +209,13 @@ func (t *Task) run(unregister func()) {
 				continue
 			}
 		}
-		t.handleOutput(out)
+		// The settlement is journaled before the next line is read, so it
+		// precedes any output of a turn that resumes the task.
+		if settled := t.handleOutput(out); settled != nil {
+			if _, err := t.record(protocol.KindPauseSettled, *settled); err != nil {
+				t.proc.Kill()
+			}
+		}
 	}
 	if readErr != nil {
 		t.proc.Kill()
@@ -230,7 +236,9 @@ func (t *Task) run(unregister func()) {
 	close(t.done)
 }
 
-func (t *Task) handleOutput(out harness.Output) {
+// handleOutput updates the task's state from one line of output. It
+// returns the settlement to record when the line settles a pause.
+func (t *Task) handleOutput(out harness.Output) *protocol.PauseSettled {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	if t.pause.unsettled() && !t.pause.pickedUp && slices.Contains(out.Answering, t.pause.id) {
@@ -238,7 +246,7 @@ func (t *Task) handleOutput(out harness.Output) {
 		t.notifyLocked()
 	}
 	if !out.TurnEnded {
-		return
+		return nil
 	}
 	t.turnsEnded++
 	for _, id := range out.Answering {
@@ -246,11 +254,14 @@ func (t *Task) handleOutput(out harness.Output) {
 	}
 	// The pause has taken effect once the turn that answers it has ended,
 	// whether the agent stopped by itself or was interrupted.
+	var settled *protocol.PauseSettled
 	if t.pause.unsettled() && !t.outstanding[t.pause.id] {
+		settled = &protocol.PauseSettled{Interrupted: t.pause.state == PauseInterrupting}
 		t.pause.state = Paused
 		t.pause.stopTimer()
 	}
 	t.notifyLocked()
+	return settled
 }
 
 // notifyLocked wakes every WaitFor. t.mu must be held.
