@@ -45,7 +45,7 @@ func startTestServer(t *testing.T) testServer {
 	t.Helper()
 	store, _ := openTestStore(t)
 	logs := &syncBuffer{}
-	srv := New(store, slog.New(slog.NewTextHandler(logs, nil)))
+	srv := New(store, slog.New(slog.NewTextHandler(logs, nil)), testDefaultModel)
 	httpServer := httptest.NewServer(srv)
 	t.Cleanup(func() {
 		srv.EndStreams()

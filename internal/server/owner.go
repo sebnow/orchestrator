@@ -47,6 +47,9 @@ func (s *Server) postTask(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
+	if request.Model == "" {
+		request.Model = s.defaultModel
+	}
 	// rand.Text uses only letters and digits, so the id is always valid.
 	task := protocol.TaskID(rand.Text())
 	command, err := s.createTask(r.Context(), daemon, task, request.StartTask)

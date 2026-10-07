@@ -30,8 +30,9 @@ func main() {
 func run() int {
 	listen := flag.String("listen", "127.0.0.1:8080", "address to serve HTTP on")
 	dbPath := flag.String("db", "", "SQLite database file, created when missing (required)")
+	defaultModel := flag.String("default-model", "haiku", "model of a task created without one")
 	flag.Parse()
-	if *dbPath == "" {
+	if *dbPath == "" || *defaultModel == "" {
 		flag.Usage()
 		return 2
 	}
@@ -46,7 +47,7 @@ func run() int {
 	}
 	defer store.Close()
 
-	srv := server.New(store, log)
+	srv := server.New(store, log, *defaultModel)
 	httpServer := &http.Server{
 		Handler: srv,
 		// No write timeout: command streams stay open indefinitely.

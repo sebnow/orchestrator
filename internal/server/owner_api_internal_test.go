@@ -210,3 +210,24 @@ func TestGivenMalformedAfterWhenGettingEventsThenBadRequest(t *testing.T) {
 		t.Errorf("status = %d (%s), want 400", status, body)
 	}
 }
+
+const testDefaultModel = "default-model"
+
+func TestGivenTaskWithoutModelWhenCreatingThenTheDefaultModelIsSent(t *testing.T) {
+	srv := startTestServer(t)
+	doRequest(t, http.MethodGet, srv.url+"/v1/daemons/laptop/acks", "")
+	for body, want := range map[string]string{
+		`{"daemon_id":"laptop","prompt":"p","pause_limits":{"acknowledge":"1m","cleanup":"5m"}}`:                testDefaultModel,
+		`{"daemon_id":"laptop","prompt":"p","model":"","pause_limits":{"acknowledge":"1m","cleanup":"5m"}}`:     testDefaultModel,
+		`{"daemon_id":"laptop","prompt":"p","model":"opus","pause_limits":{"acknowledge":"1m","cleanup":"5m"}}`: "opus",
+	} {
+		command := postForCommand(t, srv.url+"/v1/tasks", body)
+		var start protocol.StartTask
+		if err := json.Unmarshal(command.Payload, &start); err != nil {
+			t.Fatal(err)
+		}
+		if start.Model != want {
+			t.Errorf("%s: model = %q, want %q", body, start.Model, want)
+		}
+	}
+}

@@ -30,6 +30,8 @@ type Server struct {
 	store *Store
 	log   *slog.Logger
 	mux   *http.ServeMux
+	// defaultModel is the model of a task created without one.
+	defaultModel string
 
 	mu      sync.Mutex
 	streams map[protocol.DaemonID]*commandStream
@@ -48,14 +50,17 @@ type commandStream struct {
 	replaced chan struct{}
 }
 
-func New(store *Store, log *slog.Logger) *Server {
+// New returns a server over store. defaultModel is the model of a task
+// created without one (docs/adr/2026-10-07-task-interface.md).
+func New(store *Store, log *slog.Logger, defaultModel string) *Server {
 	s := &Server{
-		store:    store,
-		log:      log,
-		mux:      http.NewServeMux(),
-		streams:  make(map[protocol.DaemonID]*commandStream),
-		ended:    make(chan struct{}),
-		watchers: watchers{byTask: make(map[protocol.TaskID]map[chan struct{}]struct{})},
+		store:        store,
+		log:          log,
+		defaultModel: defaultModel,
+		mux:          http.NewServeMux(),
+		streams:      make(map[protocol.DaemonID]*commandStream),
+		ended:        make(chan struct{}),
+		watchers:     watchers{byTask: make(map[protocol.TaskID]map[chan struct{}]struct{})},
 	}
 	s.mux.HandleFunc("POST /v1/daemons/{daemon}/events", s.postEvents)
 	s.mux.HandleFunc("GET /v1/daemons/{daemon}/acks", s.getAcks)
