@@ -138,6 +138,19 @@ func seeDaemon(ctx context.Context, tx *sql.Tx, daemon protocol.DaemonID, harnes
 	return nil
 }
 
+// recordSeen records that daemon made a request now.
+func (s *Store) recordSeen(ctx context.Context, daemon protocol.DaemonID) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("record daemon %q: %w", daemon, err)
+	}
+	defer tx.Rollback()
+	if err := seeDaemon(ctx, tx, daemon, nil); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
 // heldSeqColumn is the highest seq up to which the server holds every
 // event of task t: the end of the contiguous prefix starting at 1, or 0.
 // That is the lowest stored seq whose successor is missing, provided seq
