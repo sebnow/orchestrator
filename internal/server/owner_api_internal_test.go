@@ -231,3 +231,79 @@ func TestGivenTaskWithoutModelWhenCreatingThenTheDefaultModelIsSent(t *testing.T
 		}
 	}
 }
+
+func getJSON(t *testing.T, url string, into any) {
+	t.Helper()
+	status, body := doRequest(t, http.MethodGet, url, "")
+	if status != http.StatusOK {
+		t.Fatalf("GET %s: status = %d (%s), want 200", url, status, body)
+	}
+	if err := json.Unmarshal([]byte(body), into); err != nil {
+		t.Fatalf("decode %q: %v", body, err)
+	}
+}
+
+func TestGivenNoTasksWhenListingThenTheListIsEmpty(t *testing.T) {
+	srv := startTestServer(t)
+
+	status, body := doRequest(t, http.MethodGet, srv.url+"/v1/tasks", "")
+
+	if status != http.StatusOK || body != "[]\n" {
+		t.Errorf("status = %d, body = %q; want 200 and []", status, body)
+	}
+}
+
+func TestGivenRunningTaskWhenListingAndGettingItThenItsStateActivityAndCostAreShown(t *testing.T) {
+	srv := startTestServer(t)
+	doRequest(t, http.MethodGet, srv.url+"/v1/daemons/laptop/acks", "")
+	first := postForCommand(t, srv.url+"/v1/tasks", startTaskBody)
+	second := postForCommand(t, srv.url+"/v1/tasks", `{"daemon_id":"laptop","prompt":"p","pause_limits":{"acknowledge":"1m","cleanup":"5m"}}`)
+	active := time.Now().Add(time.Hour).UTC().Truncate(time.Second)
+	started := event(first.TaskID, 1, `{"pid":1,"model":"haiku","workdir":"/w"}`)
+	started.Kind = protocol.KindHarnessStarted
+	result := event(first.TaskID, 2, `{"type":"result","subtype":"success","total_cost_usd":0.25}`)
+	result.Time = active
+	if status, body := postEvents(t, srv, "laptop", started, result); status != http.StatusOK {
+		t.Fatalf("post events: %d %s", status, body)
+	}
+
+	var list []map[string]any
+	getJSON(t, srv.url+"/v1/tasks", &list)
+	var detail map[string]any
+	getJSON(t, srv.url+"/v1/tasks/"+string(first.TaskID), &detail)
+
+	if len(list) != 2 || list[0]["id"] != string(first.TaskID) || list[1]["id"] != string(second.TaskID) {
+		t.Fatalf("list = %v, want both tasks, oldest first", list)
+	}
+	created := first.Time.Format(time.RFC3339Nano)
+	requireJSONEqual(t, list[0], map[string]any{
+		"id": string(first.TaskID), "daemon_id": "laptop", "state": "running", "model": "haiku",
+		"created_at": list[0]["created_at"], "last_activity_at": active.Format(time.RFC3339Nano), "cost_usd": 0.25,
+	})
+	if got, _ := time.Parse(time.RFC3339Nano, list[0]["created_at"].(string)); got.After(first.Time) || first.Time.Sub(got) > time.Second {
+		t.Errorf("created_at = %v, want just before the start_task at %s", list[0]["created_at"], created)
+	}
+	if list[1]["state"] != "pending" || list[1]["model"] != testDefaultModel || list[1]["cost_usd"] != 0.0 {
+		t.Errorf("second task = %v", list[1])
+	}
+	requireJSONEqual(t, detail, map[string]any{
+		"id": string(first.TaskID), "daemon_id": "laptop", "state": "running", "model": "haiku",
+		"created_at": list[0]["created_at"], "last_activity_at": active.Format(time.RFC3339Nano), "cost_usd": 0.25,
+		"start": map[string]any{
+			"prompt": "count to three", "system_prompt": "be brief",
+			"workspace":    map[string]any{"repo": "https://example.com/o/r.git", "ref": "main"},
+			"model":        "haiku",
+			"pause_limits": map[string]any{"acknowledge": "1m0s", "cleanup": "5m0s"},
+		},
+	})
+}
+
+func TestGivenUnknownTaskWhenGettingItThenNotFound(t *testing.T) {
+	srv := startTestServer(t)
+
+	status, body := doRequest(t, http.MethodGet, srv.url+"/v1/tasks/ghost", "")
+
+	if status != http.StatusNotFound {
+		t.Errorf("status = %d (%s), want 404", status, body)
+	}
+}

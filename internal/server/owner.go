@@ -176,3 +176,32 @@ func decodeStrict(r io.Reader, into any) error {
 	decoder.DisallowUnknownFields()
 	return decoder.Decode(into)
 }
+
+// getTasks lists every task's summary, oldest first.
+func (s *Server) getTasks(w http.ResponseWriter, r *http.Request) {
+	tasks, err := s.store.tasks(r.Context())
+	if err != nil {
+		s.internalError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, tasks)
+}
+
+// getTask returns one task's summary and what it was started with.
+func (s *Server) getTask(w http.ResponseWriter, r *http.Request) {
+	task, err := protocol.ParseTaskID(r.PathValue("task"))
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	detail, err := s.store.task(r.Context(), task)
+	if errors.Is(err, errUnknownTask) {
+		http.Error(w, err.Error(), http.StatusNotFound)
+		return
+	}
+	if err != nil {
+		s.internalError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, detail)
+}

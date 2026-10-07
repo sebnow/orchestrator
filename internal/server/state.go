@@ -1,10 +1,13 @@
 package server
 
 import (
+	"cmp"
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"slices"
 	"time"
 
 	"github.com/sebnow/orchestrator/internal/protocol"
@@ -161,4 +164,91 @@ func stopIssued(ctx context.Context, tx *sql.Tx, task protocol.TaskID) (bool, er
 		return false, fmt.Errorf("look up stop of task %q: %w", task, err)
 	}
 	return issued, nil
+}
+
+// taskSummary is a task as the task list shows it.
+type taskSummary struct {
+	ID             protocol.TaskID   `json:"id"`
+	DaemonID       protocol.DaemonID `json:"daemon_id"`
+	State          TaskState         `json:"state"`
+	Model          string            `json:"model"`
+	CreatedAt      time.Time         `json:"created_at"`
+	LastActivityAt time.Time         `json:"last_activity_at"`
+	CostUSD        float64           `json:"cost_usd"`
+}
+
+// taskDetail is one task: its summary and what it was started with.
+type taskDetail struct {
+	taskSummary
+	Start protocol.StartTask `json:"start"`
+}
+
+const summaryColumns = `id, daemon_id, state, model, created_at, last_activity_at, cost_usd`
+
+// scanSummary reads summaryColumns, followed by extra destinations.
+func scanSummary(row interface{ Scan(...any) error }, extra ...any) (taskSummary, error) {
+	var summary taskSummary
+	var id, daemon, state, created, lastActivity string
+	dest := append([]any{&id, &daemon, &state, &summary.Model, &created, &lastActivity, &summary.CostUSD}, extra...)
+	if err := row.Scan(dest...); err != nil {
+		return taskSummary{}, err
+	}
+	summary.ID, summary.DaemonID, summary.State = protocol.TaskID(id), protocol.DaemonID(daemon), TaskState(state)
+	var err error
+	if summary.CreatedAt, err = parseTime(created); err != nil {
+		return taskSummary{}, fmt.Errorf("task %q created_at: %w", id, err)
+	}
+	if summary.LastActivityAt, err = parseTime(lastActivity); err != nil {
+		return taskSummary{}, fmt.Errorf("task %q last_activity_at: %w", id, err)
+	}
+	return summary, nil
+}
+
+// tasks returns every task's summary, oldest first.
+func (s *Store) tasks(ctx context.Context) ([]taskSummary, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT `+summaryColumns+` FROM tasks`)
+	if err != nil {
+		return nil, fmt.Errorf("read tasks: %w", err)
+	}
+	defer rows.Close()
+	summaries := []taskSummary{}
+	for rows.Next() {
+		summary, err := scanSummary(rows)
+		if err != nil {
+			return nil, fmt.Errorf("read tasks: %w", err)
+		}
+		summaries = append(summaries, summary)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("read tasks: %w", err)
+	}
+	// Stored times trim trailing zeros, so they do not sort as text.
+	slices.SortFunc(summaries, func(a, b taskSummary) int {
+		return cmp.Or(a.CreatedAt.Compare(b.CreatedAt), cmp.Compare(a.ID, b.ID))
+	})
+	return summaries, nil
+}
+
+// task returns one task, or errUnknownTask.
+func (s *Store) task(ctx context.Context, task protocol.TaskID) (taskDetail, error) {
+	var detail taskDetail
+	var repo, ref sql.NullString
+	var acknowledge, cleanup int64
+	row := s.db.QueryRowContext(ctx, `
+		SELECT `+summaryColumns+`, prompt, system_prompt, workspace_repo, workspace_ref, pause_acknowledge_ns, pause_cleanup_ns
+		FROM tasks WHERE id = ?`, string(task))
+	summary, err := scanSummary(row, &detail.Start.Prompt, &detail.Start.SystemPrompt, &repo, &ref, &acknowledge, &cleanup)
+	if errors.Is(err, sql.ErrNoRows) {
+		return taskDetail{}, fmt.Errorf("%w: %q", errUnknownTask, task)
+	}
+	if err != nil {
+		return taskDetail{}, fmt.Errorf("read task %q: %w", task, err)
+	}
+	detail.taskSummary = summary
+	detail.Start.Model = summary.Model
+	if repo.Valid {
+		detail.Start.Workspace = &protocol.Workspace{Repo: repo.String, Ref: ref.String}
+	}
+	detail.Start.PauseLimits = protocol.PauseLimits{Acknowledge: time.Duration(acknowledge), Cleanup: time.Duration(cleanup)}
+	return detail, nil
 }

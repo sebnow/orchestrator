@@ -65,7 +65,9 @@ func New(store *Store, log *slog.Logger, defaultModel string) *Server {
 	s.mux.HandleFunc("POST /v1/daemons/{daemon}/events", s.postEvents)
 	s.mux.HandleFunc("GET /v1/daemons/{daemon}/acks", s.getAcks)
 	s.mux.HandleFunc("GET /v1/daemons/{daemon}/commands", s.streamCommands)
+	s.mux.HandleFunc("GET /v1/tasks", s.getTasks)
 	s.mux.HandleFunc("POST /v1/tasks", s.postTask)
+	s.mux.HandleFunc("GET /v1/tasks/{task}", s.getTask)
 	s.mux.HandleFunc("POST /v1/tasks/{task}/commands", s.postCommand)
 	s.mux.HandleFunc("GET /v1/tasks/{task}/events", s.getEvents)
 	return s
