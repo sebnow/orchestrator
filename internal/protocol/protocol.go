@@ -1,0 +1,126 @@
+// Package protocol defines the harness-neutral records a daemon keeps per
+// task and will send to the server: the event envelope and the control
+// events the daemon originates (docs/adr/2026-10-07-client-protocol.md).
+//
+// Harness output travels as an opaque payload tagged with the harness name
+// and version; nothing here depends on a particular harness.
+package protocol
+
+import (
+	"encoding/json"
+	"errors"
+	"fmt"
+	"time"
+)
+
+// TaskID names a task. It appears in file names and URL paths, so it is
+// limited to ASCII letters, digits, '.', '_' and '-', and is never "." or
+// "..".
+type TaskID string
+
+const maxTaskIDLength = 128
+
+var ErrInvalidTaskID = errors.New("invalid task id")
+
+func ParseTaskID(raw string) (TaskID, error) {
+	if raw == "" || raw == "." || raw == ".." || len(raw) > maxTaskIDLength {
+		return "", fmt.Errorf("%w: %q", ErrInvalidTaskID, raw)
+	}
+	for _, r := range raw {
+		valid := r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || r == '.' || r == '_' || r == '-'
+		if !valid {
+			return "", fmt.Errorf("%w: %q", ErrInvalidTaskID, raw)
+		}
+	}
+	return TaskID(raw), nil
+}
+
+// Kind says what an event's payload holds.
+type Kind string
+
+const (
+	// KindHarnessOutput: one line the harness wrote, verbatim. The payload
+	// is the line itself when it is JSON, otherwise the line as a JSON
+	// string.
+	KindHarnessOutput Kind = "harness_output"
+	// KindHarnessStarted: HarnessStarted.
+	KindHarnessStarted Kind = "harness_started"
+	// KindHarnessExited: HarnessExited.
+	KindHarnessExited Kind = "harness_exited"
+	// KindPermissionRequested: PermissionRequested.
+	KindPermissionRequested Kind = "permission_requested"
+	// KindPauseAcknowledged: PauseAcknowledged.
+	KindPauseAcknowledged Kind = "pause_acknowledged"
+	// KindQuotaObserved: QuotaObserved.
+	KindQuotaObserved Kind = "quota_observed"
+)
+
+// Harness identifies the harness that produced a task's events.
+type Harness struct {
+	Name    string `json:"name"`
+	Version string `json:"version"`
+}
+
+// Event is one record in a task's stream. Seq starts at 1 and increases by
+// one per event of the task, and the daemon journals the event before it
+// acts on it.
+type Event struct {
+	TaskID  TaskID          `json:"task_id"`
+	Seq     uint64          `json:"seq"`
+	Kind    Kind            `json:"kind"`
+	Harness Harness         `json:"harness"`
+	Time    time.Time       `json:"time"`
+	Payload json.RawMessage `json:"payload"`
+}
+
+type HarnessStarted struct {
+	PID     int    `json:"pid"`
+	Model   string `json:"model"`
+	Workdir string `json:"workdir"`
+}
+
+// HarnessExited ends a task's stream. ExitCode is -1 when the process
+// never started or was killed by a signal; Error then says why. Stderr is
+// the end of what the harness wrote to stderr.
+type HarnessExited struct {
+	ExitCode int    `json:"exit_code"`
+	Error    string `json:"error,omitempty"`
+	Stderr   string `json:"stderr,omitempty"`
+}
+
+// PermissionRequested is the harness asking whether it may run a tool.
+// The request waits until AnswerPermission names RequestID.
+type PermissionRequested struct {
+	RequestID string          `json:"request_id"`
+	Tool      string          `json:"tool"`
+	Input     json.RawMessage `json:"input"`
+}
+
+// PauseAcknowledged carries the agent's stop note: its own account of
+// where it stopped.
+type PauseAcknowledged struct {
+	Note string `json:"note"`
+}
+
+type QuotaStatus string
+
+const (
+	QuotaAllowed  QuotaStatus = "allowed"
+	QuotaWarning  QuotaStatus = "warning"
+	QuotaRejected QuotaStatus = "rejected"
+	QuotaUnknown  QuotaStatus = "unknown"
+)
+
+// QuotaObserved is the harness reporting the subscription's usage limits.
+type QuotaObserved struct {
+	Status  QuotaStatus   `json:"status"`
+	Windows []QuotaWindow `json:"windows"`
+}
+
+// QuotaWindow is one usage-limit window, such as "five_hour".
+type QuotaWindow struct {
+	Name string `json:"name"`
+	// Utilization is the fraction of the window used, from 0 to 1.
+	Utilization float64   `json:"utilization"`
+	ResetsAt    time.Time `json:"resets_at"`
+}
