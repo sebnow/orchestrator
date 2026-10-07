@@ -15,6 +15,12 @@ installed on the host:
 Module path: `github.com/sebnow/orchestrator`. Binaries live under `cmd/`
 (`cmd/server`, `cmd/daemon`). Create a package only when it has code.
 
+`nix develop -c go test ./...` runs offline. The live tests, behind the
+`live` build tag, run the real `claude` on `PATH` under the owner's login
+and spend subscription quota:
+
+    nix develop -c go test -tags live ./...
+
 ## Version control
 
 The repository uses [jujutsu](https://jj-vcs.github.io/). Commit messages
