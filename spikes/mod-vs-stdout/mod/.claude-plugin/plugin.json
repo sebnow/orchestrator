@@ -1,0 +1,5 @@
+{
+  "name": "spike-probe",
+  "version": "0.1.0",
+  "description": "Reports every hook event to a local HTTP receiver and takes permission, abort and submit commands from it."
+}

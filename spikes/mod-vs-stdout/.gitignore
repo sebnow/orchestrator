@@ -1,0 +1,7 @@
+# Claude Code debug logs: large and not reviewed for secrets.
+runs/*/debug.log
+runs/*/latest
+# Written by Claude Code each time it loads the mod.
+mod/tsconfig.json
+mod/.claude-plugin/types/
+__pycache__/
