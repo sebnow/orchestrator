@@ -2,6 +2,7 @@ package server
 
 import (
 	"bytes"
+	"context"
 	"crypto/rand"
 	"encoding/json"
 	"errors"
@@ -47,12 +48,7 @@ func (s *Server) postTask(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
-	if request.Model == "" {
-		request.Model = s.defaultModel
-	}
-	// rand.Text uses only letters and digits, so the id is always valid.
-	task := protocol.TaskID(rand.Text())
-	command, err := s.createTask(r.Context(), daemon, task, request.StartTask)
+	command, err := s.startTask(r.Context(), daemon, request.StartTask)
 	if errors.Is(err, errUnknownDaemon) {
 		http.Error(w, err.Error()+": it has not connected yet", http.StatusUnprocessableEntity)
 		return
@@ -62,6 +58,16 @@ func (s *Server) postTask(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusCreated, command)
+}
+
+// startTask creates a task on daemon under a new id, with the default
+// model when start names none, and returns its start_task command.
+func (s *Server) startTask(ctx context.Context, daemon protocol.DaemonID, start protocol.StartTask) (protocol.Command, error) {
+	if start.Model == "" {
+		start.Model = s.defaultModel
+	}
+	// rand.Text uses only letters and digits, so the id is always valid.
+	return s.createTask(ctx, daemon, protocol.TaskID(rand.Text()), start)
 }
 
 func validateStart(start protocol.StartTask) error {
