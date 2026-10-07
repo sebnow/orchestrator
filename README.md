@@ -21,6 +21,70 @@ and spend subscription quota:
 
     nix develop -c go test -tags live ./...
 
+## Running
+
+The server stores daemons, tasks and their events, and serves the GUI.
+The daemon runs the tasks with Claude Code, so `claude` must be
+installed and logged in for the user who starts it. Run both on the
+same machine: build them from the repository root, start the server,
+then start the daemon in a second terminal.
+
+    nix develop -c go build ./cmd/server
+    nix develop -c go build ./cmd/daemon
+    mkdir -p ~/.local/state/orchestrator
+    ./server -db ~/.local/state/orchestrator/server.db
+    ./daemon -server http://127.0.0.1:8080 -id laptop \
+        -state-dir ~/.local/state/orchestrator/daemon
+
+The paths are examples; use any writable location.
+
+Then open http://127.0.0.1:8080/ in a browser, or the address given to
+`-listen`. The dashboard lists the tasks that need attention, every
+task, and the connected daemons, and has the form that starts a task:
+its prompt, an optional repository and ref, the model, the daemon to
+run it on, and its pause limits. Each task page shows the transcript,
+asks for permission when the agent wants to run a tool, and has buttons
+to pause, resume, interrupt or stop the task.
+
+Server flags:
+
+- `-db` (required): the SQLite database file, created when missing; its
+  directory must exist. It holds every daemon, task, event and command.
+- `-listen`: the address to serve on, `127.0.0.1:8080` by default.
+- `-default-model`: the model of a task started without one, `haiku`
+  by default.
+
+Daemon flags:
+
+- `-server` (required): the server's base URL.
+- `-id` (required): the daemon's name, made of letters, digits, `.`,
+  `_` and `-`. The new-task form offers daemons by this name.
+- `-state-dir` (required): created when missing. It holds `state.json`,
+  one journal per task under `journal/`, and each task's working
+  directory under `workspaces/<task>/`.
+- `-claude`: the `claude` executable, `claude` on `PATH` by default.
+  The daemon runs `claude --version` when it starts and exits if that
+  fails. Tasks use the Claude Code login of the OS user who starts the
+  daemon and spend that account's quota.
+
+Without a repository, a task starts in an empty directory. With one, it
+starts in a clone checked out at the ref. git clones without the user's
+or the system's git configuration, so its credential helpers and URL
+rewrites are not used; give a public repository by its https URL.
+
+Between turns a task stays `running`, waiting for a follow-up prompt.
+It ends as `stopped` when stopped from its page, and as `finished` when
+the daemon shuts down.
+
+SIGINT or SIGTERM shuts either program down. The daemon ends its tasks
+first; a second signal makes it exit at once. A daemon started again
+with the same `-state-dir` marks as `failed` every task its previous
+run did not end.
+
+Neither program authenticates requests, so anyone who can reach the
+server can start tasks that run commands on the daemon's machine. Keep
+`-listen` on a loopback address.
+
 ## Version control
 
 The repository uses [jujutsu](https://jj-vcs.github.io/). Commit messages
