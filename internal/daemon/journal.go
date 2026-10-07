@@ -4,10 +4,12 @@
 package daemon
 
 import (
+	"bufio"
 	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -23,7 +25,11 @@ var ErrTaskExists = errors.New("task already has a journal")
 
 // JournalPath returns where the journal of task lives under stateDir.
 func JournalPath(stateDir string, task protocol.TaskID) string {
-	return filepath.Join(stateDir, "journal", string(task)+".jsonl")
+	return filepath.Join(journalDir(stateDir), string(task)+".jsonl")
+}
+
+func journalDir(stateDir string) string {
+	return filepath.Join(stateDir, "journal")
 }
 
 // journal appends one task's events to its JSONL file and assigns their
@@ -115,4 +121,69 @@ func (j *journal) close() error {
 		j.err = fmt.Errorf("journal %s closed", j.task)
 	}
 	return j.file.Close()
+}
+
+// journalEnd describes the last complete event of a journal.
+type journalEnd struct {
+	seq     uint64
+	harness protocol.Harness
+	// exited is true when the last event is harness_exited, which ends the
+	// task's stream.
+	exited bool
+	// size is the length of the complete lines, in bytes.
+	size int64
+}
+
+// scanJournal reads the complete lines of the journal at path. A last line
+// without its newline is a write the daemon did not finish; it is not
+// counted. A complete line that is not an event, or a seq out of order,
+// is an error.
+func scanJournal(path string) (journalEnd, error) {
+	file, err := os.Open(path)
+	if err != nil {
+		return journalEnd{}, err
+	}
+	defer file.Close()
+	var end journalEnd
+	reader := bufio.NewReader(file)
+	for {
+		line, err := reader.ReadBytes('\n')
+		if errors.Is(err, io.EOF) {
+			return end, nil
+		}
+		if err != nil {
+			return journalEnd{}, fmt.Errorf("read journal %s: %w", path, err)
+		}
+		var event protocol.Event
+		if err := json.Unmarshal(line, &event); err != nil {
+			return journalEnd{}, fmt.Errorf("journal %s at byte %d: %w", path, end.size, err)
+		}
+		if event.Seq != end.seq+1 {
+			return journalEnd{}, fmt.Errorf("journal %s at byte %d: seq %d follows %d", path, end.size, event.Seq, end.seq)
+		}
+		end = journalEnd{seq: event.Seq, harness: event.Harness, exited: event.Kind == protocol.KindHarnessExited, size: end.size + int64(len(line))}
+	}
+}
+
+// reopenJournal opens task's existing journal to append after its last
+// complete event, cutting off a torn last line. Appended events carry the
+// harness of the last event, or fallback when the journal is empty.
+func reopenJournal(stateDir string, task protocol.TaskID, fallback protocol.Harness) (*journal, journalEnd, error) {
+	path := JournalPath(stateDir, task)
+	end, err := scanJournal(path)
+	if err != nil {
+		return nil, journalEnd{}, err
+	}
+	if err := os.Truncate(path, end.size); err != nil {
+		return nil, journalEnd{}, fmt.Errorf("cut torn line from journal %s: %w", path, err)
+	}
+	file, err := os.OpenFile(path, os.O_WRONLY|os.O_APPEND, 0o600)
+	if err != nil {
+		return nil, journalEnd{}, fmt.Errorf("open journal: %w", err)
+	}
+	harness := end.harness
+	if end.seq == 0 {
+		harness = fallback
+	}
+	return &journal{task: task, harness: harness, file: file, seq: end.seq}, end, nil
 }
