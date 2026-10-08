@@ -153,15 +153,22 @@ define their shape.
   the tag.
 - The server binary contains Claude Code-specific parsing. Server code
   outside the harness package must use only the neutral types.
-- The daemon's harness control relies on undocumented or unconfirmed parts
-  of stream-json: `rate_limit_event` is undocumented
+- The daemon's harness control relies on parts of stream-json known from
+  observation: `rate_limit_event` is undocumented
   ([harness integration](2026-10-07-harness-integration.md)), and the
-  `user_message_uuid` echo is **UNVERIFIED**
-  ([graceful pause](2026-10-07-graceful-pause.md)).
+  `user_message_uuid` echo ([graceful pause](2026-10-07-graceful-pause.md))
+  was seen in the daemon's live runs, where Claude Code 2.1.289 echoed
+  the uuid of each stdin prompt
+  ([daemon live findings](../design/2026-10-07-daemon-live-findings.md),
+  "The `user_message_uuid` echo").
 - A task waiting on a permission answer keeps its harness process alive
-  until the answer arrives. **UNVERIFIED:** that Claude Code applies no
-  timeout of its own to `--permission-prompt-tool`; waiting indefinitely
-  relies on it.
+  until the answer arrives. Waiting indefinitely relies on Claude Code
+  applying no timeout of its own to `--permission-prompt-tool`. In a
+  live run, Claude Code 2.1.289 held a permission request unanswered
+  for six minutes and completed the turn once it was answered, with the
+  gateway's per-server MCP `timeout` set to about 28 hours
+  ([marker verification](../design/2026-10-08-marker-verification.md));
+  no longer wait was tried.
 - At-least-once delivery requires a command's id to stay the same across
   resends, and the daemon to deduplicate by it.
 - A daemon restart differs from a dropped connection: the harness exits
