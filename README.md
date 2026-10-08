@@ -180,10 +180,13 @@ Daemon flags:
 ### Tasks
 
 Without a repository, a task starts in an empty directory. With one, it
-starts in a clone checked out at the ref. The repository must be a
-public one given by its `https://` URL; the daemon refuses any other.
-git clones without the user's or the system's git configuration, so its
-credential helpers and URL rewrites are not used.
+starts in a clone checked out at the ref. The daemon accepts only a
+repository given as an `https://` URL with a host, so an ssh URL or a
+local path fails the task, as does a ref that starts with `-`. `git`
+runs with credential prompts off and ignores the user's and the
+system's git configuration, credential helpers and URL rewrites
+included, so a repository that needs credentials fails to clone and
+the task fails.
 
 Each turn of a task runs in its own `claude` process, which exits when
 the turn ends. The task is then `finished`, `paused` if the owner paused
