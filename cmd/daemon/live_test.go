@@ -308,7 +308,9 @@ func startLiveSystem(t *testing.T) liveSystem {
 	bin := buildBinaries(t)
 	sys := liveSystem{server: startServer(t, bin), invocations: filepath.Join(t.TempDir(), "invocations.log"), answered: map[string]bool{}}
 	wrapper := filepath.Join(bin, "claude-counting")
-	script := "#!/bin/sh\necho \"$*\" >> '" + sys.invocations + "'\nexec claude \"$@\"\n"
+	// Only the first argument is logged: the others include the system
+	// prompt, whose line breaks would count as further invocations.
+	script := "#!/bin/sh\nprintf '%s\\n' \"$1\" >> '" + sys.invocations + "'\nexec claude \"$@\"\n"
 	if err := os.WriteFile(wrapper, []byte(script), 0o700); err != nil {
 		t.Fatal(err)
 	}
