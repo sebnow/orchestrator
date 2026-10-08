@@ -151,6 +151,19 @@ func TestGivenTaskCutShortByADaemonShutdownWhenShownThenItIsPausedForTheOwnerWit
 	requireContains(t, dashboard, `<span class="reason">paused: the daemon stopped during its turn</span>`)
 }
 
+func TestGivenTaskWhoseTurnTheOwnersInterruptCutShortWhenShownThenItIsPausedWithTheInterruptAsTheReason(t *testing.T) {
+	srv := startTestServer(t)
+	task := taskCutShortByTheDaemon(t, srv, exitInterrupted)
+
+	page := getPage(t, srv.url+"/tasks/"+string(task))
+	dashboard := getPage(t, srv.url+"/")
+
+	requireContains(t, page, `<span class="badge state-paused">paused</span>`, resumeButton,
+		"The owner interrupted the turn; the task is paused", "Resume continues its session.")
+	requireLacks(t, page, "Harness exited with code -1", "The daemon")
+	requireContains(t, dashboard, `<span class="reason">paused: interrupted by the owner</span>`)
+}
+
 func TestGivenTaskCutShortBeforeItReportedASessionWhenShownThenItSaysResumeStartsANewSession(t *testing.T) {
 	srv := startTestServer(t)
 	task := taskCutShortByTheDaemon(t, srv, exitRestartedNoSession)

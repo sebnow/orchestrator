@@ -108,9 +108,10 @@ func (s TaskState) afterCommand(kind protocol.CommandKind) TaskState {
 // was issued before the pause settled, the task resumes right after. A
 // clean exit leaves a paused or yielded task so; a pause that had not
 // settled when the process exited did not take effect, and the task is
-// finished. An exit that says the daemon cut the turn short, by
-// restarting or by shutting down, pauses a task with a process for the
-// owner to resume (docs/adr/2026-10-08-shutdown-recovery.md), and leaves
+// finished. An exit that says the turn was cut short, by the daemon
+// restarting or shutting down or by the owner's interrupt, pauses a task
+// with a process for the owner to resume
+// (docs/adr/2026-10-08-shutdown-recovery.md), and leaves
 // a task between processes as it is. A process started after a clean
 // exit makes the task running again.
 func (s TaskState) afterEvent(event protocol.Event, stopIssued bool, pausedBy pauseOrigin) TaskState {
@@ -163,9 +164,19 @@ const (
 	exitStoppedNoSession   = "daemon stopped during the turn, before the harness reported a session"
 )
 
-// cutShortOf reports whether exit is a turn the daemon cut short and left
-// resumable: by is "restarted" or "stopped" when it is, and empty
-// otherwise. newSession says whether resuming starts a new harness
+// The errors a daemon gives in harness_exited when the owner's interrupt
+// cut the task's turn short and the task can be resumed, continuing its
+// harness session or starting a new one
+// (docs/design/2026-10-08-interrupt-findings.md). internal/daemon words
+// them the same.
+const (
+	exitInterrupted          = "interrupted by the owner"
+	exitInterruptedNoSession = "interrupted by the owner, before the harness reported a session"
+)
+
+// cutShortOf reports whether exit is a turn cut short and left resumable,
+// by the daemon or by the owner's interrupt: by is "restarted", "stopped"
+// or "interrupted" when it is, and empty otherwise. newSession says whether resuming starts a new harness
 // session.
 func cutShortOf(exit protocol.HarnessExited) (by string, newSession bool) {
 	if exit.ExitCode != -1 {
@@ -180,6 +191,10 @@ func cutShortOf(exit protocol.HarnessExited) (by string, newSession bool) {
 		return "stopped", false
 	case exitStoppedNoSession:
 		return "stopped", true
+	case exitInterrupted:
+		return "interrupted", false
+	case exitInterruptedNoSession:
+		return "interrupted", true
 	}
 	return "", false
 }

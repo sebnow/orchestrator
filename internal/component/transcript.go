@@ -105,6 +105,9 @@ func TranscriptEntry(entry transcript.Entry) html.Node {
 				next = "No session was recorded, so Resume starts a new session with the task's first prompt."
 			}
 			label = "The daemon " + b.CutShortBy + " during the turn; the task is paused"
+			if b.CutShortBy == "interrupted" {
+				label = "The owner interrupted the turn; the task is paused"
+			}
 			body = html.Fragment(paragraph(next), stderr(b.Stderr))
 		}
 	case transcript.MessageSent:
