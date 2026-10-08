@@ -45,7 +45,7 @@ func startServer(t *testing.T) *serverFixture {
 	if err != nil {
 		t.Fatal(err)
 	}
-	srv := server.New(store, slog.New(slog.DiscardHandler), "haiku")
+	srv := server.New(store, slog.New(slog.DiscardHandler), server.Options{DefaultModel: "haiku", Insecure: true})
 	f := &serverFixture{}
 	httpServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if strings.HasPrefix(r.URL.Path, "/v1/daemons/") {

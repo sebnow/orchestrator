@@ -94,7 +94,7 @@ func serve(args []string, stderr io.Writer) int {
 	}
 	defer store.Close()
 
-	srv := server.New(store, log, *defaultModel)
+	srv := server.New(store, log, server.Options{DefaultModel: *defaultModel, Insecure: true})
 	httpServer := &http.Server{
 		Handler: srv,
 		// No write timeout: command streams stay open indefinitely.

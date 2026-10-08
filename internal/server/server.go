@@ -13,6 +13,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/sebnow/orchestrator/internal/component"
+	"github.com/sebnow/orchestrator/internal/pki"
 	"github.com/sebnow/orchestrator/internal/protocol"
 )
 
@@ -33,6 +35,8 @@ type Server struct {
 	mux   *http.ServeMux
 	// defaultModel is the model of a task created without one.
 	defaultModel string
+	// insecure serves every route without authentication.
+	insecure bool
 
 	mu      sync.Mutex
 	streams map[protocol.DaemonID]*commandStream
@@ -51,28 +55,67 @@ type commandStream struct {
 	replaced chan struct{}
 }
 
-// New returns a server over store. defaultModel is the model of a task
-// created without one (docs/adr/2026-10-07-task-interface.md).
-func New(store *Store, log *slog.Logger, defaultModel string) *Server {
+// Options configure a Server.
+type Options struct {
+	// DefaultModel is the model of a task created without one
+	// (docs/adr/2026-10-07-task-interface.md).
+	DefaultModel string
+	// Insecure serves every route without authentication, for a server
+	// that listens on loopback without TLS. Otherwise a daemon route
+	// needs the daemon's verified client certificate
+	// (docs/adr/2026-10-08-daemon-authentication.md).
+	Insecure bool
+}
+
+// New returns a server over store.
+func New(store *Store, log *slog.Logger, options Options) *Server {
 	s := &Server{
 		store:        store,
 		log:          log,
-		defaultModel: defaultModel,
+		defaultModel: options.DefaultModel,
+		insecure:     options.Insecure,
 		mux:          http.NewServeMux(),
 		streams:      make(map[protocol.DaemonID]*commandStream),
 		ended:        make(chan struct{}),
 		watchers:     watchers{byTask: make(map[protocol.TaskID]map[chan struct{}]struct{})},
 	}
-	s.mux.HandleFunc("POST /v1/daemons/{daemon}/events", s.postEvents)
-	s.mux.HandleFunc("GET /v1/daemons/{daemon}/acks", s.getAcks)
-	s.mux.HandleFunc("GET /v1/daemons/{daemon}/commands", s.streamCommands)
-	s.mux.HandleFunc("GET /v1/tasks", s.getTasks)
-	s.mux.HandleFunc("POST /v1/tasks", s.postTask)
-	s.mux.HandleFunc("GET /v1/tasks/{task}", s.getTask)
-	s.mux.HandleFunc("POST /v1/tasks/{task}/commands", s.postCommand)
-	s.mux.HandleFunc("GET /v1/tasks/{task}/events", s.getEvents)
-	s.routeGUI()
+	s.mux.Handle("POST /v1/daemons/{daemon}/events", s.daemonOnly(s.postEvents))
+	s.mux.Handle("GET /v1/daemons/{daemon}/acks", s.daemonOnly(s.getAcks))
+	s.mux.Handle("GET /v1/daemons/{daemon}/commands", s.daemonOnly(s.streamCommands))
+	s.mux.Handle("GET /static/", http.StripPrefix("/static/", http.FileServerFS(component.Static)))
+
+	// Every other route is the owner's.
+	owner := http.NewServeMux()
+	owner.HandleFunc("GET /v1/tasks", s.getTasks)
+	owner.HandleFunc("POST /v1/tasks", s.postTask)
+	owner.HandleFunc("GET /v1/tasks/{task}", s.getTask)
+	owner.HandleFunc("POST /v1/tasks/{task}/commands", s.postCommand)
+	owner.HandleFunc("GET /v1/tasks/{task}/events", s.getEvents)
+	s.routeGUI(owner)
+	s.mux.Handle("/", owner)
 	return s
+}
+
+// daemonOnly serves next only to the daemon the path names. Unless the
+// server is insecure, the request must carry a client certificate that
+// the TLS handshake verified, or it gets 401, and the certificate's
+// common name must be the path's {daemon}, or it gets 403.
+func (s *Server) daemonOnly(next http.HandlerFunc) http.Handler {
+	if s.insecure {
+		return next
+	}
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.TLS == nil || len(r.TLS.VerifiedChains) == 0 {
+			http.Error(w, "a daemon certificate is required", http.StatusUnauthorized)
+			return
+		}
+		daemon, err := pki.DaemonID(r.TLS.VerifiedChains[0][0])
+		if err != nil || string(daemon) != r.PathValue("daemon") {
+			http.Error(w, fmt.Sprintf("the certificate is not daemon %q's", r.PathValue("daemon")), http.StatusForbidden)
+			return
+		}
+		next(w, r)
+	})
 }
 
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {

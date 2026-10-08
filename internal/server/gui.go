@@ -25,15 +25,14 @@ const (
 // routeGUI serves the owner's GUI: server-rendered pages whose forms POST
 // to the routes below and work with JavaScript off, and which htmx keeps
 // current when it is on.
-func (s *Server) routeGUI() {
-	s.mux.Handle("GET /static/", http.StripPrefix("/static/", http.FileServerFS(component.Static)))
-	s.mux.HandleFunc("GET /{$}", s.getDashboard)
-	s.mux.HandleFunc("POST /tasks", s.postTaskForm)
-	s.mux.HandleFunc("GET /tasks/{task}", s.getTaskPage)
-	s.mux.HandleFunc("POST /tasks/{task}/commands", s.postCommandForm)
-	s.mux.HandleFunc("GET /tasks/{task}/raw", s.getRawPage)
-	s.mux.HandleFunc("GET /tasks/{task}/stream", s.streamTask)
-	s.mux.HandleFunc("GET /tasks/{task}/updates", s.getTaskUpdates)
+func (s *Server) routeGUI(mux *http.ServeMux) {
+	mux.HandleFunc("GET /{$}", s.getDashboard)
+	mux.HandleFunc("POST /tasks", s.postTaskForm)
+	mux.HandleFunc("GET /tasks/{task}", s.getTaskPage)
+	mux.HandleFunc("POST /tasks/{task}/commands", s.postCommandForm)
+	mux.HandleFunc("GET /tasks/{task}/raw", s.getRawPage)
+	mux.HandleFunc("GET /tasks/{task}/stream", s.streamTask)
+	mux.HandleFunc("GET /tasks/{task}/updates", s.getTaskUpdates)
 }
 
 // fromHTMX reports whether htmx made the request, in which case the
