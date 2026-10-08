@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"bytes"
+	"crypto/tls"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -16,6 +17,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sebnow/orchestrator/internal/pki"
 	"github.com/sebnow/orchestrator/internal/protocol"
 	"github.com/sebnow/orchestrator/internal/server"
 )
@@ -24,6 +26,13 @@ import (
 // records the daemon-facing requests and can answer them with 503.
 type serverFixture struct {
 	url *url.URL
+	// owner makes the owner's requests, with token as the bearer token
+	// when it is set.
+	owner *http.Client
+	token string
+	// daemon is the client a daemon reaches the server with; nil means a
+	// default client.
+	daemon *http.Client
 
 	down atomic.Bool
 
@@ -39,15 +48,81 @@ type recordedRequest struct {
 	failed bool
 }
 
+// startServer serves the server over plain HTTP with authentication off,
+// as with -insecure-loopback.
 func startServer(t *testing.T) *serverFixture {
+	t.Helper()
+	f, httpServer := newServerFixture(t, true)
+	httpServer.Start()
+	f.owner = http.DefaultClient
+	f.url = mustParseURL(t, httpServer.URL)
+	return f
+}
+
+// startTLSServer serves the server over TLS with authentication on: the
+// server, the owner and testDaemon each get a certificate or token from
+// the test's own CA and store.
+func startTLSServer(t *testing.T) *serverFixture {
+	t.Helper()
+	f, httpServer := newServerFixture(t, false)
+	ca, err := pki.NewCA()
+	if err != nil {
+		t.Fatal(err)
+	}
+	serverCert := tlsCertificate(t)(ca.IssueServer([]string{"127.0.0.1"}))
+	daemonCert := tlsCertificate(t)(ca.IssueDaemon(testDaemon))
+	httpServer.TLS = pki.ServerConfig(serverCert, ca.Pool())
+	httpServer.EnableHTTP2 = true
+	httpServer.StartTLS()
+	f.owner = &http.Client{Transport: &http.Transport{TLSClientConfig: &tls.Config{RootCAs: ca.Pool()}, ForceAttemptHTTP2: true}}
+	f.daemon = &http.Client{Transport: &http.Transport{TLSClientConfig: pki.ClientConfig(daemonCert, ca.Pool()), ForceAttemptHTTP2: true}}
+	t.Cleanup(f.owner.CloseIdleConnections)
+	t.Cleanup(f.daemon.CloseIdleConnections)
+	f.url = mustParseURL(t, httpServer.URL)
+	return f
+}
+
+// tlsCertificate returns the TLS certificate of what an issuing call
+// returned.
+func tlsCertificate(t *testing.T) func(pki.Issued, error) tls.Certificate {
+	return func(issued pki.Issued, err error) tls.Certificate {
+		t.Helper()
+		if err != nil {
+			t.Fatal(err)
+		}
+		cert, err := issued.Certificate()
+		if err != nil {
+			t.Fatal(err)
+		}
+		return cert
+	}
+}
+
+func mustParseURL(t *testing.T, raw string) *url.URL {
+	t.Helper()
+	parsed, err := url.Parse(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return parsed
+}
+
+// newServerFixture makes the server, and the unstarted HTTP server that
+// fronts it. Unless insecure, the owner's token is issued into f.token.
+func newServerFixture(t *testing.T, insecure bool) (*serverFixture, *httptest.Server) {
 	t.Helper()
 	store, err := server.OpenStore(t.Context(), filepath.Join(t.TempDir(), "server.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	srv := server.New(store, slog.New(slog.DiscardHandler), server.Options{DefaultModel: "haiku", Insecure: true})
+	srv := server.New(store, slog.New(slog.DiscardHandler), server.Options{DefaultModel: "haiku", Insecure: insecure})
 	f := &serverFixture{}
-	httpServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	if !insecure {
+		if f.token, err = store.IssueOwnerToken(t.Context()); err != nil {
+			t.Fatal(err)
+		}
+	}
+	httpServer := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if strings.HasPrefix(r.URL.Path, "/v1/daemons/") {
 			body, _ := io.ReadAll(r.Body)
 			r.Body = io.NopCloser(bytes.NewReader(body))
@@ -68,11 +143,7 @@ func startServer(t *testing.T) *serverFixture {
 		httpServer.Close()
 		store.Close()
 	})
-	f.url, err = url.Parse(httpServer.URL)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return f
+	return f, httpServer
 }
 
 func (f *serverFixture) recorded() []recordedRequest {
@@ -109,7 +180,10 @@ func (f *serverFixture) try(t *testing.T, method, path string, body any) (int, [
 	if err != nil {
 		t.Fatal(err)
 	}
-	resp, err := http.DefaultClient.Do(req)
+	if f.token != "" {
+		req.Header.Set("Authorization", "Bearer "+f.token)
+	}
+	resp, err := f.owner.Do(req)
 	if err != nil {
 		t.Fatal(err)
 	}

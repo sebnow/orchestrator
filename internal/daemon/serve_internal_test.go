@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"io"
 	"net"
+	"net/http"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -30,6 +31,12 @@ type daemonFixture struct {
 // the test.
 func runDaemon(t *testing.T, server *url.URL, stateDir string) *daemonFixture {
 	t.Helper()
+	return runDaemonWithClient(t, server, stateDir, nil)
+}
+
+// runDaemonWithClient is runDaemon reaching the server with client.
+func runDaemonWithClient(t *testing.T, server *url.URL, stateDir string, client *http.Client) *daemonFixture {
+	t.Helper()
 	ctx, cancel := context.WithCancel(context.Background())
 	f := &daemonFixture{harness: newFakeHarness(), stateDir: stateDir, cancel: cancel, done: make(chan error, 1)}
 	gateway := startTestGateway(t)
@@ -41,6 +48,7 @@ func runDaemon(t *testing.T, server *url.URL, stateDir string) *daemonFixture {
 			Harness:         f.harness,
 			Gateway:         gateway,
 			Log:             testLogger(t),
+			Client:          client,
 			MinBackoff:      5 * time.Millisecond,
 			MaxBackoff:      50 * time.Millisecond,
 			ShutdownTimeout: time.Second,
@@ -171,8 +179,20 @@ func acknowledgePauseThroughGateway(t *testing.T, proc *fakeProcess, note string
 }
 
 func TestGivenConnectedDaemonWhenTheOwnerCreatesPromptsAndPausesATaskThenTheHarnessGetsEachAndTheServerGetsItsEvents(t *testing.T) {
-	srv := startServer(t)
-	d := runDaemon(t, srv.url, t.TempDir())
+	for name, start := range map[string]func(*testing.T) *serverFixture{
+		"plain HTTP without authentication": startServer,
+		"mutual TLS":                        startTLSServer,
+	} {
+		t.Run(name, func(t *testing.T) {
+			srv := start(t)
+			d := runDaemonWithClient(t, srv.url, t.TempDir(), srv.daemon)
+			ownerCreatesPromptsAndPausesATask(t, srv, d)
+		})
+	}
+}
+
+func ownerCreatesPromptsAndPausesATask(t *testing.T, srv *serverFixture, d *daemonFixture) {
+	t.Helper()
 
 	start := srv.createTask(t, testDaemon, protocol.StartTask{Prompt: "Do the work.", Model: "fake-model", PauseLimits: testPauseLimits})
 
