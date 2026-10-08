@@ -107,6 +107,9 @@ type State struct {
 type Task struct {
 	id      protocol.TaskID
 	harness harness.Harness
+	// workdir is where the harness runs; its work is delivered from there
+	// when the process exits.
+	workdir string
 	proc    harness.Process
 	journal *journal
 	observe func(protocol.Event)
@@ -159,6 +162,7 @@ func (d *Daemon) StartTask(ctx context.Context, spec TaskSpec) (*Task, error) {
 func (d *Daemon) start(ctx context.Context, j *journal, spec TaskSpec) (*Task, error) {
 	t := &Task{
 		id:          spec.ID,
+		workdir:     spec.Workdir,
 		harness:     d.harness,
 		journal:     j,
 		observe:     d.observe,
@@ -286,6 +290,13 @@ func (t *Task) run(unregister func()) {
 	if readErr != nil && exit.Error == "" {
 		exit.Error = "read harness output: " + readErr.Error()
 	}
+	// The work is pushed before the exit is journaled, so that the server
+	// holds the push once it holds the end of the turn.
+	delivery, cancel := context.WithTimeout(context.Background(), pushTimeout)
+	if pushed := deliver(delivery, t.workdir, t.id); pushed != nil {
+		t.record(protocol.KindBranchPushed, *pushed)
+	}
+	cancel()
 	exit, cutShort := t.reportCutShort(exit)
 	t.record(protocol.KindHarnessExited, exit)
 	unregister()

@@ -408,8 +408,11 @@ func (s *service) startTask(command protocol.Command) *Task {
 		return s.failStart(task, j, err)
 	}
 	workdir := workspacePath(s.cfg.StateDir, task)
-	if err := prepareWorkspace(s.stopping, workdir, start.Workspace); err != nil {
+	if err := prepareWorkspace(s.stopping, workdir, task, start.Workspace); err != nil {
 		return s.failStart(task, j, fmt.Errorf("prepare workspace: %w", err))
+	}
+	if start.Workspace != nil {
+		start.SystemPrompt = joinPrompts(start.SystemPrompt, deliveryPrompt(task))
 	}
 	// The settings make the task resumable, so they are recorded once its
 	// workspace is ready.
