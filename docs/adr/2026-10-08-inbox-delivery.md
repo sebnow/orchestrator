@@ -127,7 +127,9 @@ it, and the server alone routes by it.
   it.
 - A message waiting for a recipient that then stops or fails is never
   delivered, and its sender is not told. Only a parent learns when its
-  child stops or fails.
+  child stops or fails. Resolved by change `rztyqxsy`: the server tells
+  each such sender in a notice delivered as its next prompt, the way it
+  tells a parent.
 - A child that finishes its turn without calling `send_message` leaves
   its parent waiting until the owner steps in.
 - The server's composed system prompt names the gateway's tools, so
