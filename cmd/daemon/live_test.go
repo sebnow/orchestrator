@@ -30,6 +30,7 @@ import (
 	"time"
 
 	"github.com/sebnow/orchestrator/internal/harness/claude"
+	"github.com/sebnow/orchestrator/internal/pki"
 	"github.com/sebnow/orchestrator/internal/protocol"
 )
 
@@ -86,6 +87,26 @@ func startProcess(t *testing.T, name string, stderr io.Writer, args ...string) *
 		}
 	})
 	return cmd
+}
+
+// daemonCredentials issues the daemon live-daemon a certificate from a
+// new CA and returns the flags that give it to cmd/daemon. The server runs
+// with -insecure-loopback, so the certificate only names the daemon.
+func daemonCredentials(t *testing.T) []string {
+	t.Helper()
+	ca, err := pki.NewCA()
+	if err != nil {
+		t.Fatal(err)
+	}
+	issued, err := ca.IssueDaemon("live-daemon")
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	if err := issued.Write(dir, "daemon"); err != nil {
+		t.Fatal(err)
+	}
+	return []string{"-cert", filepath.Join(dir, "daemon.crt"), "-key", filepath.Join(dir, "daemon.key")}
 }
 
 var serving = regexp.MustCompile(`msg=serving address=(\S+)`)
@@ -204,7 +225,7 @@ func TestLiveGivenServerAndDaemonBinariesWhenTheOwnerRunsAOneTurnTaskThenItsTran
 	server := startServer(t, bin)
 	daemonLogs := &syncBuffer{}
 	startProcess(t, filepath.Join(bin, "daemon"), daemonLogs,
-		"-server", server, "-id", "live-daemon", "-state-dir", t.TempDir())
+		append([]string{"-server", server, "-state-dir", t.TempDir()}, daemonCredentials(t)...)...)
 	t.Cleanup(func() {
 		if t.Failed() {
 			t.Logf("daemon log:\n%s", daemonLogs)
@@ -293,7 +314,7 @@ func startLiveSystem(t *testing.T) liveSystem {
 	}
 	daemonLogs := &syncBuffer{}
 	startProcess(t, filepath.Join(bin, "daemon"), daemonLogs,
-		"-server", sys.server, "-id", "live-daemon", "-state-dir", t.TempDir(), "-claude", wrapper)
+		append([]string{"-server", sys.server, "-state-dir", t.TempDir(), "-claude", wrapper}, daemonCredentials(t)...)...)
 	t.Cleanup(func() {
 		if t.Failed() {
 			t.Logf("daemon log:\n%s", daemonLogs)
