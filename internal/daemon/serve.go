@@ -7,6 +7,7 @@ import (
 	"io/fs"
 	"log/slog"
 	"net/http"
+	"net/mail"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -42,10 +43,29 @@ type Config struct {
 	// ShutdownTimeout bounds stopping the running tasks once ctx ends, and
 	// then bounds sending their last events; zero means 30 s.
 	ShutdownTimeout time.Duration
+	// GitName and GitEmail are the identity an agent's own git commits get
+	// in a task's clone; either empty uses "orchestrator"
+	// <orchestrator@localhost>.
+	GitName, GitEmail string
 
 	// processes finds and kills harness processes; nil uses ps and
 	// signals. Tests set it so that no real process is touched.
 	processes processTable
+}
+
+// ParseGitIdentity parses s as "Name <email>", the form -git-identity
+// takes, and returns its name and email. It fails when s does not parse
+// as a mail address, or parses but has no name, as "jane@example.com" and
+// "<jane@example.com>" do.
+func ParseGitIdentity(s string) (name, email string, err error) {
+	addr, err := mail.ParseAddress(s)
+	if err != nil {
+		return "", "", err
+	}
+	if addr.Name == "" {
+		return "", "", fmt.Errorf("git identity %q: no name", s)
+	}
+	return addr.Name, addr.Address, nil
 }
 
 // workspacePath returns the directory task works in under stateDir.
@@ -408,7 +428,7 @@ func (s *service) startTask(command protocol.Command) *Task {
 		return s.failStart(task, j, err)
 	}
 	workdir := workspacePath(s.cfg.StateDir, task)
-	if err := prepareWorkspace(s.stopping, workdir, task, start.Workspace); err != nil {
+	if err := prepareWorkspace(s.stopping, workdir, task, start.Workspace, s.cfg.GitName, s.cfg.GitEmail); err != nil {
 		return s.failStart(task, j, fmt.Errorf("prepare workspace: %w", err))
 	}
 	if start.Workspace != nil {

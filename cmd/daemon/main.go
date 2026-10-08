@@ -42,9 +42,15 @@ func run() int {
 	caPath := flag.String("ca", "", "the CA certificate to verify the server with (required for https)")
 	stateDir := flag.String("state-dir", "", "directory for the daemon's state, task journals and workspaces (required)")
 	claudePath := flag.String("claude", "claude", "path of the claude executable")
+	gitIdentity := flag.String("git-identity", "orchestrator <orchestrator@localhost>", `name and email for the commits an agent makes, as "Name <email>"`)
 	flag.Parse()
 	if *serverURL == "" || *certPath == "" || *keyPath == "" || *stateDir == "" || flag.NArg() > 0 {
 		flag.Usage()
+		return 2
+	}
+	gitName, gitEmail, err := daemon.ParseGitIdentity(*gitIdentity)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, `daemon: -git-identity must be "Name <email>"`)
 		return 2
 	}
 	server, err := url.Parse(*serverURL)
@@ -110,6 +116,8 @@ func run() int {
 		Gateway:  gateway,
 		Log:      log,
 		Client:   &http.Client{Transport: transport},
+		GitName:  gitName,
+		GitEmail: gitEmail,
 	})
 	if err != nil {
 		log.Error("serve", "error", err)

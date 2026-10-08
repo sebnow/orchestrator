@@ -26,7 +26,11 @@ import (
 // whose credential helpers and URL rewrites would otherwise apply; ssh
 // still reads the daemon user's ~/.ssh. A failed clone leaves no
 // directory behind.
-func prepareWorkspace(ctx context.Context, dir string, task protocol.TaskID, ws *protocol.Workspace) error {
+//
+// gitName and gitEmail become the clone's local user.name and user.email,
+// for the agent's own commits; either empty uses the default identity
+// "orchestrator" <orchestrator@localhost>.
+func prepareWorkspace(ctx context.Context, dir string, task protocol.TaskID, ws *protocol.Workspace, gitName, gitEmail string) error {
 	if ws == nil {
 		return os.MkdirAll(dir, 0o700)
 	}
@@ -49,7 +53,7 @@ func prepareWorkspace(ctx context.Context, dir string, task protocol.TaskID, ws 
 		}
 	}
 	if err == nil {
-		err = prepareBranch(ctx, dir, task, ws.Ref)
+		err = prepareBranch(ctx, dir, task, ws.Ref, gitName, gitEmail)
 	}
 	if err != nil {
 		os.RemoveAll(dir)

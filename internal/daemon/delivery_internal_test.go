@@ -22,7 +22,7 @@ const deliveryTask protocol.TaskID = "task-1"
 func cloneForTask(t *testing.T, repo testRepo, ref string) string {
 	t.Helper()
 	dir := filepath.Join(t.TempDir(), "workspaces", string(deliveryTask))
-	if err := prepareWorkspace(t.Context(), dir, deliveryTask, &protocol.Workspace{Repo: repo.url, Ref: ref}); err != nil {
+	if err := prepareWorkspace(t.Context(), dir, deliveryTask, &protocol.Workspace{Repo: repo.url, Ref: ref}, "", ""); err != nil {
 		t.Fatal(err)
 	}
 	return dir
@@ -203,7 +203,7 @@ func TestGivenUnpushedCommitsWhenTheWorkspaceIsDeletedThenTheyArePushedFirst(t *
 	repo := makeTestRepo(t)
 	stateDir := t.TempDir()
 	dir := workspacePath(stateDir, deliveryTask)
-	if err := prepareWorkspace(t.Context(), dir, deliveryTask, &protocol.Workspace{Repo: repo.url, Ref: "main"}); err != nil {
+	if err := prepareWorkspace(t.Context(), dir, deliveryTask, &protocol.Workspace{Repo: repo.url, Ref: "main"}, "", ""); err != nil {
 		t.Fatal(err)
 	}
 	commit := commitFile(t, dir, "work.txt", "done")
@@ -224,7 +224,7 @@ func TestGivenAPushThatFailsWhenTheWorkspaceIsDeletedThenItIsKeptAndTheFailureRe
 	repo := makeTestRepo(t)
 	stateDir := t.TempDir()
 	dir := workspacePath(stateDir, deliveryTask)
-	if err := prepareWorkspace(t.Context(), dir, deliveryTask, &protocol.Workspace{Repo: repo.url, Ref: "main"}); err != nil {
+	if err := prepareWorkspace(t.Context(), dir, deliveryTask, &protocol.Workspace{Repo: repo.url, Ref: "main"}, "", ""); err != nil {
 		t.Fatal(err)
 	}
 	commitFile(t, dir, "work.txt", "done")
@@ -270,5 +270,23 @@ func TestGivenTaskWithAWorkspaceWhenItsTurnEndsWithACommitThenTheBranchIsPushedB
 	}
 	if got := remoteRef(t, repo, "refs/heads/"+taskBranch(task)); got != commit {
 		t.Errorf("remote branch = %s, want %s", got, commit)
+	}
+}
+
+func TestGivenAGitIdentityWhenPreparingThenTheCloneCommitsAsItWithoutSigning(t *testing.T) {
+	repo := makeTestRepo(t)
+	dir := filepath.Join(t.TempDir(), "workspaces", string(deliveryTask))
+	if err := prepareWorkspace(t.Context(), dir, deliveryTask, &protocol.Workspace{Repo: repo.url, Ref: "main"}, "Agent Smith", "smith@example.com"); err != nil {
+		t.Fatal(err)
+	}
+
+	if out, err := tryGit(dir, "commit", "--allow-empty", "-m", "x"); err != nil {
+		t.Fatalf("commit: %v: %s", err, out)
+	}
+	if out, err := tryGit(dir, "log", "-1", "--format=%an|%ae"); err != nil || out != "Agent Smith|smith@example.com" {
+		t.Errorf("log = %q, err %v; want Agent Smith|smith@example.com", out, err)
+	}
+	if out, err := tryGit(dir, "config", "--local", "commit.gpgsign"); err != nil || out != "false" {
+		t.Errorf("commit.gpgsign = %q, err %v; want false", out, err)
 	}
 }

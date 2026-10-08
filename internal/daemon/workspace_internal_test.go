@@ -96,7 +96,7 @@ func readWorkspaceFile(t *testing.T, dir, name string) string {
 func TestGivenNoWorkspaceWhenPreparingThenTheDirectoryIsCreatedEmpty(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "workspaces", "task-1")
 
-	if err := prepareWorkspace(t.Context(), dir, "task-1", nil); err != nil {
+	if err := prepareWorkspace(t.Context(), dir, "task-1", nil, "", ""); err != nil {
 		t.Fatal(err)
 	}
 
@@ -120,7 +120,7 @@ func TestGivenRefsThatGitCanCloneWhenPreparingThenTheWorkspaceIsCheckedOutAtThem
 		t.Run(c.name, func(t *testing.T) {
 			dir := filepath.Join(t.TempDir(), "workspaces", "task-1")
 
-			if err := prepareWorkspace(t.Context(), dir, "task-1", &protocol.Workspace{Repo: repo.url, Ref: c.ref}); err != nil {
+			if err := prepareWorkspace(t.Context(), dir, "task-1", &protocol.Workspace{Repo: repo.url, Ref: c.ref}, "", ""); err != nil {
 				t.Fatal(err)
 			}
 
@@ -135,7 +135,7 @@ func TestGivenRefThatIsNotInTheRepositoryWhenPreparingThenGitsErrorIsReturnedAnd
 	repo := makeTestRepo(t)
 	dir := filepath.Join(t.TempDir(), "task-1")
 
-	err := prepareWorkspace(t.Context(), dir, "task-1", &protocol.Workspace{Repo: repo.url, Ref: "no-such-ref"})
+	err := prepareWorkspace(t.Context(), dir, "task-1", &protocol.Workspace{Repo: repo.url, Ref: "no-such-ref"}, "", "")
 
 	if err == nil || !strings.Contains(err.Error(), "git checkout") || !strings.Contains(err.Error(), "no-such-ref") {
 		t.Errorf("err = %v", err)
@@ -148,7 +148,7 @@ func TestGivenRefThatIsNotInTheRepositoryWhenPreparingThenGitsErrorIsReturnedAnd
 func TestGivenRepositoryThatDoesNotExistWhenPreparingThenGitsCloneErrorIsReturned(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "task-1")
 
-	err := prepareWorkspace(t.Context(), dir, "task-1", &protocol.Workspace{Repo: httpsAlias(t, filepath.Join(t.TempDir(), "missing.git")), Ref: "main"})
+	err := prepareWorkspace(t.Context(), dir, "task-1", &protocol.Workspace{Repo: httpsAlias(t, filepath.Join(t.TempDir(), "missing.git")), Ref: "main"}, "", "")
 
 	if err == nil || !strings.Contains(err.Error(), "git clone") || !strings.Contains(err.Error(), "missing.git") {
 		t.Errorf("err = %v", err)
@@ -159,7 +159,7 @@ func TestGivenRefThatLooksLikeAnOptionWhenPreparingThenItIsRefused(t *testing.T)
 	repo := makeTestRepo(t)
 	dir := filepath.Join(t.TempDir(), "task-1")
 
-	err := prepareWorkspace(t.Context(), dir, "task-1", &protocol.Workspace{Repo: repo.url, Ref: "--upload-pack=touch pwned"})
+	err := prepareWorkspace(t.Context(), dir, "task-1", &protocol.Workspace{Repo: repo.url, Ref: "--upload-pack=touch pwned"}, "", "")
 
 	if err == nil || !strings.Contains(err.Error(), "is not a ref") {
 		t.Errorf("err = %v", err)
@@ -179,7 +179,7 @@ func TestGivenOwnerGitConfigThatRewritesTheRepositoryWhenPreparingThenTheCloneIg
 	t.Setenv("GIT_CONFIG_GLOBAL", config)
 	dir := filepath.Join(t.TempDir(), "task-1")
 
-	if err := prepareWorkspace(t.Context(), dir, "task-1", &protocol.Workspace{Repo: repo.url, Ref: "main"}); err != nil {
+	if err := prepareWorkspace(t.Context(), dir, "task-1", &protocol.Workspace{Repo: repo.url, Ref: "main"}, "", ""); err != nil {
 		t.Fatal(err)
 	}
 
@@ -206,7 +206,7 @@ func TestGivenRepositoryThatIsNeitherHTTPSNorSSHWhenPreparingThenItIsRefusedBefo
 		t.Run(url, func(t *testing.T) {
 			dir := filepath.Join(t.TempDir(), "task-1")
 
-			err := prepareWorkspace(t.Context(), dir, "task-1", &protocol.Workspace{Repo: url, Ref: "main"})
+			err := prepareWorkspace(t.Context(), dir, "task-1", &protocol.Workspace{Repo: url, Ref: "main"}, "", "")
 
 			if err == nil || !strings.Contains(err.Error(), "is not an https:// URL, an ssh:// URL or an ssh address") {
 				t.Errorf("err = %v", err)

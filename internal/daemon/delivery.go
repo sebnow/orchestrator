@@ -57,8 +57,17 @@ func deliveryPrompt(task protocol.TaskID) string {
 // the remote, so the work pushed from there continues; otherwise it is
 // created at ref. The clone gets a pre-push hook that refuses every ref
 // but the branch.
-func prepareBranch(ctx context.Context, dir string, task protocol.TaskID, ref string) error {
+//
+// gitName and gitEmail, or the default identity "orchestrator"
+// <orchestrator@localhost> when either is empty, become the clone's
+// local user.name and user.email; commit.gpgsign and tag.gpgsign are set
+// to false, so the daemon user's own signing settings do not apply to
+// the agent's commits.
+func prepareBranch(ctx context.Context, dir string, task protocol.TaskID, ref, gitName, gitEmail string) error {
 	branch := taskBranch(task)
+	if gitName == "" || gitEmail == "" {
+		gitName, gitEmail = "orchestrator", "orchestrator@localhost"
+	}
 	hooks, err := filepath.Abs(filepath.Join(dir, ".git", "hooks"))
 	if err != nil {
 		return err
@@ -72,6 +81,10 @@ func prepareBranch(ctx context.Context, dir string, task protocol.TaskID, ref st
 		// The agent's git reads the owner's configuration, whose
 		// core.hooksPath would otherwise bypass the hook.
 		{"config", "--local", "core.hooksPath", hooks},
+		{"config", "--local", "user.name", gitName},
+		{"config", "--local", "user.email", gitEmail},
+		{"config", "--local", "commit.gpgsign", "false"},
+		{"config", "--local", "tag.gpgsign", "false"},
 	} {
 		if _, err := gitOutput(ctx, dir, args...); err != nil {
 			return err
