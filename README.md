@@ -224,6 +224,15 @@ prompt, or Resume on a paused or yielded task, starts a new process that continu
 working directory. A task ends for good as `stopped` when stopped from
 its page, or as `failed`; the task page then takes no more prompts.
 
+Interrupt, on the task page, ends the running turn at once. Claude Code
+2.1.289 then exited with code 1. Unless the exit code is 0, the task
+becomes `paused`: its page and the dashboard's tasks that need
+attention say it was interrupted by the owner, and Resume continues its
+session, telling the agent that the owner interrupted its last turn
+([interrupt findings](docs/design/2026-10-08-interrupt-findings.md)).
+A follow-up prompt sent after the interrupt runs as the next turn, and
+the task ends as that turn does.
+
 The daemon deletes a task's working directory, with everything in it,
 when the task ends for good on that daemon: when the owner stops it,
 and when its `claude` process fails or it cannot start. A daemon
