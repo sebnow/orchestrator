@@ -72,7 +72,7 @@ func assemble(task protocol.TaskID, h history) []transcript.Entry {
 	var fromCommands []transcript.Entry
 	for _, command := range h.commands {
 		source := transcript.Source{TaskID: command.TaskID, CommandID: command.ID}
-		for _, body := range commandBodies(task, command, delivered[command.ID]) {
+		for _, body := range commandBodies(task, h.parent, command, delivered[command.ID]) {
 			fromCommands = append(fromCommands, transcript.Entry{Time: command.Time, Source: source, Body: body})
 		}
 	}
@@ -136,10 +136,11 @@ func eventBodies(event protocol.Event) []transcript.Body {
 }
 
 // commandBodies describes a command in task's transcript. A start_task of
-// another task is a child of task starting. A prompt with a sender
-// delivered the messages in delivered, one entry each; when they cannot
-// be found, the prompt's own text and sender stand for them.
-func commandBodies(task protocol.TaskID, command protocol.Command, delivered []storedMessage) []transcript.Body {
+// another task is a child of task starting; task's own is spawned by
+// parent, when that is set. A prompt with a sender delivered the messages
+// in delivered, one entry each; when they cannot be found, the prompt's
+// own text and sender stand for them.
+func commandBodies(task protocol.TaskID, parent *protocol.TaskID, command protocol.Command, delivered []storedMessage) []transcript.Body {
 	var body transcript.Body
 	ok := true
 	switch command.Kind {
@@ -150,7 +151,9 @@ func commandBodies(task protocol.TaskID, command protocol.Command, delivered []s
 			})
 			break
 		}
-		body, ok = decodeBody(command.Payload, func(p protocol.StartTask) transcript.Body { return transcript.OwnerPrompt{Text: p.Prompt} })
+		body, ok = decodeBody(command.Payload, func(p protocol.StartTask) transcript.Body {
+			return transcript.OwnerPrompt{Text: p.Prompt, SpawnedBy: parent}
+		})
 	case protocol.CommandPrompt:
 		var prompt protocol.Prompt
 		if ok = json.Unmarshal(command.Payload, &prompt) == nil; !ok {

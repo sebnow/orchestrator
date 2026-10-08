@@ -37,9 +37,13 @@ func TranscriptEntry(entry transcript.Entry) html.Node {
 	switch b := entry.Body.(type) {
 	case transcript.OwnerPrompt:
 		from, label = "owner", "Owner prompted"
-		if b.Resume {
+		switch {
+		case b.Resume:
 			label = "Owner resumed the task"
-		} else {
+		case b.SpawnedBy != nil:
+			from, label = "task", "Spawned by parent task "
+			subject, body = link(taskURL(string(*b.SpawnedBy)), string(*b.SpawnedBy)), preformatted(b.Text)
+		default:
 			body = preformatted(b.Text)
 		}
 	case transcript.PauseRequested:

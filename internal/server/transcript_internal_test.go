@@ -256,3 +256,30 @@ func TestGivenParentAndChildThatMessageWhenReadingTheirTranscriptsThenEachShowsI
 		t.Errorf("child's kinds = %v, want %v", got, want)
 	}
 }
+
+func TestGivenSpawnedChildAndOwnersTaskWhenReadingTheirTranscriptsThenOnlyTheChildsFirstPromptNamesWhoSpawnedIt(t *testing.T) {
+	srv := startTestServer(t)
+	taskIn(t, srv.store, "parent", TaskRunning)
+	spawned(t, srv.store, "parent", "child")
+
+	firstPrompt := func(task protocol.TaskID) transcript.OwnerPrompt {
+		t.Helper()
+		entries, err := srv.Transcript(t.Context(), task)
+		if err != nil {
+			t.Fatal(err)
+		}
+		prompt, ok := entries[0].Body.(transcript.OwnerPrompt)
+		if !ok {
+			t.Fatalf("%s's first entry = %+v, want its prompt", task, entries[0].Body)
+		}
+		return prompt
+	}
+
+	parent := protocol.TaskID("parent")
+	if got, want := firstPrompt("child"), (transcript.OwnerPrompt{Text: "Say PEAR.", SpawnedBy: &parent}); !reflect.DeepEqual(got, want) {
+		t.Errorf("child's first prompt = %+v, want %+v", got, want)
+	}
+	if got := firstPrompt("parent"); got.SpawnedBy != nil {
+		t.Errorf("owner's task's first prompt = %+v, want no spawner", got)
+	}
+}

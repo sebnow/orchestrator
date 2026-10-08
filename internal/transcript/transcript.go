@@ -71,10 +71,13 @@ type Body interface {
 
 // OwnerPrompt is a prompt the owner sent: the task's first prompt, a
 // follow-up, or a resume. A resume carries no text, because the daemon
-// chooses its words.
+// chooses its words. SpawnedBy, when set, names the task whose agent
+// spawned this one; the first prompt is then that agent's, not the
+// owner's.
 type OwnerPrompt struct {
-	Text   string
-	Resume bool
+	Text      string
+	Resume    bool
+	SpawnedBy *protocol.TaskID
 }
 
 // PauseRequested is the owner asking the agent to pause.

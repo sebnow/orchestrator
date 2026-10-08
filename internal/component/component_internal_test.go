@@ -138,6 +138,10 @@ func TestGivenMessagesAndChildrenWhenRenderedThenEachSaysWhatHappenedAndLinksThe
 			`<li class="entry from-agent"><header>never Agent started child task <a href="/tasks/child-1">child-1</a></header><pre>`+"\n"+`Say PEAR.</pre></li>`},
 		{transcript.ChildEnded{Child: child, State: "failed"},
 			`<li class="entry from-daemon"><header>never Child task <a href="/tasks/child-1">child-1</a> ended as failed</header></li>`},
+		{transcript.OwnerPrompt{Text: "Say PEAR.", SpawnedBy: &child},
+			`<li class="entry from-task"><header>never Spawned by parent task <a href="/tasks/child-1">child-1</a></header><pre>` + "\n" + `Say PEAR.</pre></li>`},
+		{transcript.OwnerPrompt{Text: "Plan."},
+			`<li class="entry from-owner"><header>never Owner prompted</header><pre>` + "\n" + `Plan.</pre></li>`},
 		{transcript.MessageUndeliverable{To: child, State: "stopped"},
 			`<li class="entry from-daemon"><header>never Task <a href="/tasks/child-1">child-1</a> ended as stopped before the agent&#39;s messages reached it; they were not delivered</header></li>`},
 	} {

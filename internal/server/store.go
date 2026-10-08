@@ -599,8 +599,10 @@ func (s *Store) eventsAfter(ctx context.Context, task protocol.TaskID, after uin
 
 // history is everything recorded about a task: its events in seq order;
 // its commands, and the start_task of each of its children, in id order;
-// and the messages it sent or was sent, in id order.
+// and the messages it sent or was sent, in id order. parent names the
+// task that spawned it; nil for the owner's.
 type history struct {
+	parent   *protocol.TaskID
 	events   []protocol.Event
 	commands []protocol.Command
 	messages []storedMessage
@@ -633,10 +635,19 @@ func (s *Store) taskHistory(ctx context.Context, task protocol.TaskID) (history,
 		return history{}, fmt.Errorf("read task history: %w", err)
 	}
 	defer tx.Rollback()
-	if err := requireTask(ctx, tx, task); err != nil {
-		return history{}, err
-	}
 	var h history
+	var parent sql.NullString
+	err = tx.QueryRowContext(ctx, `SELECT parent_id FROM tasks WHERE id = ?`, string(task)).Scan(&parent)
+	if errors.Is(err, sql.ErrNoRows) {
+		return history{}, fmt.Errorf("%w: %q", errUnknownTask, task)
+	}
+	if err != nil {
+		return history{}, fmt.Errorf("look up task %q: %w", task, err)
+	}
+	if parent.Valid {
+		spawner := protocol.TaskID(parent.String)
+		h.parent = &spawner
+	}
 	if h.events, err = queryEvents(ctx, tx, task, 0); err != nil {
 		return history{}, err
 	}
