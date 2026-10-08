@@ -300,12 +300,31 @@ func TestLiveGivenServerAndDaemonBinariesWhenTheOwnerRunsAOneTurnTaskThenItsTran
 type liveSystem struct {
 	server      string
 	invocations string
+	// daemon and daemonArgs run cmd/daemon against the server with the
+	// wrapped claude and the system's one state directory.
+	daemon     string
+	daemonArgs []string
 	// answered holds the permission requests the test has answered.
 	answered map[string]bool
 }
 
 // startLiveSystem starts the server, with serverFlags, and the daemon.
 func startLiveSystem(t *testing.T, serverFlags ...string) liveSystem {
+	t.Helper()
+	sys := newLiveSystem(t, serverFlags...)
+	daemonLogs := &syncBuffer{}
+	startProcess(t, sys.daemon, daemonLogs, sys.daemonArgs...)
+	t.Cleanup(func() {
+		if t.Failed() {
+			t.Logf("daemon log:\n%s", daemonLogs)
+		}
+	})
+	return sys
+}
+
+// newLiveSystem starts the server, with serverFlags, and prepares the
+// daemon's command line without starting the daemon.
+func newLiveSystem(t *testing.T, serverFlags ...string) liveSystem {
 	t.Helper()
 	bin := buildBinaries(t)
 	sys := liveSystem{server: startServer(t, bin, serverFlags...), invocations: filepath.Join(t.TempDir(), "invocations.log"), answered: map[string]bool{}}
@@ -316,13 +335,9 @@ func startLiveSystem(t *testing.T, serverFlags ...string) liveSystem {
 	if err := os.WriteFile(wrapper, []byte(script), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	daemonLogs := &syncBuffer{}
-	startProcess(t, filepath.Join(bin, "daemon"), daemonLogs,
-		append([]string{"-server", sys.server, "-state-dir", t.TempDir(), "-claude", wrapper}, daemonCredentials(t)...)...)
+	sys.daemon = filepath.Join(bin, "daemon")
+	sys.daemonArgs = append([]string{"-server", sys.server, "-state-dir", t.TempDir(), "-claude", wrapper}, daemonCredentials(t)...)
 	t.Cleanup(func() {
-		if t.Failed() {
-			t.Logf("daemon log:\n%s", daemonLogs)
-		}
 		data, _ := os.ReadFile(sys.invocations)
 		sessions := 0
 		for line := range strings.Lines(string(data)) {
@@ -783,4 +798,174 @@ func TestLiveGivenParentThatSpawnsAChildWhenTheChildReportsThenTheParentIsResume
 	}
 	_, childResults := sessionsAndResults(t, childEvents)
 	t.Logf("parent %s, child %s; child's results %q", parent, child, childResults)
+}
+
+// daemonProcess is a cmd/daemon process that a test may kill or stop
+// itself.
+type daemonProcess struct {
+	cmd  *exec.Cmd
+	done chan struct{}
+	err  error
+}
+
+// runDaemon starts the system's daemon. On cleanup a daemon still
+// running gets SIGTERM, and SIGKILL if it has not exited 90 s later.
+func (sys liveSystem) runDaemon(t *testing.T, logs io.Writer) *daemonProcess {
+	t.Helper()
+	p := &daemonProcess{cmd: exec.Command(sys.daemon, sys.daemonArgs...), done: make(chan struct{})}
+	p.cmd.Stderr = logs
+	if err := p.cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	go func() {
+		p.err = p.cmd.Wait()
+		close(p.done)
+	}()
+	t.Cleanup(func() {
+		p.cmd.Process.Signal(syscall.SIGTERM)
+		select {
+		case <-p.done:
+		case <-time.After(90 * time.Second):
+			p.cmd.Process.Kill()
+			<-p.done
+		}
+	})
+	return p
+}
+
+// signal sends sig to the daemon and returns how it exited.
+func (p *daemonProcess) signal(t *testing.T, sig syscall.Signal) error {
+	t.Helper()
+	if err := p.cmd.Process.Signal(sig); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-p.done:
+		return p.err
+	case <-time.After(90 * time.Second):
+		t.Fatalf("the daemon did not exit within 90 s of %s", sig)
+		return nil
+	}
+}
+
+// alive reports whether a process with the pid exists.
+func alive(pid int) bool {
+	return syscall.Kill(pid, 0) == nil
+}
+
+// harnessPIDs returns the pid of every harness process among events.
+func harnessPIDs(events []protocol.Event) []int {
+	var pids []int
+	for _, event := range events {
+		if event.Kind == protocol.KindHarnessStarted {
+			var started protocol.HarnessStarted
+			json.Unmarshal(event.Payload, &started)
+			pids = append(pids, started.PID)
+		}
+	}
+	return pids
+}
+
+// waitUntilFirstPingRuns answers the task's permission requests, allowing
+// only ping, until a second has passed since the first ping was allowed,
+// so that the turn is in the middle of its first tool call. It returns
+// the task's events at that moment.
+func (sys liveSystem) waitUntilFirstPingRuns(t *testing.T, ctx context.Context, task protocol.TaskID) []protocol.Event {
+	t.Helper()
+	var allowedAt time.Time
+	for {
+		events := sys.events(t, task)
+		sys.answerPermissions(t, task, events, allowOnlyPings)
+		if allowedAt.IsZero() && pingRequests(events) > 0 {
+			allowedAt = time.Now()
+		}
+		if !allowedAt.IsZero() && time.Since(allowedAt) >= time.Second {
+			return events
+		}
+		if state := sys.state(t, task); slices.Contains([]string{"finished", "paused", "yielded", "failed", "stopped"}, state) {
+			t.Fatalf("the task is %s before its first ping ran", state)
+		}
+		select {
+		case <-ctx.Done():
+			t.Fatalf("waiting for the first ping: %v", ctx.Err())
+		case <-time.After(200 * time.Millisecond):
+		}
+	}
+}
+
+// Cost: `claude --version` twice and two claude sessions: the three-step
+// turn that the daemon's death cuts short, and the resumed turn that
+// finishes it. Besides its assertions, it logs whether the harness
+// outlives the daemon (docs/adr/2026-10-08-restart-recovery.md,
+// Consequences); if the harness is still running a minute after the
+// daemon died, the test kills it before restarting the daemon, so that
+// the resumed process has the session to itself.
+func TestLiveGivenDaemonKilledMidTurnWhenItRestartsAndTheOwnerResumesThenTheTurnContinuesTheSessionAndFinishes(t *testing.T) {
+	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Minute)
+	defer cancel()
+	sys := newLiveSystem(t)
+	logs := &syncBuffer{}
+	t.Cleanup(func() {
+		if t.Failed() {
+			t.Logf("daemon log:\n%s", logs)
+		}
+	})
+	first := sys.runDaemon(t, logs)
+	task := sys.startTaskViaGUI(t, ctx, threeSteps)
+	before := sys.waitUntilFirstPingRuns(t, ctx, task)
+	pids := harnessPIDs(before)
+	if len(pids) != 1 || pids[0] <= 0 {
+		t.Fatalf("harness pids %v, want one", pids)
+	}
+	pid := pids[0]
+	t.Cleanup(func() {
+		if alive(pid) {
+			syscall.Kill(pid, syscall.SIGKILL)
+		}
+	})
+
+	err := first.signal(t, syscall.SIGKILL)
+	killedAt := time.Now()
+	t.Logf("daemon killed: %v; harness pid %d", err, pid)
+	var exitedAfter time.Duration
+	for exitedAfter == 0 && time.Since(killedAt) < time.Minute {
+		time.Sleep(250 * time.Millisecond)
+		if !alive(pid) {
+			exitedAfter = time.Since(killedAt)
+		}
+		if exitedAfter == 0 && time.Since(killedAt) >= 5*time.Second && time.Since(killedAt) < 5250*time.Millisecond {
+			ps, _ := exec.Command("ps", "-o", "pid,ppid,stat,etime,comm", "-p", fmt.Sprint(pid)).CombinedOutput()
+			children, _ := exec.Command("pgrep", "-l", "-P", fmt.Sprint(pid)).CombinedOutput()
+			t.Logf("5 s after the daemon's SIGKILL the harness is alive:\n%s children:\n%s", ps, children)
+		}
+	}
+	if exitedAfter == 0 {
+		t.Logf("the harness was still alive %s after the daemon's SIGKILL; the test kills it", time.Since(killedAt).Round(time.Second))
+		syscall.Kill(pid, syscall.SIGKILL)
+		for alive(pid) {
+			time.Sleep(100 * time.Millisecond)
+		}
+	} else {
+		t.Logf("the harness exited on its own %s after the daemon's SIGKILL", exitedAfter.Round(250*time.Millisecond))
+	}
+
+	sys.runDaemon(t, logs)
+	paused := sys.waitForState(t, ctx, task, "paused", 1, allowOnlyPings)
+	for _, event := range paused {
+		if event.Kind == protocol.KindHarnessExited {
+			t.Logf("after the restart, seq %d harness_exited %s", event.Seq, event.Payload)
+		}
+	}
+	sys.command(t, task, url.Values{"kind": {"resume"}})
+	events := sys.waitForState(t, ctx, task, "finished", 2, allowOnlyPings)
+
+	sessions, results := sessionsAndResults(t, events)
+	requireOneSession(t, sessions)
+	t.Logf("session %s; pings asked for: %d before the kill, %d in all", sessions[0], pingRequests(before), pingRequests(events))
+	if len(results) == 0 || !strings.Contains(results[len(results)-1], "FINISHED") {
+		t.Errorf("results = %q, want the last to be FINISHED", results)
+	}
+	if got := len(harnessPIDs(events)); got != 2 {
+		t.Errorf("harness_started %d times, want 2", got)
+	}
 }
