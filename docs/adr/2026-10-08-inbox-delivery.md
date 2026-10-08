@@ -136,6 +136,14 @@ it, and the server alone routes by it.
   the daemon.
 - A parent and its children share one daemon, and with it that
   machine's capacity.
+- A harness may have messaging tools of its own. Claude Code 2.1.289
+  has `SendMessage` and `ListAgents`, which reach other Claude sessions
+  on the same machine. In the first live run, a child asked to "send it
+  to your parent" called those instead of `send_message`, as its session
+  file showed. Its result reached the owner's interactive session, and
+  the parent waited for a report that never came. The daemon's Claude
+  Code adapter therefore denies both tools to tasks, and the system
+  prompt says that only the orchestrator's tools reach other tasks.
 
 Revisit when the server places tasks by a scheduler, or if agents need
 to read messages within a turn.
