@@ -895,12 +895,11 @@ func (sys liveSystem) waitUntilFirstPingRuns(t *testing.T, ctx context.Context, 
 
 // Cost: `claude --version` twice and two claude sessions: the three-step
 // turn that the daemon's death cuts short, and the resumed turn that
-// finishes it. Besides its assertions, it logs whether the harness
-// outlives the daemon (docs/adr/2026-10-08-restart-recovery.md,
-// Consequences); if the harness is still running a minute after the
-// daemon died, the test kills it before restarting the daemon, so that
-// the resumed process has the session to itself.
-func TestLiveGivenDaemonKilledMidTurnWhenItRestartsAndTheOwnerResumesThenTheTurnContinuesTheSessionAndFinishes(t *testing.T) {
+// finishes it. The daemon is restarted at once, while the harness the
+// killed daemon started may still run; the restarted daemon must wait for
+// that harness to exit, or kill it, before it reports the turn cut short
+// (docs/adr/2026-10-08-shutdown-recovery.md).
+func TestLiveGivenDaemonKilledMidTurnWhenItRestartsAndTheOwnerResumesThenTheOldHarnessIsGoneAndTheTurnContinuesTheSession(t *testing.T) {
 	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Minute)
 	defer cancel()
 	sys := newLiveSystem(t)
@@ -926,31 +925,24 @@ func TestLiveGivenDaemonKilledMidTurnWhenItRestartsAndTheOwnerResumesThenTheTurn
 
 	err := first.signal(t, syscall.SIGKILL)
 	killedAt := time.Now()
-	t.Logf("daemon killed: %v; harness pid %d", err, pid)
-	var exitedAfter time.Duration
-	for exitedAfter == 0 && time.Since(killedAt) < time.Minute {
-		time.Sleep(250 * time.Millisecond)
-		if !alive(pid) {
-			exitedAfter = time.Since(killedAt)
-		}
-		if exitedAfter == 0 && time.Since(killedAt) >= 5*time.Second && time.Since(killedAt) < 5250*time.Millisecond {
-			ps, _ := exec.Command("ps", "-o", "pid,ppid,stat,etime,comm", "-p", fmt.Sprint(pid)).CombinedOutput()
-			children, _ := exec.Command("pgrep", "-l", "-P", fmt.Sprint(pid)).CombinedOutput()
-			t.Logf("5 s after the daemon's SIGKILL the harness is alive:\n%s children:\n%s", ps, children)
-		}
-	}
-	if exitedAfter == 0 {
-		t.Logf("the harness was still alive %s after the daemon's SIGKILL; the test kills it", time.Since(killedAt).Round(time.Second))
-		syscall.Kill(pid, syscall.SIGKILL)
-		for alive(pid) {
-			time.Sleep(100 * time.Millisecond)
-		}
-	} else {
-		t.Logf("the harness exited on its own %s after the daemon's SIGKILL", exitedAfter.Round(250*time.Millisecond))
-	}
-
+	aliveAtRestart := alive(pid)
+	t.Logf("daemon killed: %v; harness pid %d alive at the restart: %v", err, pid, aliveAtRestart)
 	sys.runDaemon(t, logs)
 	paused := sys.waitForState(t, ctx, task, "paused", 1, allowOnlyPings)
+	pausedAfter := time.Since(killedAt)
+
+	if alive(pid) {
+		t.Errorf("the old harness %d is still running when the task is paused", pid)
+	}
+	handled := regexp.MustCompile(`msg="harness left by the previous daemon (exited|did not exit; killed it)" task=` + string(task) + ` pid=` + fmt.Sprint(pid) + ` after=(\S+)`).FindStringSubmatch(logs.String())
+	switch {
+	case handled != nil:
+		t.Logf("the restarted daemon reports the old harness %s after %s; the task was paused %s after the kill", handled[1], handled[2], pausedAfter.Round(100*time.Millisecond))
+	case aliveAtRestart:
+		t.Errorf("the old harness was running at the restart, and the daemon log does not say it waited for it or killed it")
+	default:
+		t.Logf("the old harness had exited before the restart; nothing to wait for")
+	}
 	for _, event := range paused {
 		if event.Kind == protocol.KindHarnessExited {
 			t.Logf("after the restart, seq %d harness_exited %s", event.Seq, event.Payload)
@@ -972,8 +964,8 @@ func TestLiveGivenDaemonKilledMidTurnWhenItRestartsAndTheOwnerResumesThenTheTurn
 
 // Cost: `claude --version` twice and two claude sessions: the three-step
 // turn that the daemon's clean shutdown interrupts, and the turn that the
-// owner's follow-up prompt starts after the daemon restarts.
-func TestLiveGivenDaemonShutDownCleanlyMidTurnWhenItRestartsAndTheOwnerFollowsUpThenANewProcessContinuesTheSession(t *testing.T) {
+// owner's Resume starts after the daemon restarts.
+func TestLiveGivenDaemonShutDownCleanlyMidTurnWhenItRestartsAndTheOwnerResumesThenTheTaskWasPausedAndTheTurnContinuesTheSession(t *testing.T) {
 	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Minute)
 	defer cancel()
 	sys := newLiveSystem(t)
@@ -993,21 +985,28 @@ func TestLiveGivenDaemonShutDownCleanlyMidTurnWhenItRestartsAndTheOwnerFollowsUp
 	}
 	t.Logf("the daemon exited %s after SIGTERM", time.Since(stoppedAt).Round(100*time.Millisecond))
 	// The daemon sends a task's last events before it exits.
+	var exit protocol.HarnessExited
 	for _, event := range sys.events(t, task)[len(before):] {
 		switch msg, err := claude.Parse(event.Payload); {
 		case event.Kind == protocol.KindHarnessExited:
 			t.Logf("seq %d harness_exited %s", event.Seq, event.Payload)
+			json.Unmarshal(event.Payload, &exit)
 		case event.Kind == protocol.KindHarnessOutput && err == nil && (msg.Type == claude.TypeResult || msg.Type == "control_response"):
 			t.Logf("seq %d %s", event.Seq, event.Payload)
 		}
 	}
-	if state := sys.state(t, task); state != "finished" {
-		t.Fatalf("after the clean shutdown the task is %s, want finished", state)
+	if exit.ExitCode != -1 || exit.Error != "daemon stopped during the turn" {
+		t.Errorf("harness_exited = %+v, want the daemon to say it stopped during the turn", exit)
+	}
+	if state := sys.state(t, task); state != "paused" {
+		t.Fatalf("after the clean shutdown the task is %s, want paused", state)
+	}
+	if line := regexp.MustCompile(`msg="shutdown cut the turn short; the task can be resumed" task=` + string(task) + ` .*`).FindString(logs.String()); line != "" {
+		t.Logf("daemon: %s", line)
 	}
 
 	sys.runDaemon(t, logs)
-	sys.command(t, task, url.Values{"kind": {"prompt"}, "text": {"Your last turn was cut short. Run whichever of the three pings " +
-		"did not finish, writing DONE-1, DONE-2 or DONE-3 after each as before, then reply with exactly FINISHED."}})
+	sys.command(t, task, url.Values{"kind": {"resume"}})
 	events := sys.waitForState(t, ctx, task, "finished", 2, allowOnlyPings)
 
 	sessions, results := sessionsAndResults(t, events)
