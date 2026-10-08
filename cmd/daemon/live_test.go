@@ -1019,3 +1019,77 @@ func TestLiveGivenDaemonShutDownCleanlyMidTurnWhenItRestartsAndTheOwnerResumesTh
 		t.Errorf("harness_started %d times, want 2", got)
 	}
 }
+
+// Cost: `claude --version` and two claude sessions: the three-step turn
+// the owner interrupts during its first ping, and the resumed turn.
+func TestLiveGivenRunningTurnWhenTheOwnerInterruptsItThenTheTaskIsPausedAndResumeFinishesTheSteps(t *testing.T) {
+	ctx, cancel := context.WithTimeout(t.Context(), 8*time.Minute)
+	defer cancel()
+	sys := newLiveSystem(t)
+	logs := &syncBuffer{}
+	t.Cleanup(func() {
+		if t.Failed() {
+			t.Logf("daemon log:\n%s", logs)
+		}
+	})
+	sys.runDaemon(t, logs)
+	task := sys.startTaskViaGUI(t, ctx, threeSteps)
+	before := sys.waitUntilFirstPingRuns(t, ctx, task)
+
+	sys.command(t, task, url.Values{"kind": {"interrupt"}})
+	events := waitForEvents(t, ctx, sys.server+"/v1/tasks/"+string(task)+"/events", "the harness to exit", hasKind(protocol.KindHarnessExited))
+
+	var exit protocol.HarnessExited
+	for _, event := range events[len(before):] {
+		switch msg, err := claude.Parse(event.Payload); {
+		case event.Kind == protocol.KindHarnessExited:
+			t.Logf("seq %d harness_exited %s", event.Seq, event.Payload)
+			json.Unmarshal(event.Payload, &exit)
+		case event.Kind == protocol.KindHarnessOutput && err == nil && (msg.Type == claude.TypeResult || msg.Type == "control_response"):
+			t.Logf("seq %d %s", event.Seq, event.Payload)
+		}
+	}
+	if line := regexp.MustCompile(`msg="the owner's interrupt cut the turn short; the task can be resumed" task=` + string(task) + ` .*`).FindString(logs.String()); line != "" {
+		t.Logf("daemon: %s", line)
+	}
+	state := sys.state(t, task)
+	t.Logf("after the interrupt the task is %s", state)
+	if exit.ExitCode != -1 || exit.Error != "interrupted by the owner" {
+		t.Errorf("harness_exited = %+v, want the daemon to say the owner interrupted the turn", exit)
+	}
+	if state != "paused" {
+		t.Fatalf("after the owner's interrupt the task is %s, want paused", state)
+	}
+	if dashboard := getPage(t, sys.server+"/"); !strings.Contains(dashboard, "paused: interrupted by the owner") {
+		t.Error("the dashboard does not give the owner's interrupt as the reason the task is paused")
+	}
+
+	sys.command(t, task, url.Values{"kind": {"resume"}})
+	events = sys.waitForState(t, ctx, task, "finished", 2, allowOnlyPings)
+
+	sessions, results := sessionsAndResults(t, events)
+	requireOneSession(t, sessions)
+	t.Logf("session %s; pings asked for: %d before the interrupt, %d in all", sessions[0], pingRequests(before), pingRequests(events))
+	if len(results) == 0 || !strings.Contains(results[len(results)-1], "FINISHED") {
+		t.Errorf("results = %q, want the last to be FINISHED", results)
+	}
+}
+
+// getPage returns the page at url, failing unless it answers 200.
+func getPage(t *testing.T, url string) string {
+	t.Helper()
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, url, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	data, err := io.ReadAll(resp.Body)
+	if err != nil || resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET %s: %d, %v", url, resp.StatusCode, err)
+	}
+	return string(data)
+}
