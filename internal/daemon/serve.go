@@ -117,6 +117,11 @@ func Serve(ctx context.Context, cfg Config) error {
 	var snd *sender
 	d := New(stateDir, cfg.Harness, cfg.Gateway, func(event protocol.Event) { snd.notify(event.TaskID) })
 	d.forward = forwardTo(cfg.Client, cfg.Server, cfg.ID)
+	d.sessionSeen = func(task protocol.TaskID, session string) {
+		if err := st.updateTask(task, func(rec *taskRecord) { rec.Session = session }); err != nil {
+			cfg.Log.Error("record harness session", "task", task, "error", err)
+		}
+	}
 	if err := d.recoverTasks(st, cfg.Log); err != nil {
 		return err
 	}
@@ -317,6 +322,7 @@ func (s *service) processEnded(task protocol.TaskID, t *Task, stopped bool) {
 			rec.StopNote = st.StopNote
 		}
 		rec.Ended = rec.Ended || stopped || !clean
+		rec.Restarted = false
 	})
 	if err != nil {
 		s.log.Error("record the end of a process", "task", task, "error", err)
@@ -347,13 +353,15 @@ func (s *service) startTask(command protocol.Command) *Task {
 	if err := limits.validate(); err != nil {
 		return s.failStart(task, j, err)
 	}
-	settings := taskSettings{Model: start.Model, SystemPrompt: start.SystemPrompt, Acknowledge: limits.Acknowledge, Cleanup: limits.Cleanup}
-	if err := s.state.updateTask(task, func(rec *taskRecord) { rec.Settings = &settings }); err != nil {
-		return s.failStart(task, j, fmt.Errorf("record task settings: %w", err))
-	}
 	workdir := workspacePath(s.cfg.StateDir, task)
 	if err := prepareWorkspace(s.stopping, workdir, start.Workspace); err != nil {
 		return s.failStart(task, j, fmt.Errorf("prepare workspace: %w", err))
+	}
+	// The settings make the task resumable, so they are recorded once its
+	// workspace is ready.
+	settings := taskSettings{Prompt: start.Prompt, Model: start.Model, SystemPrompt: start.SystemPrompt, Acknowledge: limits.Acknowledge, Cleanup: limits.Cleanup}
+	if err := s.state.updateTask(task, func(rec *taskRecord) { rec.Settings = &settings }); err != nil {
+		return s.failStart(task, j, fmt.Errorf("record task settings: %w", err))
 	}
 	return s.startProcess(task, j, TaskSpec{
 		ID:           task,
@@ -366,9 +374,12 @@ func (s *service) startTask(command protocol.Command) *Task {
 }
 
 // resume starts a new process of task that continues its harness session
-// with prompt (docs/adr/2026-10-08-task-lifetime.md). A task that cannot
+// (docs/adr/2026-10-08-task-lifetime.md) with followUp, or, when that is
+// empty, with the daemon's words for resuming the task. A task with no
+// recorded session starts a new one with its first prompt, followed by
+// followUp (docs/adr/2026-10-08-restart-recovery.md). A task that cannot
 // be resumed gets a harness_exited saying why, which ends it for good.
-func (s *service) resume(task protocol.TaskID, prompt string) (*Task, error) {
+func (s *service) resume(task protocol.TaskID, followUp string) (*Task, error) {
 	if s.stopping.Err() != nil {
 		return nil, errors.New("the daemon is shutting down")
 	}
@@ -383,6 +394,17 @@ func (s *service) resume(task protocol.TaskID, prompt string) (*Task, error) {
 	if !rec.resumable() {
 		s.failStart(task, j, errors.New("no harness session to resume"))
 		return nil, errors.New("no harness session to resume")
+	}
+	prompt := followUp
+	switch {
+	case rec.Session == "":
+		s.log.Info("no harness session recorded; starting a new one with the task's first prompt", "task", task)
+		prompt = rec.Settings.Prompt
+		if followUp != "" {
+			prompt += "\n\n" + followUp
+		}
+	case followUp == "":
+		prompt = resumeText(rec)
 	}
 	t := s.startProcess(task, j, TaskSpec{
 		ID:           task,

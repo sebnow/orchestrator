@@ -142,8 +142,10 @@ type journalEnd struct {
 	seq     uint64
 	harness protocol.Harness
 	// exited is true when the last event is harness_exited, which ends the
-	// task's stream.
+	// task's stream; exit is then its payload, or nil when that does not
+	// decode.
 	exited bool
+	exit   *protocol.HarnessExited
 	// size is the length of the complete lines, in bytes.
 	size int64
 }
@@ -178,6 +180,12 @@ func scanJournal(path string) (journalEnd, error) {
 			return journalEnd{}, fmt.Errorf("journal %s at byte %d: seq %d follows %d", path, end.size, event.Seq, end.seq)
 		}
 		end = journalEnd{seq: event.Seq, harness: event.Harness, exited: event.Kind == protocol.KindHarnessExited, size: end.size + int64(len(line))}
+		if end.exited {
+			var exit protocol.HarnessExited
+			if json.Unmarshal(event.Payload, &exit) == nil {
+				end.exit = &exit
+			}
+		}
 	}
 }
 

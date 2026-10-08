@@ -11,20 +11,51 @@ import (
 	"github.com/sebnow/orchestrator/internal/protocol"
 )
 
-// restartError is the error of the harness_exited event a restarted
-// daemon writes for each task the previous process left running.
-const restartError = "daemon restarted"
+// The errors of the harness_exited event a restarted daemon writes for
+// each task whose turn its previous process left unfinished
+// (docs/adr/2026-10-08-restart-recovery.md). The server reads the first
+// two as a task paused for the owner to resume, and words them the same
+// in internal/server; any other error fails the task.
+const (
+	// restartError: Resume continues the task's recorded session.
+	restartError = "daemon restarted during the turn"
+	// restartNoSessionError: no session was recorded, so Resume starts a
+	// new one with the task's first prompt.
+	restartNoSessionError = "daemon restarted during the turn, before the harness reported a session"
+	// restartLostError: the task cannot be resumed, because its start
+	// had not finished or it had already ended.
+	restartLostError = "daemon restarted and the task cannot be resumed"
+)
 
-// recoverTasks ends every task a previous daemon process left unfinished.
-// The harness exits when the daemon does, so none of those tasks can be
-// running; each journal that does not end in harness_exited gets one,
-// with ExitCode -1 and Error "daemon restarted", and its task is not
-// resumed. So does a task whose record says a process was running or
-// starting, whatever its journal ends in. A task the state knows but that
-// has no journal and no event was accepted and never started; it gets a
-// journal holding only that event. A task with events but no journal and
-// no process is between processes, and stays as it is. A journal the state does not know is adopted, so that
-// its events are sent.
+// restartExit is the harness_exited a restarted daemon writes for a task
+// whose turn its previous process cut short, given the task's record.
+func restartExit(rec taskRecord) protocol.HarnessExited {
+	exit := protocol.HarnessExited{ExitCode: -1, Error: restartLostError}
+	switch {
+	case !rec.resumable():
+	case rec.Session == "":
+		exit.Error = restartNoSessionError
+	default:
+		exit.Error = restartError
+	}
+	return exit
+}
+
+// recoverTasks closes the record of every task a previous daemon process
+// left in the middle of a turn. It takes the harness to have exited with
+// that process, which nothing enforces
+// (docs/adr/2026-10-08-restart-recovery.md, Consequences). Each journal
+// that does not end in harness_exited gets one, with ExitCode -1 and an
+// Error from restartExit. So does a task whose record says a process was
+// running or starting, unless its journal ends in that process's own
+// exit, which ends the task for good unless it was clean. A task that
+// can be resumed stays so, marked as cut short by the restart; any other
+// ends for good.
+// A task the state knows but that has no journal and no event was
+// accepted and never started; it gets a journal holding only that event.
+// A task with events but no journal and no process is between
+// processes, and stays as it is. A journal the state does not know is
+// adopted, so that its events are sent.
 //
 // A journal that cannot be read is logged and left alone.
 func (d *Daemon) recoverTasks(st *state, log *slog.Logger) error {
@@ -39,7 +70,6 @@ func (d *Daemon) recoverTasks(st *state, log *slog.Logger) error {
 			}
 		}
 	}
-	exit := protocol.HarnessExited{ExitCode: -1, Error: restartError}
 	for _, task := range st.tasks() {
 		rec, _ := st.record(task)
 		j, end, err := reopenJournal(d.stateDir, task, d.harness.Info(), rec.Seq)
@@ -53,25 +83,42 @@ func (d *Daemon) recoverTasks(st *state, log *slog.Logger) error {
 			log.Error("recover task", "task", task, "error", err)
 			continue
 		}
-		ended := false
-		// A journal that ends in harness_exited may end with the process
-		// before the one that was starting.
-		if !end.exited || rec.Running {
+		cutShort, exitedCleanly := false, false
+		resumable := rec.resumable()
+		// A journal that ends in harness_exited after the seq recorded when
+		// the running process started ends with that process's own exit,
+		// which the previous daemon journaled but did not record.
+		// Otherwise it may end with the process before the one that was
+		// starting.
+		ownExit := rec.Running && end.exited && end.seq > rec.Seq
+		switch {
+		case ownExit:
+			exitedCleanly = end.exit != nil && end.exit.ExitCode == 0 && end.exit.Error == ""
+		case !end.exited || rec.Running:
+			exit := restartExit(rec)
 			if _, err := j.appendControl(protocol.KindHarnessExited, exit); err != nil {
 				log.Error("recover task", "task", task, "error", err)
 			} else {
-				ended = true
-				log.Info("ended task left by the previous daemon", "task", task)
+				cutShort = true
+				log.Info("closed the turn the previous daemon left", "task", task, "resumable", resumable, "error", exit.Error)
 			}
 		}
 		seq := j.lastSeq()
 		j.close()
 		// The previous daemon may have stopped before recording the end of
-		// the task's last process.
+		// the task's last process. A stop note stays for the resume, since
+		// the prompt that carried it may not have reached the harness.
 		if err := st.updateTask(task, func(rec *taskRecord) {
 			rec.Seq = max(rec.Seq, seq)
-			rec.Ended = rec.Ended || ended
 			rec.Running = false
+			switch {
+			case ownExit:
+				rec.Ended = rec.Ended || !exitedCleanly
+				rec.Paused, rec.StopNote, rec.Restarted = false, "", false
+			case cutShort:
+				rec.Ended = rec.Ended || !resumable
+				rec.Restarted = resumable
+			}
 		}); err != nil {
 			return err
 		}

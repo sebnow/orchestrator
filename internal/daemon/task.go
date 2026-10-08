@@ -37,6 +37,11 @@ type Daemon struct {
 	// observe sees every event right after it is journaled. It runs on the
 	// goroutine that produced the event, so it must not block for long.
 	observe func(protocol.Event)
+	// sessionSeen, when set, hears each harness session a task's process
+	// reports that differs from the one it resumed or last reported, so
+	// that a restart finds it recorded. It runs on the goroutine reading
+	// the harness's output.
+	sessionSeen func(protocol.TaskID, string)
 }
 
 // New returns a daemon that keeps journals under stateDir, runs h, and
@@ -94,7 +99,9 @@ type Task struct {
 	proc    harness.Process
 	journal *journal
 	observe func(protocol.Event)
-	done    chan struct{}
+	// sessionSeen is the daemon's, for this task; nil when it has none.
+	sessionSeen func(string)
+	done        chan struct{}
 
 	// commands serialises the commands that write to the harness, so state
 	// changes and stdin writes happen in the same order without holding mu
@@ -146,6 +153,9 @@ func (d *Daemon) start(ctx context.Context, j *journal, spec TaskSpec) (*Task, e
 		permissions: map[string]*pendingPermission{},
 		limits:      spec.Pause,
 		session:     spec.Session,
+	}
+	if d.sessionSeen != nil {
+		t.sessionSeen = func(session string) { d.sessionSeen(spec.ID, session) }
 	}
 	url, unregister, err := d.gateway.register(spec.ID, gatewayTask{
 		permission:       t.askPermission,
@@ -210,6 +220,7 @@ func (t *Task) record(kind protocol.Kind, payload any) (protocol.Event, error) {
 // because nothing it does after that could be recorded.
 func (t *Task) run(unregister func()) {
 	var readErr error
+	reported := t.State().SessionID
 	for {
 		out, err := t.proc.Read()
 		if err != nil {
@@ -224,6 +235,12 @@ func (t *Task) run(unregister func()) {
 			continue
 		}
 		t.observe(event)
+		if out.SessionID != "" && out.SessionID != reported {
+			reported = out.SessionID
+			if t.sessionSeen != nil {
+				t.sessionSeen(reported)
+			}
+		}
 		if out.Quota != nil {
 			if _, err := t.record(protocol.KindQuotaObserved, *out.Quota); err != nil {
 				t.proc.Kill()

@@ -279,7 +279,7 @@ func TestGivenLostConnectionWhenItIsRestoredThenTheServerHasEveryEventOnceAndThe
 	}
 }
 
-func TestGivenDaemonThatDiedWithATaskRunningWhenANewOneStartsOnItsStateThenTheTaskEndsAsRestartedAndIsNotRunAgain(t *testing.T) {
+func TestGivenDaemonThatDiedWithATaskRunningWhenANewOneStartsOnItsStateThenTheTaskIsPausedAndRunsAgainOnlyWhenResumed(t *testing.T) {
 	srv := startServer(t)
 	proxy := startProxy(t, srv.url)
 	first := runDaemon(t, proxy.url(), t.TempDir())
@@ -305,9 +305,10 @@ func TestGivenDaemonThatDiedWithATaskRunningWhenANewOneStartsOnItsStateThenTheTa
 	assertContiguous(t, events)
 	var exit protocol.HarnessExited
 	json.Unmarshal(events[len(events)-1].Payload, &exit)
-	if len(events) != 3 || exit.ExitCode != -1 || exit.Error != "daemon restarted" {
+	if len(events) != 3 || exit.ExitCode != -1 || exit.Error != restartNoSessionError {
 		t.Errorf("events: %s", describe(events))
 	}
+	srv.waitForState(t, task, "paused")
 	next := srv.createTask(t, testDaemon, protocol.StartTask{Prompt: "Next.", PauseLimits: testPauseLimits})
 	if proc := second.nextProcess(t); !strings.HasSuffix(proc.spec.Workdir, string(next)) {
 		t.Errorf("first harness the new daemon started is in %s, want the new task's workspace", proc.spec.Workdir)
@@ -317,6 +318,17 @@ func TestGivenDaemonThatDiedWithATaskRunningWhenANewOneStartsOnItsStateThenTheTa
 	}
 	if got := mustLoadState(t, crashed).lastCommand(); got <= pause.ID {
 		t.Errorf("last command = %d, want past the pause %d", got, pause.ID)
+	}
+
+	srv.command(t, task, protocol.CommandResume, nil)
+
+	// No session was recorded, so the task starts again in a new one.
+	resumed := second.nextProcess(t)
+	if resumed.spec.Resume != "" || !strings.HasSuffix(resumed.spec.Workdir, string(task)) {
+		t.Errorf("resumed spec = %+v, want a new session in the task's workspace", resumed.spec)
+	}
+	if in := resumed.nextInput(t); in.text != "Do the work." {
+		t.Errorf("prompt = %q, want the task's first prompt", in.text)
 	}
 }
 

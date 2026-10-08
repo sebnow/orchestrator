@@ -46,7 +46,7 @@ func recoverIn(t *testing.T, stateDir string) (*state, *bytes.Buffer) {
 	return st, &logs
 }
 
-func assertEndsWithRestartExit(t *testing.T, events []protocol.Event, wantSeq uint64, wantHarness protocol.Harness) {
+func assertEndsWithRestartExit(t *testing.T, events []protocol.Event, wantSeq uint64, wantHarness protocol.Harness, wantError string) {
 	t.Helper()
 	for idx, event := range events {
 		if event.Seq != uint64(idx+1) {
@@ -58,7 +58,7 @@ func assertEndsWithRestartExit(t *testing.T, events []protocol.Event, wantSeq ui
 	if err := json.Unmarshal(last.Payload, &exit); err != nil {
 		t.Fatal(err)
 	}
-	if last.Seq != wantSeq || last.Kind != protocol.KindHarnessExited || exit.ExitCode != -1 || exit.Error != "daemon restarted" {
+	if last.Seq != wantSeq || last.Kind != protocol.KindHarnessExited || exit.ExitCode != -1 || exit.Error != wantError {
 		t.Errorf("last event = seq %d %s %s", last.Seq, last.Kind, last.Payload)
 	}
 	if last.Harness != wantHarness {
@@ -74,7 +74,7 @@ func TestGivenJournalWithoutExitWhenRecoveringThenHarnessExitedDaemonRestartedIs
 	recoverIn(t, stateDir)
 
 	events := readJournalFile(t, JournalPath(stateDir, "task-1"))
-	assertEndsWithRestartExit(t, events, 4, oldHarness)
+	assertEndsWithRestartExit(t, events, 4, oldHarness, restartLostError)
 }
 
 func TestGivenJournalThatEndsInExitWhenRecoveringThenItIsUnchanged(t *testing.T) {
@@ -111,7 +111,7 @@ func TestGivenJournalWithATornLastLineWhenRecoveringThenTheLineIsCutAndTheExitFo
 	recoverIn(t, stateDir)
 
 	events := readJournalFile(t, JournalPath(stateDir, "task-1"))
-	assertEndsWithRestartExit(t, events, 3, oldHarness)
+	assertEndsWithRestartExit(t, events, 3, oldHarness, restartLostError)
 }
 
 func TestGivenAcceptedTaskWithoutAJournalWhenRecoveringThenItsJournalHoldsOnlyTheExit(t *testing.T) {
@@ -121,7 +121,7 @@ func TestGivenAcceptedTaskWithoutAJournalWhenRecoveringThenItsJournalHoldsOnlyTh
 	recoverIn(t, stateDir)
 
 	events := readJournalFile(t, JournalPath(stateDir, "task-1"))
-	assertEndsWithRestartExit(t, events, 1, testHarness)
+	assertEndsWithRestartExit(t, events, 1, testHarness, restartLostError)
 }
 
 func TestGivenJournalTheStateDoesNotKnowWhenRecoveringThenItIsAdoptedAndEnded(t *testing.T) {
@@ -136,7 +136,7 @@ func TestGivenJournalTheStateDoesNotKnowWhenRecoveringThenItIsAdoptedAndEnded(t 
 	if !mustLoadState(t, stateDir).known("task-1") {
 		t.Error("adoption not saved")
 	}
-	assertEndsWithRestartExit(t, readJournalFile(t, JournalPath(stateDir, "task-1")), 2, oldHarness)
+	assertEndsWithRestartExit(t, readJournalFile(t, JournalPath(stateDir, "task-1")), 2, oldHarness, restartLostError)
 }
 
 func TestGivenACorruptJournalWhenRecoveringThenItIsLoggedAndLeftAndOtherTasksAreRecovered(t *testing.T) {
@@ -156,7 +156,7 @@ func TestGivenACorruptJournalWhenRecoveringThenItIsLoggedAndLeftAndOtherTasksAre
 	if !bytes.Contains(logs.Bytes(), []byte("task=task-1")) {
 		t.Errorf("logs = %s", logs)
 	}
-	assertEndsWithRestartExit(t, readJournalFile(t, JournalPath(stateDir, "task-2")), 2, oldHarness)
+	assertEndsWithRestartExit(t, readJournalFile(t, JournalPath(stateDir, "task-2")), 2, oldHarness, restartLostError)
 }
 
 // startingProcess records, as the service does before starting a process,
@@ -180,7 +180,7 @@ func startingProcess(t *testing.T, stateDir string, task protocol.TaskID, rec ta
 	j.close()
 }
 
-func TestGivenProcessStartingAfterAnEndedOneWhenRecoveringThenItsJournalEndsAsRestartedAndTheTaskIsNotResumed(t *testing.T) {
+func TestGivenProcessStartingAfterAnEndedOneWhenRecoveringThenItsJournalEndsAsRestartedAndTheTaskStaysResumable(t *testing.T) {
 	stateDir := t.TempDir()
 	writeJournal(t, stateDir, "task-1", 1)
 	j, _, err := reopenJournal(stateDir, "task-1", oldHarness, 0)
@@ -190,12 +190,39 @@ func TestGivenProcessStartingAfterAnEndedOneWhenRecoveringThenItsJournalEndsAsRe
 	j.appendControl(protocol.KindHarnessExited, protocol.HarnessExited{})
 	j.close()
 	settings := &taskSettings{Model: "fake-model"}
-	startingProcess(t, stateDir, "task-1", taskRecord{Seq: 3, Session: "session-1", Settings: settings})
+	startingProcess(t, stateDir, "task-1", taskRecord{Seq: 3, Session: "session-1", Settings: settings, Paused: true, StopNote: "old note"})
 
 	st, _ := recoverIn(t, stateDir)
 
-	assertEndsWithRestartExit(t, readJournalFile(t, JournalPath(stateDir, "task-1")), 4, oldHarness)
-	if rec, _ := st.record("task-1"); !rec.Ended || rec.Running || rec.Seq != 4 {
+	assertEndsWithRestartExit(t, readJournalFile(t, JournalPath(stateDir, "task-1")), 4, oldHarness, restartError)
+	if rec, _ := st.record("task-1"); rec.Ended || rec.Running || !rec.Paused || rec.StopNote != "old note" || !rec.Restarted || rec.Seq != 4 || !rec.resumable() {
+		t.Errorf("record = %+v", rec)
+	}
+}
+
+func TestGivenRunningTaskWithoutARecordedSessionWhenRecoveringThenItStaysResumableInANewSession(t *testing.T) {
+	stateDir := t.TempDir()
+	writeJournal(t, stateDir, "task-1", 1)
+	settings := &taskSettings{Prompt: "Do the work.", Model: "fake-model"}
+	startingProcess(t, stateDir, "task-1", taskRecord{Settings: settings})
+
+	st, _ := recoverIn(t, stateDir)
+
+	assertEndsWithRestartExit(t, readJournalFile(t, JournalPath(stateDir, "task-1")), 3, oldHarness, restartNoSessionError)
+	if rec, _ := st.record("task-1"); rec.Ended || !rec.Restarted || !rec.resumable() {
+		t.Errorf("record = %+v", rec)
+	}
+}
+
+func TestGivenRunningTaskWithNeitherASessionNorAFirstPromptWhenRecoveringThenItEndsForGood(t *testing.T) {
+	stateDir := t.TempDir()
+	writeJournal(t, stateDir, "task-1", 1)
+	startingProcess(t, stateDir, "task-1", taskRecord{Settings: &taskSettings{Model: "fake-model"}})
+
+	st, _ := recoverIn(t, stateDir)
+
+	assertEndsWithRestartExit(t, readJournalFile(t, JournalPath(stateDir, "task-1")), 3, oldHarness, restartLostError)
+	if rec, _ := st.record("task-1"); !rec.Ended || rec.Restarted {
 		t.Errorf("record = %+v", rec)
 	}
 }
@@ -227,5 +254,48 @@ func TestGivenTaskBetweenProcessesWhenRecoveringThenItIsLeftResumable(t *testing
 	}
 	if rec, _ := recovered.record("task-1"); !rec.resumable() {
 		t.Errorf("record = %+v", rec)
+	}
+}
+
+// exitedProcess records, as the service does, that task's process with
+// record rec is running, then journals its harness_started and its exit,
+// as a daemon that stops before recording the end of the process leaves
+// them.
+func exitedProcess(t *testing.T, stateDir string, task protocol.TaskID, rec taskRecord, exit protocol.HarnessExited) {
+	t.Helper()
+	startingProcess(t, stateDir, task, rec)
+	j, _, err := reopenJournal(stateDir, task, oldHarness, rec.Seq)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer j.close()
+	j.appendControl(protocol.KindHarnessStarted, protocol.HarnessStarted{PID: 2})
+	j.appendControl(protocol.KindHarnessExited, exit)
+}
+
+func TestGivenProcessWhoseOwnExitWasJournaledWhenRecoveringThenNoRestartExitFollowsAndAFailureEndsTheTask(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		exit  protocol.HarnessExited
+		ended bool
+	}{
+		{"clean", protocol.HarnessExited{}, false},
+		{"non-zero", protocol.HarnessExited{ExitCode: 1}, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			stateDir := t.TempDir()
+			settings := &taskSettings{Prompt: "Do the work.", Model: "fake-model"}
+			exitedProcess(t, stateDir, "task-1", taskRecord{Session: "session-1", Settings: settings, Restarted: true}, tc.exit)
+			before, _ := os.ReadFile(JournalPath(stateDir, "task-1"))
+
+			st, _ := recoverIn(t, stateDir)
+
+			if after, _ := os.ReadFile(JournalPath(stateDir, "task-1")); !bytes.Equal(before, after) {
+				t.Errorf("journal changed:\n%s\nbecame\n%s", before, after)
+			}
+			if rec, _ := st.record("task-1"); rec.Ended != tc.ended || rec.Restarted || rec.Running || rec.Seq != 2 {
+				t.Errorf("record = %+v, want ended %v", rec, tc.ended)
+			}
+		})
 	}
 }

@@ -53,6 +53,9 @@ type taskRecord struct {
 	// Ended says the task was stopped or failed; it is never resumed and
 	// is forgotten once the server holds all of it.
 	Ended bool `json:"ended,omitempty"`
+	// Restarted says a daemon restart cut the latest process's turn
+	// short (docs/adr/2026-10-08-restart-recovery.md).
+	Restarted bool `json:"restarted,omitempty"`
 	// Running says a process of the task holds its journal. Found set on
 	// start, it is a process the previous daemon left behind, even one
 	// that had not yet journaled its start.
@@ -60,8 +63,10 @@ type taskRecord struct {
 }
 
 // taskSettings are the parts of a task's start that every process of the
-// task needs.
+// task needs. Prompt, the task's first prompt, starts a new session when
+// no session was recorded.
 type taskSettings struct {
+	Prompt       string        `json:"prompt,omitempty"`
 	Model        string        `json:"model"`
 	SystemPrompt string        `json:"system_prompt,omitempty"`
 	Acknowledge  time.Duration `json:"pause_acknowledge"`
@@ -72,9 +77,11 @@ func (s taskSettings) limits() PauseLimits {
 	return PauseLimits{Acknowledge: s.Acknowledge, Cleanup: s.Cleanup}
 }
 
-// resumable reports whether a new process may continue the task.
+// resumable reports whether a new process may continue the task: in its
+// recorded session, or in a new session started with its first prompt
+// when none was recorded.
 func (r taskRecord) resumable() bool {
-	return !r.Ended && r.Session != "" && r.Settings != nil
+	return !r.Ended && r.Settings != nil && (r.Session != "" || r.Settings.Prompt != "")
 }
 
 // UnmarshalJSON also reads the record of a daemon before task records

@@ -332,7 +332,7 @@ func TestGivenResumedTaskWhoseJournalTheServerDoesNotHoldYetWhenPromptedAgainThe
 	assertContiguous(t, events)
 }
 
-func TestGivenContinuationJournalLeftByACrashWhenTheDaemonRestartsThenTheTaskEndsAsRestarted(t *testing.T) {
+func TestGivenContinuationJournalLeftByACrashWhenTheDaemonRestartsThenTheTaskIsPausedAndResumeContinuesItsSession(t *testing.T) {
 	srv := startServer(t)
 	proxy := startProxy(t, srv.url)
 	stateDir := t.TempDir()
@@ -354,7 +354,7 @@ func TestGivenContinuationJournalLeftByACrashWhenTheDaemonRestartsThenTheTaskEnd
 	proxy.cutAll()
 	first.stop(t)
 
-	runDaemon(t, srv.url, crashed)
+	second := runDaemon(t, srv.url, crashed)
 
 	events := srv.waitForCount(t, task, protocol.KindHarnessExited, 2)
 	assertContiguous(t, events)
@@ -362,6 +362,53 @@ func TestGivenContinuationJournalLeftByACrashWhenTheDaemonRestartsThenTheTaskEnd
 	json.Unmarshal(events[len(events)-1].Payload, &exit)
 	if exit.Error != restartError {
 		t.Errorf("events: %s", describe(events))
+	}
+	srv.waitForState(t, task, "paused")
+
+	srv.command(t, task, protocol.CommandResume, nil)
+
+	again := second.nextProcess(t)
+	if again.spec.Resume != "session-1" {
+		t.Errorf("spec = %+v, want session-1 resumed", again.spec)
+	}
+	if in := finishTurn(t, again, "session-1"); in.text != resumePrompt+restartNote {
+		t.Errorf("resume prompt = %q", in.text)
+	}
+	expectExit(t, again)
+	srv.waitForState(t, task, "finished")
+	assertContiguous(t, srv.events(t, task))
+}
+
+func TestGivenFirstTurnThatReportedItsSessionWhenTheDaemonDiesAndTheOwnerPromptsThenThatSessionIsResumed(t *testing.T) {
+	srv := startServer(t)
+	proxy := startProxy(t, srv.url)
+	stateDir := t.TempDir()
+	first := runDaemon(t, proxy.url(), stateDir)
+	task := srv.createTask(t, testDaemon, protocol.StartTask{Prompt: "One.", PauseLimits: testPauseLimits})
+	proc := first.nextProcess(t)
+	proc.nextInput(t)
+	proc.emit(harness.Output{Line: []byte(`{"type":"system","subtype":"init"}`), SessionID: "session-1"})
+	eventually(t, "the session to be recorded", func() bool {
+		rec, _ := mustLoadState(t, stateDir).record(task)
+		return rec.Session == "session-1"
+	})
+	crashed := t.TempDir()
+	if err := os.CopyFS(crashed, os.DirFS(stateDir)); err != nil {
+		t.Fatal(err)
+	}
+	proxy.cutAll()
+	first.stop(t)
+	second := runDaemon(t, srv.url, crashed)
+	srv.waitForState(t, task, "paused")
+
+	srv.command(t, task, protocol.CommandPrompt, protocol.Prompt{Text: "Carry on."})
+
+	resumed := second.nextProcess(t)
+	if resumed.spec.Resume != "session-1" {
+		t.Errorf("spec = %+v, want session-1 resumed", resumed.spec)
+	}
+	if in := resumed.nextInput(t); in.text != "Carry on." {
+		t.Errorf("prompt = %q", in.text)
 	}
 }
 

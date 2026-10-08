@@ -29,6 +29,23 @@ const (
 // resumePrompt resumes a paused task.
 const resumePrompt = "Resume the task from where you stopped and finish it."
 
+// restartNote tells an agent resumed after a daemon restart why its turn
+// ended.
+const restartNote = " Your last turn was cut short when the daemon running you restarted; check what it left unfinished."
+
+// resumeText is the prompt that resumes a task with record rec: the stop
+// note of its settled pause, or why a restart cut its turn short.
+func resumeText(rec taskRecord) string {
+	text := resumePrompt
+	if rec.Restarted {
+		text += restartNote
+	}
+	if rec.Paused && rec.StopNote != "" {
+		text += " Your note when you stopped: " + rec.StopNote
+	}
+	return text
+}
+
 // receive applies the commands the server sends until ctx ends,
 // reconnecting with backoff whenever the stream ends.
 func (s *service) receive(ctx context.Context) {
@@ -207,12 +224,7 @@ func (s *service) applyCommand(task protocol.TaskID, t *Task, command protocol.C
 		// resume; a task whose pause did not take effect before its turn
 		// ended resumes all the same, so that it does not stay running
 		// with no process.
-		rec, _ := s.state.record(task)
-		text := resumePrompt
-		if rec.Paused && rec.StopNote != "" {
-			text += " Your note when you stopped: " + rec.StopNote
-		}
-		return s.resume(task, text)
+		return s.resume(task, "")
 	case protocol.CommandPause:
 		if t == nil {
 			return nil, errNoProcess
