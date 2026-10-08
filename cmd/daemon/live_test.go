@@ -1,9 +1,10 @@
 //go:build live
 
-// The live test builds cmd/server and cmd/daemon, runs them, and has the
+// The live tests build cmd/server and cmd/daemon, run them, and have the
 // daemon run the real claude CLI on PATH with the model haiku, under
-// whatever login the machine has. It spends subscription quota: the
-// daemon runs `claude --version` once and one claude session. Run with:
+// whatever login the machine has. They spend subscription quota: each
+// test's daemon runs `claude --version` once, and each test's comment
+// names the claude sessions it runs. Run with:
 //
 //	go test -tags live -run Live -v ./cmd/daemon/
 package main_test
@@ -16,6 +17,8 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"regexp"
@@ -268,4 +271,313 @@ func TestLiveGivenServerAndDaemonBinariesWhenTheOwnerRunsAOneTurnTaskThenItsTran
 	if init < 0 || init > assistant || assistant > result || slices.Index(order[result+1:], "result") >= 0 {
 		t.Errorf("harness output = %q, want init, assistant, then one result", order)
 	}
+}
+
+// liveSystem is cmd/server and cmd/daemon running together, the daemon's
+// claude wrapped by a script that logs each invocation.
+type liveSystem struct {
+	server      string
+	invocations string
+	// answered holds the permission requests the test has answered.
+	answered map[string]bool
+}
+
+func startLiveSystem(t *testing.T) liveSystem {
+	t.Helper()
+	bin := buildBinaries(t)
+	sys := liveSystem{server: startServer(t, bin), invocations: filepath.Join(t.TempDir(), "invocations.log"), answered: map[string]bool{}}
+	wrapper := filepath.Join(bin, "claude-counting")
+	script := "#!/bin/sh\necho \"$*\" >> '" + sys.invocations + "'\nexec claude \"$@\"\n"
+	if err := os.WriteFile(wrapper, []byte(script), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	daemonLogs := &syncBuffer{}
+	startProcess(t, filepath.Join(bin, "daemon"), daemonLogs,
+		"-server", sys.server, "-id", "live-daemon", "-state-dir", t.TempDir(), "-claude", wrapper)
+	t.Cleanup(func() {
+		if t.Failed() {
+			t.Logf("daemon log:\n%s", daemonLogs)
+		}
+		data, _ := os.ReadFile(sys.invocations)
+		sessions := 0
+		for line := range strings.Lines(string(data)) {
+			if !strings.HasPrefix(line, "--version") {
+				sessions++
+			}
+		}
+		t.Logf("claude model sessions: %d", sessions)
+	})
+	return sys
+}
+
+var problemText = regexp.MustCompile(`<p class="problem" role="alert">([^<]*)</p>`)
+
+// postForm posts a GUI form as a browser without JavaScript would, and
+// returns the status and the redirect target.
+func postForm(t *testing.T, target string, form url.Values) (int, string) {
+	t.Helper()
+	client := &http.Client{CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodPost, target, strings.NewReader(form.Encode()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+	if resp.StatusCode != http.StatusSeeOther {
+		if problem := problemText.FindSubmatch(body); problem != nil {
+			body = problem[1]
+		}
+		t.Logf("POST %s: %d %s", target, resp.StatusCode, bytes.TrimSpace(body))
+	}
+	return resp.StatusCode, resp.Header.Get("Location")
+}
+
+// startTaskViaGUI starts a task through the new-task form once the daemon
+// has connected.
+func (sys liveSystem) startTaskViaGUI(t *testing.T, ctx context.Context, prompt string) protocol.TaskID {
+	t.Helper()
+	form := url.Values{"prompt": {prompt}, "repo": {""}, "ref": {""}, "model": {"haiku"}, "daemon": {"live-daemon"},
+		"acknowledge": {"90s"}, "cleanup": {"1m"}}
+	for {
+		status, location := postForm(t, sys.server+"/tasks", form)
+		if task, ok := strings.CutPrefix(location, "/tasks/"); status == http.StatusSeeOther && ok {
+			return protocol.TaskID(task)
+		}
+		if ctx.Err() != nil {
+			t.Fatalf("start task: %d", status)
+		}
+		time.Sleep(500 * time.Millisecond)
+	}
+}
+
+func (sys liveSystem) command(t *testing.T, task protocol.TaskID, form url.Values) {
+	t.Helper()
+	if status, _ := postForm(t, sys.server+"/tasks/"+string(task)+"/commands", form); status != http.StatusSeeOther {
+		t.Fatalf("command %v: status %d", form, status)
+	}
+}
+
+func (sys liveSystem) state(t *testing.T, task protocol.TaskID) string {
+	t.Helper()
+	var detail struct {
+		State string `json:"state"`
+	}
+	call(t, http.MethodGet, sys.server+"/v1/tasks/"+string(task), nil, &detail)
+	return detail.State
+}
+
+func (sys liveSystem) events(t *testing.T, task protocol.TaskID) []protocol.Event {
+	t.Helper()
+	var events []protocol.Event
+	call(t, http.MethodGet, sys.server+"/v1/tasks/"+string(task)+"/events", nil, &events)
+	return events
+}
+
+// waitForState polls until the task is in state with every event of
+// exits processes stored, answering each permission request with decide
+// through the task page's form on the way. decide may issue commands.
+func (sys liveSystem) waitForState(t *testing.T, ctx context.Context, task protocol.TaskID, state string, exits int, decide func(tool, command string) bool) []protocol.Event {
+	t.Helper()
+	return sys.waitForStateEach(t, ctx, task, state, exits, decide, nil)
+}
+
+// waitForStateEach is waitForState calling each, when set, after every
+// poll.
+func (sys liveSystem) waitForStateEach(t *testing.T, ctx context.Context, task protocol.TaskID, state string, exits int, decide func(tool, command string) bool, each func()) []protocol.Event {
+	t.Helper()
+	answered := sys.answered
+	for {
+		events := sys.events(t, task)
+		for _, event := range events {
+			if event.Kind != protocol.KindPermissionRequested {
+				continue
+			}
+			var req struct {
+				RequestID string `json:"request_id"`
+				Tool      string `json:"tool"`
+				Input     struct {
+					Command string `json:"command"`
+				} `json:"input"`
+			}
+			json.Unmarshal(event.Payload, &req)
+			if answered[req.RequestID] {
+				continue
+			}
+			answered[req.RequestID] = true
+			decision := "deny"
+			if decide != nil && decide(req.Tool, req.Input.Command) {
+				decision = "allow"
+			}
+			t.Logf("permission %s %q: %s", req.Tool, req.Input.Command, decision)
+			sys.command(t, task, url.Values{"kind": {"answer_permission"}, "request_id": {req.RequestID}, "decision": {decision},
+				"message": {"Only ping is allowed in this test."}})
+		}
+		if each != nil {
+			each()
+		}
+		got := sys.state(t, task)
+		if got == state && countKind(events, protocol.KindHarnessExited) >= exits {
+			return events
+		}
+		if got == "failed" || got == "stopped" {
+			t.Fatalf("task is %s waiting for %s", got, state)
+		}
+		select {
+		case <-ctx.Done():
+			t.Fatalf("waiting for %s: %v; state %s, %d events", state, ctx.Err(), got, len(events))
+		case <-time.After(500 * time.Millisecond):
+		}
+	}
+}
+
+func countKind(events []protocol.Event, kind protocol.Kind) int {
+	count := 0
+	for _, event := range events {
+		if event.Kind == kind {
+			count++
+		}
+	}
+	return count
+}
+
+// sessionsAndResults returns the session id of every init and result,
+// and the text of every result, in order.
+func sessionsAndResults(t *testing.T, events []protocol.Event) (sessions []string, results []string) {
+	t.Helper()
+	for idx, event := range events {
+		if event.Seq != uint64(idx+1) {
+			t.Fatalf("event %d has seq %d", idx, event.Seq)
+		}
+		if event.Kind != protocol.KindHarnessOutput {
+			t.Logf("seq %d %s %s", event.Seq, event.Kind, event.Payload)
+			continue
+		}
+		msg, err := claude.Parse(event.Payload)
+		if err != nil {
+			continue
+		}
+		if _, ok := msg.Init(); ok {
+			sessions = append(sessions, msg.SessionID)
+		}
+		if res, ok := msg.Result(); ok {
+			sessions = append(sessions, msg.SessionID)
+			results = append(results, res.Result)
+			t.Logf("seq %d result %s session %s cost %v: %q", event.Seq, msg.Subtype, msg.SessionID, res.TotalCostUSD, res.Result)
+		}
+	}
+	return sessions, results
+}
+
+func requireOneSession(t *testing.T, sessions []string) {
+	t.Helper()
+	if len(sessions) == 0 {
+		t.Fatal("no session id")
+	}
+	for _, session := range sessions {
+		if session != sessions[0] {
+			t.Errorf("session ids = %q, want one", sessions)
+		}
+	}
+}
+
+// Cost: `claude --version` and two claude sessions, each one turn with no
+// tool call.
+func TestLiveGivenFinishedTaskWhenTheOwnerFollowsUpThenANewProcessResumesTheConversation(t *testing.T) {
+	ctx, cancel := context.WithTimeout(t.Context(), 6*time.Minute)
+	defer cancel()
+	sys := startLiveSystem(t)
+
+	task := sys.startTaskViaGUI(t, ctx, "The codeword is MARMALADE. Remember it. Reply with exactly OK.")
+	sys.waitForState(t, ctx, task, "finished", 1, nil)
+	sys.command(t, task, url.Values{"kind": {"prompt"}, "text": {"What is the codeword? Reply with the codeword only."}})
+	events := sys.waitForState(t, ctx, task, "finished", 2, nil)
+
+	sessions, results := sessionsAndResults(t, events)
+	requireOneSession(t, sessions)
+	if len(results) != 2 || !strings.Contains(results[1], "MARMALADE") {
+		t.Errorf("results = %q, want the second to recall MARMALADE", results)
+	}
+	if got := countKind(events, protocol.KindHarnessStarted); got != 2 {
+		t.Errorf("harness_started %d times, want 2", got)
+	}
+}
+
+// Cost: `claude --version` and two claude sessions: the three-step turn,
+// cut short by the pause, and the resumed turn that finishes it.
+func TestLiveGivenPauseThroughTheGUIWhenTheOwnerResumesThenANewProcessFinishesTheRemainingSteps(t *testing.T) {
+	ctx, cancel := context.WithTimeout(t.Context(), 8*time.Minute)
+	defer cancel()
+	sys := startLiveSystem(t)
+	const threeSteps = "Use the Bash tool to run `ping -c 5 127.0.0.1` three times, one call after another, " +
+		"never in parallel and never in the background. After each call finishes, write the single " +
+		"word DONE-1, DONE-2 or DONE-3 before starting the next call. When all three are done, " +
+		"reply with exactly FINISHED."
+	task := sys.startTaskViaGUI(t, ctx, threeSteps)
+	pings, pauseSent := 0, false
+	allowPings := func(tool, command string) bool {
+		if strings.HasPrefix(tool, "mcp__orchestrator__") {
+			return true
+		}
+		if tool != "Bash" || !strings.HasPrefix(command, "ping") {
+			return false
+		}
+		pings++
+		return true
+	}
+
+	var firstPing time.Time
+	pauseAfterFirstPing := func() {
+		if pings == 0 || pauseSent {
+			return
+		}
+		if firstPing.IsZero() {
+			firstPing = time.Now()
+		}
+		if time.Since(firstPing) >= time.Second {
+			pauseSent = true
+			sys.command(t, task, url.Values{"kind": {"pause"}})
+		}
+	}
+	paused := sys.waitForStateEach(t, ctx, task, "paused", 1, allowPings, pauseAfterFirstPing)
+	sys.command(t, task, url.Values{"kind": {"resume"}})
+	events := sys.waitForState(t, ctx, task, "finished", 2, allowPings)
+
+	sessions, results := sessionsAndResults(t, events)
+	requireOneSession(t, sessions)
+	if countKind(paused, protocol.KindPauseAcknowledged) == 0 || countKind(paused, protocol.KindPauseSettled) != 1 {
+		t.Errorf("before the resume: %d acknowledgements, %d settlements", countKind(paused, protocol.KindPauseAcknowledged), countKind(paused, protocol.KindPauseSettled))
+	}
+	if before, all := pingRequests(paused), pingRequests(events); before >= 3 || all != 3 {
+		t.Errorf("pings: %d before the resume, %d in all; want fewer than 3, then 3", before, all)
+	}
+	if len(results) < 2 || !strings.Contains(results[len(results)-1], "FINISHED") {
+		t.Errorf("results = %q, want the last to be FINISHED", results)
+	}
+	var workdirs []string
+	for _, event := range events {
+		if event.Kind == protocol.KindHarnessStarted {
+			var started protocol.HarnessStarted
+			json.Unmarshal(event.Payload, &started)
+			workdirs = append(workdirs, started.Workdir)
+		}
+	}
+	if len(workdirs) != 2 || workdirs[0] != workdirs[1] {
+		t.Errorf("harness workdirs = %q, want two, the same", workdirs)
+	}
+}
+
+// pingRequests counts the permission requests to run ping.
+func pingRequests(events []protocol.Event) int {
+	count := 0
+	for _, event := range events {
+		if event.Kind == protocol.KindPermissionRequested && strings.Contains(string(event.Payload), `"command":"ping`) {
+			count++
+		}
+	}
+	return count
 }
