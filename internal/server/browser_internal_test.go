@@ -9,7 +9,9 @@ import (
 	"net/http/httptest"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/sebnow/orchestrator/internal/browsertest"
 	"github.com/sebnow/orchestrator/internal/pki"
@@ -22,6 +24,7 @@ type seenRequest struct {
 	htmx         bool
 	session      bool
 	status       int
+	at           time.Time
 }
 
 // requestLog records every request the server receives, so that a test
@@ -29,6 +32,9 @@ type seenRequest struct {
 type requestLog struct {
 	mu   sync.Mutex
 	seen []seenRequest
+	// failStreams makes every task stream answer 503, as a proxy that
+	// does not pass server-sent events might.
+	failStreams atomic.Bool
 }
 
 // newRequestLog returns an empty log that is printed if the test fails.
@@ -49,9 +55,14 @@ func (l *requestLog) wrap(next http.Handler) http.Handler {
 		_, err := r.Cookie(sessionCookie)
 		l.mu.Lock()
 		idx := len(l.seen)
-		l.seen = append(l.seen, seenRequest{method: r.Method, path: r.URL.Path, htmx: fromHTMX(r), session: err == nil})
+		l.seen = append(l.seen, seenRequest{method: r.Method, path: r.URL.Path, htmx: fromHTMX(r), session: err == nil, at: time.Now()})
 		l.mu.Unlock()
-		next.ServeHTTP(&statusWriter{ResponseWriter: w, log: l, idx: idx}, r)
+		w = &statusWriter{ResponseWriter: w, log: l, idx: idx}
+		if l.failStreams.Load() && strings.HasSuffix(r.URL.Path, "/stream") {
+			http.Error(w, "streams are off", http.StatusServiceUnavailable)
+			return
+		}
+		next.ServeHTTP(w, r)
 	})
 }
 
@@ -248,6 +259,48 @@ func TestGivenTaskPageWhenANewEventArrivesThenTheTranscriptShowsItOverSSEWithout
 	if got := requests.matching(http.MethodGet, "/tasks/"+string(task)+"/updates"); len(got) != 0 {
 		t.Errorf("the page polled %d times, want none", len(got))
 	}
+}
+
+// waitRequests waits until the server has received at least want
+// requests with method to path, and returns them.
+func waitRequests(t *testing.T, requests *requestLog, method, path string, want int) []seenRequest {
+	t.Helper()
+	deadline := time.Now().Add(browsertest.Timeout)
+	for {
+		got := requests.matching(method, path)
+		if len(got) >= want {
+			return got
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("%d requests %s %s within %s, want %d", len(got), method, path, browsertest.Timeout, want)
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+}
+
+func TestGivenTaskPageWhoseStreamFailsWhenAFormIsPostedThenThePollerShowsTheChangeAtOnce(t *testing.T) {
+	srv, requests := startBrowserServer(t)
+	requests.failStreams.Store(true)
+	task, _ := runningTask(t, srv)
+	updatesPath := "/tasks/" + string(task) + "/updates"
+	page := openPage(t)
+	page.Navigate(srv.url + "/tasks/" + string(task))
+	markLoaded(page)
+	// The stream's failure fetches the updates once and starts the poller,
+	// whose first poll comes five seconds later. The next is five seconds
+	// after that, so a poll soon after the form's response is the form's.
+	page.WaitTrue(hasElement(`#task-live [hx-trigger^="every 5s"]`))
+	waitRequests(t, requests, http.MethodGet, updatesPath, 2)
+
+	clickSettled(page, `#task-header button[value="pause"]`)
+
+	page.WaitTrue(hasElement("#task-header .badge.state-pausing"))
+	post := waitRequests(t, requests, http.MethodPost, "/tasks/"+string(task)+"/commands", 1)[0]
+	polls := requests.matching(http.MethodGet, updatesPath)
+	if len(polls) < 3 || polls[2].at.Before(post.at) || polls[2].at.Sub(post.at) > time.Second {
+		t.Errorf("polls = %+v after the POST at %s, want one within a second of it", polls, post.at)
+	}
+	requireNotReloaded(t, page)
 }
 
 // receiveCommandOf skips commands until one of kind arrives.
