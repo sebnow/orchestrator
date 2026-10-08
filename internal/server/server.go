@@ -2,7 +2,6 @@ package server
 
 import (
 	"bytes"
-	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -71,7 +70,8 @@ type Options struct {
 	Insecure bool
 }
 
-// New returns a server over store.
+// New returns a server over store. The server hears of store's changes
+// from then on, so store must serve no other server.
 func New(store *Store, log *slog.Logger, options Options) *Server {
 	s := &Server{
 		store:        store,
@@ -83,6 +83,7 @@ func New(store *Store, log *slog.Logger, options Options) *Server {
 		ended:        make(chan struct{}),
 		watchers:     watchers{byTask: make(map[protocol.TaskID]map[chan struct{}]struct{})},
 	}
+	store.published = s.storeChanged
 	s.mux.Handle("POST /v1/daemons/{daemon}/events", s.daemonOnly(s.postEvents))
 	s.mux.Handle("GET /v1/daemons/{daemon}/acks", s.daemonOnly(s.getAcks))
 	s.mux.Handle("GET /v1/daemons/{daemon}/commands", s.daemonOnly(s.streamCommands))
@@ -329,26 +330,16 @@ func (s *Server) signalIssued(daemon protocol.DaemonID) {
 	}
 }
 
-// createTask records a task on daemon and issues its start.
-func (s *Server) createTask(ctx context.Context, daemon protocol.DaemonID, task protocol.TaskID, start protocol.StartTask) (protocol.Command, error) {
-	command, err := s.store.createTask(ctx, daemon, task, start)
-	if err != nil {
-		return protocol.Command{}, err
+// storeChanged wakes the command streams of the daemons that fx issued
+// commands to, and the pages of the tasks it changed.
+func (s *Server) storeChanged(fx effects) {
+	for _, command := range fx.issued {
+		s.signalIssued(command.DaemonID)
+		s.taskChanged(command.TaskID)
 	}
-	s.signalIssued(daemon)
-	s.taskChanged(task)
-	return command, nil
-}
-
-// issueCommand sends a command to the daemon the task is assigned to.
-func (s *Server) issueCommand(ctx context.Context, task protocol.TaskID, kind protocol.CommandKind, payload json.RawMessage) (protocol.Command, error) {
-	command, err := s.store.issueCommand(ctx, task, kind, payload)
-	if err != nil {
-		return protocol.Command{}, err
+	for _, task := range fx.changed {
+		s.taskChanged(task)
 	}
-	s.signalIssued(command.DaemonID)
-	s.taskChanged(task)
-	return command, nil
 }
 
 func daemonFromPath(w http.ResponseWriter, r *http.Request) (protocol.DaemonID, bool) {

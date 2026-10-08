@@ -67,7 +67,7 @@ func (s *Server) startTask(ctx context.Context, daemon protocol.DaemonID, start 
 		start.Model = s.defaultModel
 	}
 	// rand.Text uses only letters and digits, so the id is always valid.
-	return s.createTask(ctx, daemon, protocol.TaskID(rand.Text()), start)
+	return s.store.createTask(ctx, daemon, protocol.TaskID(rand.Text()), start)
 }
 
 func validateStart(start protocol.StartTask) error {
@@ -101,7 +101,7 @@ func (s *Server) postCommand(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
-	command, err := s.issueCommand(r.Context(), task, request.Kind, payload)
+	command, err := s.store.issueCommand(r.Context(), task, request.Kind, payload)
 	if errors.Is(err, errUnknownTask) {
 		http.Error(w, err.Error(), http.StatusNotFound)
 		return

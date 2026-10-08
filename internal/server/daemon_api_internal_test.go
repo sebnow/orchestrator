@@ -239,7 +239,7 @@ func TestGivenNewDaemonWhenGettingAcksThenItIsSeenWithNoTasks(t *testing.T) {
 	status, body := doRequest(t, http.MethodGet, srv.url+"/v1/daemons/fresh/acks", "")
 
 	requireAcks(t, status, body, map[protocol.TaskID]uint64{})
-	if _, err := srv.createTask(t.Context(), "fresh", "task-1", testStart); err != nil {
+	if _, err := srv.store.createTask(t.Context(), "fresh", "task-1", testStart); err != nil {
 		t.Errorf("createTask on the seen daemon: %v", err)
 	}
 }
@@ -334,14 +334,14 @@ func TestGivenLastEventIDWhenReconnectingThenExactlyTheMissedCommandsAreResentTh
 	srv := startTestServer(t)
 	seedTask(t, srv.store, "laptop", "task-1")
 	seedTask(t, srv.store, "vps", "task-2")
-	prompt, err := srv.issueCommand(t.Context(), "task-1", protocol.CommandPrompt, json.RawMessage(`{"text":"go on"}`))
+	prompt, err := srv.store.issueCommand(t.Context(), "task-1", protocol.CommandPrompt, json.RawMessage(`{"text":"go on"}`))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := srv.issueCommand(t.Context(), "task-2", protocol.CommandPause, nil); err != nil {
+	if _, err := srv.store.issueCommand(t.Context(), "task-2", protocol.CommandPause, nil); err != nil {
 		t.Fatal(err)
 	}
-	pause, err := srv.issueCommand(t.Context(), "task-1", protocol.CommandPause, nil)
+	pause, err := srv.store.issueCommand(t.Context(), "task-1", protocol.CommandPause, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -349,7 +349,7 @@ func TestGivenLastEventIDWhenReconnectingThenExactlyTheMissedCommandsAreResentTh
 	events := openCommandStream(t, srv, "laptop", "1")
 	gotPrompt := receiveCommand(t, events)
 	gotPause := receiveCommand(t, events)
-	resume, err := srv.issueCommand(t.Context(), "task-1", protocol.CommandResume, nil)
+	resume, err := srv.store.issueCommand(t.Context(), "task-1", protocol.CommandResume, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -376,7 +376,7 @@ func TestGivenSecondStreamForADaemonWhenItConnectsThenTheFirstEnds(t *testing.T)
 	case <-time.After(5 * time.Second):
 		t.Fatal("first stream still open after 5s")
 	}
-	if _, err := srv.createTask(t.Context(), "laptop", "task-1", testStart); err != nil {
+	if _, err := srv.store.createTask(t.Context(), "laptop", "task-1", testStart); err != nil {
 		t.Fatal(err)
 	}
 	if command := receiveCommand(t, second); command.Kind != protocol.CommandStartTask {

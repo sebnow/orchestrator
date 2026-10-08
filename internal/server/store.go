@@ -37,6 +37,25 @@ var migrations = [...]string{
 	// (docs/adr/2026-10-08-owner-authentication.md).
 	`CREATE TABLE settings (name TEXT PRIMARY KEY, value TEXT NOT NULL) STRICT;
 	CREATE TABLE sessions (id_sha256 TEXT PRIMARY KEY, expires_at INTEGER NOT NULL) STRICT;`,
+	// Version 4 records each task's parent and the messages agents send
+	// each other (docs/adr/2026-10-08-inbox-delivery.md). A message's
+	// from_task is NULL for the server's notice that a child ended, and
+	// about_task names that child; delivered_command_id is the prompt that
+	// delivered it, NULL while it waits in the recipient's inbox.
+	`ALTER TABLE tasks ADD COLUMN parent_id TEXT REFERENCES tasks (id);
+	CREATE INDEX tasks_by_parent ON tasks (parent_id);
+	CREATE TABLE messages (
+		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		from_task TEXT REFERENCES tasks (id),
+		to_task TEXT NOT NULL REFERENCES tasks (id),
+		about_task TEXT REFERENCES tasks (id),
+		text TEXT NOT NULL,
+		created_at TEXT NOT NULL,
+		delivered_command_id INTEGER REFERENCES commands (id),
+		CHECK ((from_task IS NULL) <> (about_task IS NULL))
+	) STRICT;
+	CREATE INDEX messages_by_recipient ON messages (to_task, delivered_command_id);
+	CREATE INDEX messages_by_sender ON messages (from_task);`,
 }
 
 // schemaVersion is the version this server migrates databases to. A
@@ -64,6 +83,26 @@ func (e *foreignTaskError) Error() string {
 // Store keeps the server's record in one SQLite database.
 type Store struct {
 	db *sql.DB
+	// published, when set, hears of every committed change that issued a
+	// command or changed a task's transcript, so that open streams can be
+	// woken.
+	published func(effects)
+}
+
+// effects are what a write transaction did that open streams must hear
+// of once it commits. A message or a child changes the transcript of a
+// task other than the one the transaction was for, so changed lists such
+// tasks.
+type effects struct {
+	issued  []protocol.Command
+	changed []protocol.TaskID
+}
+
+// publish tells the server of fx after its transaction committed.
+func (s *Store) publish(fx *effects) {
+	if s.published != nil && (len(fx.issued) > 0 || len(fx.changed) > 0) {
+		s.published(*fx)
+	}
 }
 
 // OpenStore opens the database at path, creating it and its schema if
@@ -192,6 +231,9 @@ const heldSeqColumn = `CASE WHEN EXISTS (SELECT 1 FROM events WHERE task_id = t.
 // the stored one it is returned in conflicts and the stored one is kept.
 // A batch naming any task not assigned to daemon is refused whole with a
 // *foreignTaskError.
+//
+// A task the batch leaves finished is sent the messages waiting in its
+// inbox, and the parent of a task the batch ends is told.
 func (s *Store) appendEvents(ctx context.Context, daemon protocol.DaemonID, events []protocol.Event) (held map[protocol.TaskID]uint64, conflicts []protocol.Event, err error) {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -206,6 +248,7 @@ func (s *Store) appendEvents(ctx context.Context, daemon protocol.DaemonID, even
 		}
 	}
 	progresses := make(map[protocol.TaskID]*progress, len(tasks))
+	before := make(map[protocol.TaskID]TaskState, len(tasks))
 	for _, task := range tasks {
 		var owner string
 		err := tx.QueryRowContext(ctx, `SELECT daemon_id FROM tasks WHERE id = ?`, string(task)).Scan(&owner)
@@ -220,6 +263,7 @@ func (s *Store) appendEvents(ctx context.Context, daemon protocol.DaemonID, even
 			return nil, nil, err
 		}
 		progresses[task] = &p
+		before[task] = p.State
 	}
 
 	var harness *protocol.Harness
@@ -273,6 +317,22 @@ func (s *Store) appendEvents(ctx context.Context, daemon protocol.DaemonID, even
 			return nil, nil, err
 		}
 	}
+	// Each step below reads the progress it needs afresh, because telling
+	// a parent can issue a command to a task of this batch.
+	var fx effects
+	for _, task := range tasks {
+		state := progresses[task].State
+		if !before[task].Terminal() && state.Terminal() {
+			if err := notifyParent(ctx, tx, task, state, &fx); err != nil {
+				return nil, nil, err
+			}
+		}
+		if state == TaskFinished {
+			if _, err := deliverWaiting(ctx, tx, task, &fx); err != nil {
+				return nil, nil, err
+			}
+		}
+	}
 
 	held = make(map[protocol.TaskID]uint64, len(tasks))
 	for _, task := range tasks {
@@ -285,6 +345,7 @@ func (s *Store) appendEvents(ctx context.Context, daemon protocol.DaemonID, even
 	if err := tx.Commit(); err != nil {
 		return nil, nil, fmt.Errorf("store events: %w", err)
 	}
+	s.publish(&fx)
 	return held, conflicts, nil
 }
 
@@ -325,10 +386,6 @@ func (s *Store) heldSeqs(ctx context.Context, daemon protocol.DaemonID) (map[pro
 // createTask records a task assigned to daemon and issues its start_task
 // command in the same transaction. The daemon must have been seen.
 func (s *Store) createTask(ctx context.Context, daemon protocol.DaemonID, task protocol.TaskID, start protocol.StartTask) (protocol.Command, error) {
-	payload, err := json.Marshal(start)
-	if err != nil {
-		return protocol.Command{}, fmt.Errorf("encode start_task: %w", err)
-	}
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return protocol.Command{}, fmt.Errorf("create task: %w", err)
@@ -341,27 +398,47 @@ func (s *Store) createTask(ctx context.Context, daemon protocol.DaemonID, task p
 	if !known {
 		return protocol.Command{}, fmt.Errorf("%w: %q", errUnknownDaemon, daemon)
 	}
-	var repo, ref any
-	if start.Workspace != nil {
-		repo, ref = start.Workspace.Repo, start.Workspace.Ref
-	}
-	created := formatTime(time.Now().UTC())
-	_, err = tx.ExecContext(ctx, `
-		INSERT INTO tasks (id, daemon_id, state, created_at, last_activity_at, prompt, system_prompt, workspace_repo, workspace_ref, model, pause_acknowledge_ns, pause_cleanup_ns)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		string(task), string(daemon), string(TaskPending), created, created, start.Prompt, start.SystemPrompt, repo, ref,
-		start.Model, int64(start.PauseLimits.Acknowledge), int64(start.PauseLimits.Cleanup))
-	if err != nil {
-		return protocol.Command{}, fmt.Errorf("create task %q: %w", task, err)
-	}
-	command, err := insertCommand(ctx, tx, daemon, task, protocol.CommandStartTask, payload)
+	var fx effects
+	command, err := insertTask(ctx, tx, daemon, task, nil, start, &fx)
 	if err != nil {
 		return protocol.Command{}, err
 	}
 	if err := tx.Commit(); err != nil {
 		return protocol.Command{}, fmt.Errorf("create task %q: %w", task, err)
 	}
+	s.publish(&fx)
 	return command, nil
+}
+
+// insertTask records a task assigned to daemon, a child of parent when
+// that is set, and issues its start_task command.
+func insertTask(ctx context.Context, tx *sql.Tx, daemon protocol.DaemonID, task protocol.TaskID, parent *protocol.TaskID, start protocol.StartTask, fx *effects) (protocol.Command, error) {
+	payload, err := json.Marshal(start)
+	if err != nil {
+		return protocol.Command{}, fmt.Errorf("encode start_task: %w", err)
+	}
+	var repo, ref any
+	if start.Workspace != nil {
+		repo, ref = start.Workspace.Repo, start.Workspace.Ref
+	}
+	created := formatTime(time.Now().UTC())
+	_, err = tx.ExecContext(ctx, `
+		INSERT INTO tasks (id, daemon_id, parent_id, state, created_at, last_activity_at, prompt, system_prompt, workspace_repo, workspace_ref, model, pause_acknowledge_ns, pause_cleanup_ns)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		string(task), string(daemon), nullableID(parent), string(TaskPending), created, created, start.Prompt, start.SystemPrompt, repo, ref,
+		start.Model, int64(start.PauseLimits.Acknowledge), int64(start.PauseLimits.Cleanup))
+	if err != nil {
+		return protocol.Command{}, fmt.Errorf("create task %q: %w", task, err)
+	}
+	return insertCommand(ctx, tx, daemon, task, protocol.CommandStartTask, payload, fx)
+}
+
+// nullableID is id as a query argument: NULL when id is nil.
+func nullableID(id *protocol.TaskID) any {
+	if id == nil {
+		return nil
+	}
+	return string(*id)
 }
 
 // issueCommand appends a command for task to the log of the daemon the
@@ -380,19 +457,22 @@ func (s *Store) issueCommand(ctx context.Context, task protocol.TaskID, kind pro
 	if err != nil {
 		return protocol.Command{}, fmt.Errorf("look up task %q: %w", task, err)
 	}
-	command, err := insertCommand(ctx, tx, protocol.DaemonID(daemon), task, kind, payload)
+	var fx effects
+	command, err := insertCommand(ctx, tx, protocol.DaemonID(daemon), task, kind, payload, &fx)
 	if err != nil {
 		return protocol.Command{}, err
 	}
 	if err := tx.Commit(); err != nil {
 		return protocol.Command{}, fmt.Errorf("issue command: %w", err)
 	}
+	s.publish(&fx)
 	return command, nil
 }
 
 // insertCommand appends a command to the log and folds it into the task's
-// progress. A task that is stopped or failed takes no command.
-func insertCommand(ctx context.Context, tx *sql.Tx, daemon protocol.DaemonID, task protocol.TaskID, kind protocol.CommandKind, payload json.RawMessage) (protocol.Command, error) {
+// progress. A task that is stopped or failed takes no command. When the
+// command ends the task, its parent is told.
+func insertCommand(ctx context.Context, tx *sql.Tx, daemon protocol.DaemonID, task protocol.TaskID, kind protocol.CommandKind, payload json.RawMessage, fx *effects) (protocol.Command, error) {
 	p, err := loadProgress(ctx, tx, task)
 	if err != nil {
 		return protocol.Command{}, err
@@ -416,6 +496,12 @@ func insertCommand(ctx context.Context, tx *sql.Tx, daemon protocol.DaemonID, ta
 	p.seeCommand(command)
 	if err := saveProgress(ctx, tx, task, p); err != nil {
 		return protocol.Command{}, err
+	}
+	fx.issued = append(fx.issued, command)
+	if p.State.Terminal() {
+		if err := notifyParent(ctx, tx, task, p.State, fx); err != nil {
+			return protocol.Command{}, err
+		}
 	}
 	return command, nil
 }

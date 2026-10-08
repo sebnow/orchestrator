@@ -188,13 +188,15 @@ func stopIssued(ctx context.Context, tx *sql.Tx, task protocol.TaskID) (bool, er
 
 // taskSummary is a task as the task list shows it.
 type taskSummary struct {
-	ID             protocol.TaskID   `json:"id"`
-	DaemonID       protocol.DaemonID `json:"daemon_id"`
-	State          TaskState         `json:"state"`
-	Model          string            `json:"model"`
-	CreatedAt      time.Time         `json:"created_at"`
-	LastActivityAt time.Time         `json:"last_activity_at"`
-	CostUSD        float64           `json:"cost_usd"`
+	ID       protocol.TaskID   `json:"id"`
+	DaemonID protocol.DaemonID `json:"daemon_id"`
+	// ParentID names the task that spawned this one; nil for the owner's.
+	ParentID       *protocol.TaskID `json:"parent_id,omitempty"`
+	State          TaskState        `json:"state"`
+	Model          string           `json:"model"`
+	CreatedAt      time.Time        `json:"created_at"`
+	LastActivityAt time.Time        `json:"last_activity_at"`
+	CostUSD        float64          `json:"cost_usd"`
 }
 
 // taskDetail is one task: its summary and what it was started with.
@@ -203,17 +205,22 @@ type taskDetail struct {
 	Start protocol.StartTask `json:"start"`
 }
 
-const summaryColumns = `id, daemon_id, state, model, created_at, last_activity_at, cost_usd`
+const summaryColumns = `id, daemon_id, parent_id, state, model, created_at, last_activity_at, cost_usd`
 
 // scanSummary reads summaryColumns, followed by extra destinations.
 func scanSummary(row interface{ Scan(...any) error }, extra ...any) (taskSummary, error) {
 	var summary taskSummary
 	var id, daemon, state, created, lastActivity string
-	dest := append([]any{&id, &daemon, &state, &summary.Model, &created, &lastActivity, &summary.CostUSD}, extra...)
+	var parent sql.NullString
+	dest := append([]any{&id, &daemon, &parent, &state, &summary.Model, &created, &lastActivity, &summary.CostUSD}, extra...)
 	if err := row.Scan(dest...); err != nil {
 		return taskSummary{}, err
 	}
 	summary.ID, summary.DaemonID, summary.State = protocol.TaskID(id), protocol.DaemonID(daemon), TaskState(state)
+	if parent.Valid {
+		parentID := protocol.TaskID(parent.String)
+		summary.ParentID = &parentID
+	}
 	var err error
 	if summary.CreatedAt, err = parseTime(created); err != nil {
 		return taskSummary{}, fmt.Errorf("task %q created_at: %w", id, err)

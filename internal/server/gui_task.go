@@ -187,7 +187,7 @@ func (s *Server) postCommandForm(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if refused.problem == "" {
-		_, err = s.issueCommand(r.Context(), task, refused.kind, checked)
+		_, err = s.store.issueCommand(r.Context(), task, refused.kind, checked)
 		if errors.Is(err, errUnknownTask) {
 			http.Error(w, err.Error(), http.StatusNotFound)
 			return
