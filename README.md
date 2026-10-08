@@ -130,7 +130,8 @@ account's quota reading and the daemons, and has the form that starts a
 task: its prompt, an optional repository and ref, the model, the daemon
 to run it on or any connected daemon, its priority, whether it is filler
 (see [Scheduling](#scheduling)), and its pause limits. Each task page shows the transcript, asks for permission when
-the agent wants to run a tool, and has buttons to pause, resume,
+the agent wants to run a tool and the server runs with
+`-permissions ask`, and has buttons to pause, resume,
 interrupt or stop the task.
 
 A `stopped` or `failed` task's page, and a `failed` task among those
@@ -169,6 +170,13 @@ Server flags:
   stream open, before it is lost and its tasks move to other daemons
   (see [Lost daemons](#lost-daemons)); 10 minutes by default, and at
   least a minute, as a daemon retries every 30 seconds at most.
+- `-permissions`: who answers the agents' requests to run a tool
+  ([permission policy](docs/adr/2026-10-08-permission-policy.md)).
+  `allow-all`, the default, has the server allow every request as soon
+  as it arrives, and the task's transcript says it was allowed by
+  policy. With `ask`, each request waits, without limit, for the owner
+  to answer it on the task page or through the owner API. Changing it
+  does not answer requests already waiting.
 
 Without `-insecure-loopback`, the server also refuses to start until an
 owner token has been issued into its database.
