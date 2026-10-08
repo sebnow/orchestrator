@@ -86,7 +86,7 @@ func TestGivenMissingFlagsWhenASubcommandRunsThenItPrintsItsUsage(t *testing.T) 
 
 func TestGivenUnknownSubcommandWhenRunThenItListsTheSubcommands(t *testing.T) {
 	status, _, stderr := runCommand("issue-cert")
-	if status != 2 || !strings.Contains(stderr, "init-ca, issue-daemon-cert, issue-server-cert") {
+	if status != 2 || !strings.Contains(stderr, "init-ca, issue-daemon-cert, issue-owner-token, issue-server-cert") {
 		t.Errorf("status %d, stderr %q; want 2 and the subcommands", status, stderr)
 	}
 }

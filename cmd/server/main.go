@@ -40,6 +40,7 @@ var subcommands = map[string]func(args []string, stdout, stderr io.Writer) int{
 	"init-ca":           initCA,
 	"issue-server-cert": issueServerCert,
 	"issue-daemon-cert": issueDaemonCert,
+	"issue-owner-token": issueOwnerToken,
 }
 
 func run(args []string, stdout, stderr io.Writer) int {
