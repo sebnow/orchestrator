@@ -281,7 +281,7 @@ func TestGivenRunningTaskWhenStoppingThenItInterruptsClosesInputAndReturnsTheExi
 	f := startTestTask(t, startTestGateway(t), testTaskSpec)
 	f.proc.nextInput(t)
 
-	exit := f.task.Stop(t.Context())
+	exit := f.task.Stop(t.Context(), nil)
 
 	if got := []string{f.proc.nextInput(t).kind, f.proc.nextInput(t).kind}; !slices.Equal(got, []string{"interrupt", "close"}) {
 		t.Errorf("inputs = %q", got)
@@ -297,13 +297,95 @@ func TestGivenRunningTaskWhenStoppingThenItInterruptsClosesInputAndReturnsTheExi
 	}
 }
 
+// stopExitingWith stops f's task with cutShort and has the harness exit
+// with own once its input is closed, and returns what Stop returned.
+func stopExitingWith(t *testing.T, f taskFixture, own protocol.HarnessExited, cutShort func(string, protocol.HarnessExited) string) protocol.HarnessExited {
+	t.Helper()
+	f.proc.endOnClose = false
+	stopped := make(chan protocol.HarnessExited, 1)
+	go func() { stopped <- f.task.Stop(t.Context(), cutShort) }()
+	for f.proc.nextInput(t).kind != "close" {
+	}
+	f.proc.end(own)
+	return <-stopped
+}
+
+func TestGivenRunningTurnWhenStopCutsItShortAndTheHarnessExitsWithAnErrorThenTheExitSaysSoAndKeepsTheStderr(t *testing.T) {
+	f := startTestTask(t, startTestGateway(t), testTaskSpec)
+	f.proc.nextInput(t)
+	f.proc.emit(harness.Output{Line: []byte(`{"type":"system"}`), SessionID: "session-1"})
+	var gotSession string
+	var gotOwn protocol.HarnessExited
+
+	exit := stopExitingWith(t, f, protocol.HarnessExited{ExitCode: 1, Stderr: "tail"}, func(session string, own protocol.HarnessExited) string {
+		gotSession, gotOwn = session, own
+		return "cut short"
+	})
+
+	if want := (protocol.HarnessExited{ExitCode: -1, Error: "cut short", Stderr: "tail"}); exit != want {
+		t.Errorf("exit = %+v, want %+v", exit, want)
+	}
+	if gotSession != "session-1" || gotOwn.ExitCode != 1 {
+		t.Errorf("cutShort got session %q, own exit %+v", gotSession, gotOwn)
+	}
+	if s := f.task.State(); !s.CutShort {
+		t.Errorf("state = %+v, want cut short", s)
+	}
+	events := f.journal(t)
+	if last := events[len(events)-1]; string(last.Payload) != `{"exit_code":-1,"error":"cut short","stderr":"tail"}` {
+		t.Errorf("last event = %s %s", last.Kind, last.Payload)
+	}
+}
+
+func TestGivenRunningTurnWhenStopCutsItShortThenItsOwnExitIsKeptIfCleanOrIfCutShortGivesNoError(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		own  protocol.HarnessExited
+		text string
+	}{
+		{"clean exit", protocol.HarnessExited{}, "cut short"},
+		{"no error given", protocol.HarnessExited{ExitCode: 1}, ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := startTestTask(t, startTestGateway(t), testTaskSpec)
+			f.proc.nextInput(t)
+
+			exit := stopExitingWith(t, f, tc.own, func(string, protocol.HarnessExited) string { return tc.text })
+
+			if exit != tc.own || f.task.State().CutShort {
+				t.Errorf("exit = %+v, state %+v; want the harness's own exit", exit, f.task.State())
+			}
+		})
+	}
+}
+
+func TestGivenTurnThatHadEndedWhenStoppingThenNothingIsCutShort(t *testing.T) {
+	f := startTestTask(t, startTestGateway(t), testTaskSpec)
+	f.proc.endOnClose = false
+	in := f.proc.nextInput(t)
+	f.proc.emit(harness.Output{Line: []byte(`{"type":"result"}`), TurnEnded: true, Answering: []string{in.id}})
+	if in := f.proc.nextInput(t); in.kind != "close" {
+		t.Fatalf("input = %+v, want the input closed", in)
+	}
+	stopped := make(chan protocol.HarnessExited, 1)
+	go func() {
+		stopped <- f.task.Stop(t.Context(), func(string, protocol.HarnessExited) string { return "cut short" })
+	}()
+	f.proc.end(protocol.HarnessExited{ExitCode: 1})
+
+	if exit := <-stopped; exit.ExitCode != 1 || exit.Error != "" || f.task.State().CutShort {
+		t.Errorf("exit = %+v, want the harness's own", exit)
+	}
+	f.proc.noInput(t)
+}
+
 func TestGivenHarnessIgnoringClosedInputWhenStopTimesOutThenItIsKilled(t *testing.T) {
 	f := startTestTask(t, startTestGateway(t), testTaskSpec)
 	f.proc.endOnClose = false
 	ctx, cancel := context.WithTimeout(t.Context(), 50*time.Millisecond)
 	defer cancel()
 
-	exit := f.task.Stop(ctx)
+	exit := f.task.Stop(ctx, nil)
 
 	if exit.ExitCode != -1 || exit.Error != "signal: killed" {
 		t.Errorf("exit = %+v", exit)

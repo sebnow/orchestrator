@@ -90,6 +90,10 @@ type State struct {
 	PausePickedUp bool
 	// StopNote is the agent's note from its latest pause acknowledgement.
 	StopNote string
+	// CutShort is set once Running is false when Stop interrupted the
+	// running turn and Exit reports it cut short rather than the
+	// harness's own exit.
+	CutShort bool
 }
 
 // Task is one running harness and its journal.
@@ -118,6 +122,10 @@ type Task struct {
 	exit        *protocol.HarnessExited
 	limits      PauseLimits
 	pause       pause
+	// cutShort is the one Stop was given when it interrupted a running
+	// turn; nil otherwise.
+	cutShort     func(session string, own protocol.HarnessExited) string
+	exitCutShort bool
 }
 
 type pendingPermission struct {
@@ -268,16 +276,38 @@ func (t *Task) run(unregister func()) {
 	if readErr != nil && exit.Error == "" {
 		exit.Error = "read harness output: " + readErr.Error()
 	}
+	exit, cutShort := t.reportCutShort(exit)
 	t.record(protocol.KindHarnessExited, exit)
 	unregister()
 	t.journal.close()
 
 	t.mu.Lock()
 	t.exit = &exit
+	t.exitCutShort = cutShort
 	t.pause.stopTimer()
 	t.notifyLocked()
 	t.mu.Unlock()
 	close(t.done)
+}
+
+// reportCutShort returns the exit to journal for the harness's own exit
+// own, and whether it reports the turn cut short. A turn Stop interrupted
+// is reported with the error its cutShort gives, and ExitCode -1, unless
+// the harness exited cleanly or cutShort gives no error. Claude Code
+// exits 1 after an interrupted turn, because the turn's result is an
+// error (docs/design/2026-10-08-shutdown-findings.md).
+func (t *Task) reportCutShort(own protocol.HarnessExited) (protocol.HarnessExited, bool) {
+	t.mu.Lock()
+	cutShort, session := t.cutShort, t.session
+	t.mu.Unlock()
+	if cutShort == nil || own.ExitCode == 0 && own.Error == "" {
+		return own, false
+	}
+	text := cutShort(session, own)
+	if text == "" {
+		return own, false
+	}
+	return protocol.HarnessExited{ExitCode: -1, Error: text, Stderr: own.Stderr}, true
 }
 
 // handleOutput updates the task's state from one line of output. It
@@ -353,6 +383,7 @@ func (t *Task) stateLocked() State {
 		Pause:         t.pause.state,
 		PausePickedUp: t.pause.pickedUp,
 		StopNote:      t.pause.note,
+		CutShort:      t.exitCutShort,
 	}
 	for _, p := range t.permissions {
 		s.Permissions = append(s.Permissions, p.request)
@@ -441,8 +472,21 @@ func (t *Task) interrupt() error {
 // Stop ends the task: it interrupts the running turn, closes the
 // harness's input and waits for it to exit. If ctx ends first the harness
 // is killed.
-func (t *Task) Stop(ctx context.Context) protocol.HarnessExited {
+//
+// cutShort, when not nil, words the end of a turn that Stop interrupts:
+// unless the harness then exits cleanly, the task journals a
+// harness_exited with ExitCode -1 and the error cutShort returns, given
+// the session the task last reported and the harness's own exit, and
+// State.CutShort is set. An empty error keeps the harness's own exit.
+func (t *Task) Stop(ctx context.Context, cutShort func(session string, own protocol.HarnessExited) string) protocol.HarnessExited {
 	t.commands.Lock()
+	// Set before the interrupt is sent, so that the harness cannot exit
+	// before the task knows its turn was cut short.
+	t.mu.Lock()
+	if !t.ended() {
+		t.cutShort = cutShort
+	}
+	t.mu.Unlock()
 	t.interrupt()
 	t.mu.Lock()
 	closed := t.closing

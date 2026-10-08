@@ -72,7 +72,7 @@ func startLiveTask(t *testing.T, ctx context.Context, prompt string, limits daem
 	t.Cleanup(func() {
 		stopCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
-		lt.task.Stop(stopCtx)
+		lt.task.Stop(stopCtx, nil)
 	})
 	return lt
 }
@@ -182,7 +182,7 @@ func TestLiveGivenOneTurnPromptWhenItRunsThenTheJournalHoldsInitAssistantAndResu
 	lt := startLiveTask(t, ctx, "Reply with exactly the word READY and nothing else.", daemon.PauseLimits{Acknowledge: time.Minute, Cleanup: time.Minute})
 
 	waitFor(t, ctx, lt.task, "the turn to end", turnsSettled(1))
-	exit := lt.task.Stop(ctx)
+	exit := lt.task.Stop(ctx, nil)
 
 	events := lt.journal(t)
 	assertContiguous(t, events)
@@ -255,7 +255,7 @@ func TestLiveGivenToolsThatNeedPermissionWhenTheOwnerAllowsOneAndDeniesTheOtherT
 	})
 
 	waitFor(t, ctx, lt.task, "the turn to end", turnsSettled(1))
-	lt.task.Stop(ctx)
+	lt.task.Stop(ctx, nil)
 
 	if _, err := os.Stat(filepath.Join(lt.workdir, "spike-allowed.txt")); err != nil {
 		t.Errorf("allowed command did not run: %v", err)
@@ -484,7 +484,7 @@ func TestLiveGivenPermissionRequestUnansweredForSixMinutesWhenTheOwnerAllowsItTh
 		return harness.Decision{Message: "Not part of this test."}
 	})
 	waitFor(t, ctx, lt.task, "the turn to end", turnsSettled(1))
-	lt.task.Stop(ctx)
+	lt.task.Stop(ctx, nil)
 
 	if _, err := os.Stat(filepath.Join(lt.workdir, "held.txt")); err != nil {
 		t.Errorf("the allowed command did not run: %v", err)

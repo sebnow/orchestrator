@@ -428,3 +428,77 @@ func TestGivenProcessThatDoesNotExitAfterItsTurnWhenAPromptWaitsForItThenItIsKil
 		t.Errorf("events: %s", describe(events))
 	}
 }
+
+// stopDuringTurn shuts the daemon d down while proc's turn runs, and has
+// the harness exit with own once the daemon closes its input.
+func stopDuringTurn(t *testing.T, d *daemonFixture, proc *fakeProcess, own protocol.HarnessExited) {
+	t.Helper()
+	proc.endOnClose = false
+	stopped := make(chan struct{})
+	go func() {
+		d.stop(t)
+		close(stopped)
+	}()
+	if in := proc.nextInput(t); in.kind != "interrupt" {
+		t.Fatalf("input = %+v, want an interrupt", in)
+	}
+	if in := proc.nextInput(t); in.kind != "close" {
+		t.Fatalf("input = %+v, want the input closed", in)
+	}
+	proc.end(own)
+	<-stopped
+}
+
+func TestGivenRunningTurnWhenTheDaemonShutsDownThenTheTaskIsPausedAndAfterARestartResumeContinuesItsSession(t *testing.T) {
+	srv := startServer(t)
+	stateDir := t.TempDir()
+	first := runDaemon(t, srv.url, stateDir)
+	task := srv.createTask(t, testDaemon, protocol.StartTask{Prompt: "Do the work.", PauseLimits: testPauseLimits})
+	proc := first.nextProcess(t)
+	proc.nextInput(t)
+	proc.emit(harness.Output{Line: []byte(`{"type":"system","subtype":"init"}`), SessionID: "session-1"})
+	srv.waitForEvent(t, task, "seq 2", hasSeq(2))
+
+	// Claude Code exits 1 after an interrupted turn.
+	stopDuringTurn(t, first, proc, protocol.HarnessExited{ExitCode: 1, Stderr: "tail"})
+
+	events := srv.waitForEvent(t, task, "harness_exited", isKind(protocol.KindHarnessExited))
+	if last := events[len(events)-1]; string(last.Payload) != `{"exit_code":-1,"error":"`+stopError+`","stderr":"tail"}` {
+		t.Errorf("events: %s", describe(events))
+	}
+	srv.waitForState(t, task, "paused")
+	if rec, _ := mustLoadState(t, stateDir).record(task); rec.Ended || !rec.CutShort || rec.Session != "session-1" {
+		t.Errorf("record = %+v", rec)
+	}
+
+	second := runDaemon(t, srv.url, stateDir)
+	srv.command(t, task, protocol.CommandResume, nil)
+
+	resumed := second.nextProcess(t)
+	if resumed.spec.Resume != "session-1" {
+		t.Errorf("spec = %+v, want session-1 resumed", resumed.spec)
+	}
+	if in := finishTurn(t, resumed, "session-1"); in.text != resumePrompt+cutShortNote {
+		t.Errorf("resume prompt = %q", in.text)
+	}
+	expectExit(t, resumed)
+	srv.waitForState(t, task, "finished")
+	assertContiguous(t, srv.events(t, task))
+}
+
+func TestGivenFirstTurnBeforeASessionWhenTheDaemonShutsDownThenResumeStartsANewSession(t *testing.T) {
+	srv := startServer(t)
+	stateDir := t.TempDir()
+	first := runDaemon(t, srv.url, stateDir)
+	task := srv.createTask(t, testDaemon, protocol.StartTask{Prompt: "Do the work.", PauseLimits: testPauseLimits})
+	proc := first.nextProcess(t)
+	proc.nextInput(t)
+
+	stopDuringTurn(t, first, proc, protocol.HarnessExited{ExitCode: 1})
+
+	events := srv.waitForEvent(t, task, "harness_exited", isKind(protocol.KindHarnessExited))
+	if last := events[len(events)-1]; string(last.Payload) != `{"exit_code":-1,"error":"`+stopNoSessionError+`"}` {
+		t.Errorf("events: %s", describe(events))
+	}
+	srv.waitForState(t, task, "paused")
+}

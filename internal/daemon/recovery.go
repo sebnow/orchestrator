@@ -27,6 +27,34 @@ const (
 	restartLostError = "daemon restarted and the task cannot be resumed"
 )
 
+// The errors of the harness_exited event a stopping daemon writes for each
+// task whose turn its shutdown cut short, when the task can be resumed
+// (docs/adr/2026-10-08-shutdown-recovery.md). The server reads them as it
+// reads restartError and restartNoSessionError, and words them the same in
+// internal/server.
+const (
+	stopError          = "daemon stopped during the turn"
+	stopNoSessionError = "daemon stopped during the turn, before the harness reported a session"
+)
+
+// stopText is the harness_exited error a stopping daemon gives for a turn
+// it cut short, given the task's record and the session its process last
+// reported. It is empty for a task that cannot be resumed, which the
+// harness's own exit then ends.
+func stopText(rec taskRecord, session string) string {
+	if session != "" {
+		rec.Session = session
+	}
+	switch {
+	case !rec.resumable():
+		return ""
+	case rec.Session == "":
+		return stopNoSessionError
+	default:
+		return stopError
+	}
+}
+
 // restartExit is the harness_exited a restarted daemon writes for a task
 // whose turn its previous process cut short, given the task's record.
 func restartExit(rec taskRecord) protocol.HarnessExited {

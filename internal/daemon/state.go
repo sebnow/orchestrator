@@ -53,8 +53,8 @@ type taskRecord struct {
 	// Ended says the task was stopped or failed; it is never resumed and
 	// is forgotten once the server holds all of it.
 	Ended bool `json:"ended,omitempty"`
-	// CutShort says a daemon restart cut the latest process's turn
-	// short (docs/adr/2026-10-08-restart-recovery.md). Its JSON name
+	// CutShort says the daemon cut the latest process's turn short, by
+	// dying or by shutting down (docs/adr/2026-10-08-shutdown-recovery.md). Its JSON name
 	// predates the Go name, so that state files written before keep their
 	// meaning.
 	CutShort bool `json:"restarted,omitempty"`

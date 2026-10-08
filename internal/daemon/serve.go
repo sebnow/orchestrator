@@ -272,7 +272,7 @@ func (s *service) work(task protocol.TaskID, w *worker) {
 			t = nil
 		case <-s.stopping.Done():
 			ctx, cancel := context.WithTimeout(context.Background(), s.cfg.ShutdownTimeout)
-			t.Stop(ctx)
+			t.Stop(ctx, s.cutShortByShutdown(task))
 			cancel()
 			s.processEnded(task, t, false)
 			t = nil
@@ -298,16 +298,33 @@ func (s *service) awaitExit(task protocol.TaskID, t *Task) {
 	s.processEnded(task, t, false)
 }
 
+// stopProcess stops the process t, whose turn is over, so nothing it
+// does is cut short.
 func (s *service) stopProcess(t *Task) {
 	ctx, cancel := context.WithTimeout(context.Background(), s.cfg.ShutdownTimeout)
 	defer cancel()
-	t.Stop(ctx)
+	t.Stop(ctx, nil)
+}
+
+// cutShortByShutdown words the end of task's turn when the daemon's
+// shutdown interrupts it: the task stays resumable, as after a restart
+// (docs/adr/2026-10-08-shutdown-recovery.md), when its record allows.
+func (s *service) cutShortByShutdown(task protocol.TaskID) func(string, protocol.HarnessExited) string {
+	return func(session string, own protocol.HarnessExited) string {
+		rec, _ := s.state.record(task)
+		text := stopText(rec, session)
+		if text != "" {
+			s.log.Info("shutdown cut the turn short; the task can be resumed", "task", task, "exit_code", own.ExitCode, "error", own.Error)
+		}
+		return text
+	}
 }
 
 // processEnded records the end of task's process t: the harness session
 // and the seq to resume from, whether it was paused, and whether the task
-// has ended for good, because it was stopped or the harness failed. The
-// journal is released to the sender.
+// has ended for good, because it was stopped or the harness failed
+// without the daemon cutting its turn short. The journal is released to
+// the sender.
 func (s *service) processEnded(task protocol.TaskID, t *Task, stopped bool) {
 	st := t.State()
 	clean := st.Exit != nil && st.Exit.ExitCode == 0 && st.Exit.Error == ""
@@ -321,14 +338,14 @@ func (s *service) processEnded(task protocol.TaskID, t *Task, stopped bool) {
 		if rec.Paused {
 			rec.StopNote = st.StopNote
 		}
-		rec.Ended = rec.Ended || stopped || !clean
-		rec.CutShort = false
+		rec.Ended = rec.Ended || stopped || !clean && !st.CutShort
+		rec.CutShort = st.CutShort
 	})
 	if err != nil {
 		s.log.Error("record the end of a process", "task", task, "error", err)
 	}
 	s.sender.notify(task)
-	s.log.Info("process ended", "task", task, "exit_code", st.Exit.ExitCode, "paused", st.Pause == Paused, "stopped", stopped)
+	s.log.Info("process ended", "task", task, "exit_code", st.Exit.ExitCode, "paused", st.Pause == Paused, "cut_short", st.CutShort, "stopped", stopped)
 }
 
 // startTask prepares the task's workspace and starts its first process.
