@@ -72,14 +72,15 @@ the daemon deletes the session id it stored for the task.
 - `finished` is not terminal: a prompt makes the task `running` again.
 - Each turn pays the start-up of a new process, and the session must be
   resumable on the daemon's machine, by its OS user, from the task's
-  workspace. **UNVERIFIED:** a resume from another directory, user or
-  machine, after compaction, or with the session file gone; the spike
-  tried none.
+  workspace.
 - A daemon shutdown between turns loses no work, because an idle task has
   no process. A turn the shutdown interrupts ends with a clean exit, and
-  the task is `finished`. **UNVERIFIED:** that such a task resumes after
-  the daemon restarts; the spike did not try it. A daemon that crashed
-  mid-turn marks the task `failed` when it restarts.
+  the task is `finished`. In one live run, the turn a clean shutdown
+  interrupted ended instead with exit code 1, and the task `failed`, so
+  it could not be resumed after the daemon restarted
+  ([marker verification](../design/2026-10-08-marker-verification.md),
+  "A turn interrupted by a clean shutdown ended `failed`"). A daemon
+  that crashed mid-turn marks the task `failed` when it restarts.
 
 Revisit when adopting a harness that cannot resume a session in a new
 process.
