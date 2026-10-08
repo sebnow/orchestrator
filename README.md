@@ -165,6 +165,10 @@ Server flags:
   window, from 0 to 1, below which filler tasks run; 0.5 by default
   (see [Scheduling](#scheduling)).
 - `-low-threshold`: the same for low-priority tasks; 0.85 by default.
+- `-daemon-timeout`: how long a daemon may go unseen, with no command
+  stream open, before it is lost and its tasks move to other daemons
+  (see [Lost daemons](#lost-daemons)); 10 minutes by default, and at
+  least a minute, as a daemon retries every 30 seconds at most.
 
 Without `-insecure-loopback`, the server also refuses to start until an
 owner token has been issued into its database.
@@ -283,8 +287,7 @@ without queueing.
   exits. A task started without a daemon goes to the connected daemon
   with the most free slots, and stays on that daemon, where its
   workspace is. Turns for a daemon that is not connected wait until it
-  reconnects; a task bound to a daemon that never returns stays queued
-  until the owner stops it.
+  reconnects, or until it is lost (see [Lost daemons](#lost-daemons)).
 - **Priority.** A task is `low`, `normal` or `high`, `normal` by
   default. Waiting turns are admitted highest priority first, oldest
   first within a priority. A turn that cannot run yet does not hold up
@@ -308,6 +311,35 @@ without queueing.
 
 A task whose turn waits shows a `queued` badge with its place in the
 queue and the reason it waits.
+
+### Lost daemons
+
+A daemon is lost once it has had no command stream open, and made no
+request, for `-daemon-timeout`; time before the server started does not
+count ([daemon loss](docs/adr/2026-10-08-daemon-loss.md)). The
+dashboard's list of daemons says since when each lost daemon has been
+lost, until it connects again.
+
+A task on a lost daemon moves to another daemon: its workspace and its
+Claude Code session stay on the lost machine, so the task starts again
+in a fresh clone and a new session, with its first prompt and a note
+that its earlier work is gone, quoting the owner's latest prompt to it.
+A task in the middle of a turn, or with a prompt or resume waiting,
+moves when the daemon is declared lost; a `finished` task with a
+message waiting does too. A `finished`, `paused` or `yielded` task with
+nothing waiting moves when its next turn is queued, so a daemon that
+returns first keeps it. A moved task goes to the connected daemon with
+the most free slots, or a child to its parent's daemon if that has one
+free, and never to a daemon it ran on before; while only such daemons
+are connected it waits. Its page shows the move. Of the prompts the
+owner queued for it, only the latest is quoted; the others are dropped.
+A task waiting for its start on a lost daemon the owner named is placed
+as if the owner had named none.
+
+When a lost daemon connects again and sends events of a task that has
+moved, the server refuses them, and the daemon kills that task's
+`claude` process and deletes the task's record, journal and workspace.
+A daemon that has nothing left to send for a moved task keeps them.
 
 ## Version control
 
