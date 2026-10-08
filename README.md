@@ -39,7 +39,8 @@ Chromium only for Linux. A failing step saves a screenshot, which
 The server stores daemons, tasks and their events, and serves the GUI.
 The daemon runs the tasks with Claude Code, so `claude` must be
 installed and logged in for the user who starts the daemon. The daemon
-clones a task's repository with the `git` on the daemon's `PATH`, so
+clones a task's repository, and pushes the task's branch to it, with
+the `git` on the daemon's `PATH`, so
 `git` must be installed on every daemon's machine. A missing `git`
 shows only when a task with a repository starts, and fails it. Build both
 from the repository root:
@@ -131,8 +132,9 @@ task: its prompt, an optional repository and ref, the model, the daemon
 to run it on or any connected daemon, its priority, whether it is filler
 (see [Scheduling](#scheduling)), and its pause limits. Each task page shows the transcript, asks for permission when
 the agent wants to run a tool and the server runs with
-`-permissions ask`, and has buttons to pause, resume,
-interrupt or stop the task.
+`-permissions ask`, shows the branch the daemon pushed the task's work
+to (see [Tasks](#tasks)), and has buttons to pause, resume, interrupt
+or stop the task.
 
 A `stopped` or `failed` task's page, and a `failed` task among those
 that need attention, have a Dismiss button. A dismissed task no longer
@@ -217,13 +219,43 @@ Daemon flags:
 ### Tasks
 
 Without a repository, a task starts in an empty directory. With one, it
-starts in a clone checked out at the ref. The daemon accepts only a
-repository given as an `https://` URL with a host, so an ssh URL or a
-local path fails the task, as does a ref that starts with `-`. `git`
-runs with credential prompts off and ignores the user's and the
+starts in a clone on the branch `orchestrator/<task id>`, created at
+the ref, or checked out from the repository when it has that branch
+already. The daemon accepts a repository given as an `https://` or
+`ssh://` URL with a host, or as an ssh address such as
+`git@github.com:owner/repo.git`. A local path, `file://` or `git://`
+fails the task, as does a ref that starts with `-`.
+
+The daemon delivers a task's work by pushing its branch to the
+repository; nothing of the work goes to the server
+([work delivery](docs/adr/2026-10-08-work-delivery.md)). At the end of
+every turn, when the branch holds commits that the repository's copy of
+it lacks, the daemon pushes it with a plain `git push`, never forced,
+and the task page shows the branch, the commit pushed, how many commits
+the branch holds beyond the ref, how many files the agent left
+uncommitted, and any push error. The dashboard's task list shows each
+task's branch and marks a failed push. The daemon adds to the task's
+system prompt that the agent must commit its work on the branch and
+never push. A `pre-push` hook in the clone refuses to push any other
+ref, and the daemon refuses to push the ref the task started from or
+the repository's default branch. Work the agent did not commit is not
+delivered. A child task gets a branch of its own, starting at its
+parent's ref.
+
+The daemon's `git` runs with prompts off and ignores the user's and the
 system's git configuration, credential helpers and URL rewrites
-included, so a repository that needs credentials fails to clone and
-the task fails.
+included (`GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1
+GIT_TERMINAL_PROMPT=0`), for cloning and for pushing. ssh still
+authenticates with the daemon user's `~/.ssh`: its config, its keys,
+its `known_hosts`, and its ssh agent. ssh runs in batch mode, so a host
+missing from `known_hosts` or a key that needs a passphrase fails the
+clone or the push rather than waiting. Pushing needs those credentials
+on every daemon's machine, with write access to the repository; a
+repository over https that needs credentials fails to clone, as no
+credential helper applies. The agent runs as the same user and can read
+those credentials. Its own `git` commands use that user's git
+configuration, so its commits carry that user's identity and follow
+its signing settings.
 
 Each turn of a task runs in its own `claude` process, which exits when
 the turn ends. The task is then `finished`, `paused` if the owner paused
@@ -246,7 +278,10 @@ when the task ends for good on that daemon: when the owner stops it,
 and when its `claude` process fails or it cannot start. A daemon
 starting on its `-state-dir` also deletes every working directory under
 `workspaces/` of a task it no longer knows or cannot run again. A task
-a shutdown or restart paused keeps its working directory.
+a shutdown or restart paused keeps its working directory. Before it
+deletes a clone, the daemon pushes the task's branch if it holds
+commits the repository lacks; if that push fails, the daemon keeps the
+clone, logs the failure, and tries again the next time it starts.
 
 An agent can start child tasks and message other tasks with two tools
 the daemon gives it, `spawn_task` and `send_message`
@@ -348,6 +383,10 @@ A task on a lost daemon moves to another daemon: its workspace and its
 Claude Code session stay on the lost machine, so the task starts again
 in a fresh clone and a new session, with its first prompt and a note
 that its earlier work is gone, quoting the owner's latest prompt to it.
+For a task with a repository, the fresh clone checks out the task's
+branch as the lost daemon last pushed it, and the note says that only
+the work not pushed is gone
+([work delivery](docs/adr/2026-10-08-work-delivery.md)).
 A task in the middle of a turn, or with a prompt or resume waiting,
 moves when the daemon is declared lost; a `finished` task with a
 message waiting does too. A `finished`, `paused` or `yielded` task with
