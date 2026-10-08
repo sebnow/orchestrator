@@ -76,13 +76,19 @@ the harness's input, and the task ends as the harness's exit says.
   has to kill the harness after its shutdown timeout, 30 seconds by
   default.
 - The daemon does not tie the harness process to its own life.
-  **UNVERIFIED:** that the harness exits when the daemon dies. A harness
-  still running its turn when the restarted daemon resumes the session
-  would share the session with the new process; this decision does not
-  guard against that.
-- **UNVERIFIED:** that Claude Code resumes a session whose last turn
-  was cut off; the [resume spike](../design/2026-10-08-resume-spike.md)
-  resumed only sessions whose turns had ended.
+  In one live run, the harness outlived a daemon killed with SIGKILL by
+  23 seconds and then exited on its own
+  ([marker verification](../design/2026-10-08-marker-verification.md),
+  "The harness outlived a killed daemon by 23 seconds"). The daemon does
+  nothing about a harness that outlives it. A harness still running its
+  turn when the restarted daemon resumes the session would share the
+  session with the new process; this decision does not guard against
+  that.
+- Claude Code resumed a session whose last turn was cut off. In the
+  same live run, the process the owner's Resume started continued the
+  killed turn's session id, ran the steps that remained, and finished
+  ([marker verification](../design/2026-10-08-marker-verification.md),
+  "A turn cut off by the daemon's death resumed in the same session").
 
 Revisit if the protocol gains a field saying why a process ended, or if
 a clean shutdown should pause tasks too.
