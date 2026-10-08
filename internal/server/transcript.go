@@ -83,7 +83,7 @@ func assemble(task protocol.TaskID, h history) []transcript.Entry {
 			}
 			started[command.TaskID] = command.DaemonID
 		}
-		for _, body := range commandBodies(task, h.parent, command, movedFrom, delivered[command.ID]) {
+		for _, body := range commandBodies(task, h.parent, command, movedFrom, delivered[command.ID], h.byPolicy[command.ID]) {
 			fromCommands = append(fromCommands, transcript.Entry{Time: command.Time, Source: source, Body: body})
 		}
 	}
@@ -153,7 +153,9 @@ func eventBodies(event protocol.Event) []transcript.Body {
 // task's own is a TaskMoved, and a child's adds nothing. A prompt with
 // a sender delivered the messages in delivered, one entry each; when they
 // cannot be found, the prompt's own text and sender stand for them.
-func commandBodies(task protocol.TaskID, parent *protocol.TaskID, command protocol.Command, movedFrom *protocol.DaemonID, delivered []storedMessage) []transcript.Body {
+// An answer_permission was given by the permission policy when byPolicy
+// is set, and by the owner otherwise.
+func commandBodies(task protocol.TaskID, parent *protocol.TaskID, command protocol.Command, movedFrom *protocol.DaemonID, delivered []storedMessage, byPolicy bool) []transcript.Body {
 	var body transcript.Body
 	ok := true
 	switch command.Kind {
@@ -203,7 +205,13 @@ func commandBodies(task protocol.TaskID, parent *protocol.TaskID, command protoc
 	case protocol.CommandStop:
 		body = transcript.StopRequested{}
 	case protocol.CommandAnswerPermission:
-		body, ok = decodeBody(command.Payload, func(p protocol.AnswerPermission) transcript.Body { return transcript.PermissionAnswered(p) })
+		answeredBy := transcript.AnsweredByOwner
+		if byPolicy {
+			answeredBy = transcript.AnsweredByPolicy
+		}
+		body, ok = decodeBody(command.Payload, func(p protocol.AnswerPermission) transcript.Body {
+			return transcript.PermissionAnswered{RequestID: p.RequestID, Allow: p.Allow, Message: p.Message, By: answeredBy}
+		})
 	default:
 		ok = false
 	}

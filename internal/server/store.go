@@ -92,6 +92,10 @@ var migrations = [...]string{
 	// seq_base.
 	`ALTER TABLE daemons ADD COLUMN lost_at TEXT;
 	ALTER TABLE tasks ADD COLUMN seq_base INTEGER NOT NULL DEFAULT 0 CHECK (seq_base >= 0);`,
+	// Version 8 records which answer_permission commands the server's
+	// permission policy issued rather than the owner
+	// (docs/adr/2026-10-08-permission-policy.md).
+	`ALTER TABLE commands ADD COLUMN by_policy INTEGER NOT NULL DEFAULT 0 CHECK (by_policy IN (0, 1));`,
 }
 
 // schemaVersion is the version this server migrates databases to. A
@@ -141,6 +145,9 @@ type Store struct {
 	// command or changed a task's transcript, so that open streams can be
 	// woken.
 	published func(effects)
+	// permissions, when set, decides each permission request as it is
+	// stored; when nil, every request waits for the owner.
+	permissions Policy
 }
 
 // effects are what a write transaction did that open streams and the
@@ -297,7 +304,9 @@ const heldSeqColumn = `CASE WHEN EXISTS (SELECT 1 FROM events WHERE task_id = t.
 // A task the batch leaves finished has the messages waiting in its inbox
 // queued for delivery, a task the batch leaves yielded has its resume
 // queued, and the parent of a task the batch ends is told, as are the
-// senders of the messages left undelivered in its inbox.
+// senders of the messages left undelivered in its inbox. Each permission
+// request the batch stores is put to the permission policy, if any, and
+// answered unless the policy leaves it to the owner.
 func (s *Store) appendEvents(ctx context.Context, daemon protocol.DaemonID, events []protocol.Event) (held map[protocol.TaskID]uint64, conflicts []protocol.Event, err error) {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -352,6 +361,9 @@ func (s *Store) appendEvents(ctx context.Context, daemon protocol.DaemonID, even
 		return nil, nil, err
 	}
 
+	// requests are the permission requests the batch stored for the first
+	// time, for the permission policy to decide.
+	var requests []protocol.Event
 	for _, event := range events {
 		stored := int64(event.Seq) + bases[event.TaskID]
 		result, err := tx.ExecContext(ctx, `
@@ -368,6 +380,9 @@ func (s *Store) appendEvents(ctx context.Context, daemon protocol.DaemonID, even
 			return nil, nil, fmt.Errorf("store event %s/%d: %w", event.TaskID, event.Seq, err)
 		}
 		if inserted == 1 {
+			if event.Kind == protocol.KindPermissionRequested {
+				requests = append(requests, event)
+			}
 			stopped := false
 			if event.Kind == protocol.KindHarnessExited {
 				if stopped, err = stopIssued(ctx, tx, event.TaskID); err != nil {
@@ -415,6 +430,11 @@ func (s *Store) appendEvents(ctx context.Context, daemon protocol.DaemonID, even
 			if err := queueYieldedResume(ctx, tx, task, &fx); err != nil {
 				return nil, nil, err
 			}
+		}
+	}
+	if s.permissions != nil {
+		if err := answerByPolicy(ctx, tx, s.permissions, daemon, requests, &fx); err != nil {
+			return nil, nil, err
 		}
 	}
 
@@ -644,6 +664,8 @@ type history struct {
 	parent   *protocol.TaskID
 	events   []protocol.Event
 	commands []protocol.Command
+	// byPolicy holds the ids of the commands the permission policy issued.
+	byPolicy map[uint64]bool
 	messages []storedMessage
 }
 
@@ -691,7 +713,7 @@ func (s *Store) taskHistory(ctx context.Context, task protocol.TaskID) (history,
 		return history{}, err
 	}
 	rows, err := tx.QueryContext(ctx, `
-		SELECT id, daemon_id, task_id, kind, time, payload FROM commands
+		SELECT id, daemon_id, task_id, kind, time, payload, by_policy FROM commands
 		WHERE task_id = ?1 OR kind = ?2 AND task_id IN (SELECT id FROM tasks WHERE parent_id = ?1)
 		ORDER BY id`, string(task), string(protocol.CommandStartTask))
 	if err != nil {
@@ -702,8 +724,15 @@ func (s *Store) taskHistory(ctx context.Context, task protocol.TaskID) (history,
 		var id int64
 		var daemon, owner, kind, issued string
 		var payload []byte
-		if err := rows.Scan(&id, &daemon, &owner, &kind, &issued, &payload); err != nil {
+		var byPolicy bool
+		if err := rows.Scan(&id, &daemon, &owner, &kind, &issued, &payload, &byPolicy); err != nil {
 			return history{}, fmt.Errorf("read commands of task %q: %w", task, err)
+		}
+		if byPolicy {
+			if h.byPolicy == nil {
+				h.byPolicy = make(map[uint64]bool)
+			}
+			h.byPolicy[uint64(id)] = true
 		}
 		at, err := parseTime(issued)
 		if err != nil {

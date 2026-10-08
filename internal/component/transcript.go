@@ -57,6 +57,12 @@ func TranscriptEntry(entry transcript.Entry) html.Node {
 		if b.Allow {
 			label = "Owner allowed request " + b.RequestID
 		}
+		if b.By == transcript.AnsweredByPolicy {
+			from, label = "daemon", "Request "+b.RequestID+" denied by policy"
+			if b.Allow {
+				label = "Request " + b.RequestID + " allowed by policy"
+			}
+		}
 		if b.Message != "" {
 			body = preformatted(b.Message)
 		}

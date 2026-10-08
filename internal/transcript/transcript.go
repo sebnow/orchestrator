@@ -90,13 +90,23 @@ type StopRequested struct{}
 // Interrupted is the owner's emergency stop of the running turn.
 type Interrupted struct{}
 
-// PermissionAnswered is the owner's answer to a PermissionRequested with
-// the same RequestID.
+// PermissionAnswered is the answer to a PermissionRequested with the
+// same RequestID, given by whoever By names.
 type PermissionAnswered struct {
 	RequestID string
 	Allow     bool
 	Message   string
+	By        AnsweredBy
 }
+
+// AnsweredBy names who answered a permission request: the owner, or the
+// server's permission policy (docs/adr/2026-10-08-permission-policy.md).
+type AnsweredBy string
+
+const (
+	AnsweredByOwner  AnsweredBy = "owner"
+	AnsweredByPolicy AnsweredBy = "policy"
+)
 
 // AgentText is text the agent wrote to the owner.
 type AgentText struct {

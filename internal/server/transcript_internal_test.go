@@ -69,7 +69,7 @@ func TestGivenMixedHistoryWhenAssemblingThenEachListKeepsItsOrderAndTheyInterlea
 		{fromEvent(2), at(3), transcript.AgentText{Text: "on it"}},
 		{fromEvent(2), at(3), transcript.ToolCall{ID: "t1", Name: "Bash", Input: json.RawMessage(`{"command":"ls"}`)}},
 		{fromEvent(3), at(4), transcript.PermissionRequested{RequestID: "r1", Tool: "Bash", Input: json.RawMessage(`{"command":"ls"}`)}},
-		{fromCommand(11), at(5), transcript.PermissionAnswered{RequestID: "r1", Allow: true}},
+		{fromCommand(11), at(5), transcript.PermissionAnswered{RequestID: "r1", Allow: true, By: transcript.AnsweredByOwner}},
 		{fromCommand(12), at(4.5), transcript.PauseRequested{}},
 		{fromEvent(4), at(6), transcript.PauseSettled{Interrupted: true}},
 		{fromEvent(5), at(7), transcript.Unknown{RecordKind: "harness_output", Raw: json.RawMessage(`{"type":"assistant"}`)}},

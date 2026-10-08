@@ -80,6 +80,10 @@ type Options struct {
 	// Now is the scheduler's clock, which also stamps when a daemon was
 	// last seen; nil is time.Now.
 	Now func() time.Time
+	// Permissions decides permission requests as they are stored
+	// (docs/adr/2026-10-08-permission-policy.md); nil hands every request
+	// to the owner, as AskOwner does.
+	Permissions Policy
 }
 
 // New returns a server over store. The server hears of store's changes
@@ -107,6 +111,7 @@ func New(store *Store, log *slog.Logger, options Options) *Server {
 		now = time.Now
 	}
 	store.now = now
+	store.permissions = options.Permissions
 	s.sched = &scheduler{store: store, log: log, policy: policy, now: now, connected: s.connectedDaemons, upSince: now(), wake: make(chan struct{}, 1)}
 	store.published = s.storeChanged
 	s.mux.Handle("POST /v1/daemons/{daemon}/events", s.daemonOnly(s.postEvents))
