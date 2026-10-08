@@ -3,7 +3,9 @@ package daemon
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
+	"io/fs"
 	"net"
 	"net/http"
 	"net/url"
@@ -302,10 +304,7 @@ func TestGivenDaemonThatDiedWithATaskRunningWhenANewOneStartsOnItsStateThenTheTa
 	// What a crash leaves on disk: the state directory as it is while the
 	// task runs. The first daemon is then cut off and stopped, so nothing
 	// it does after this point reaches the server.
-	crashed := t.TempDir()
-	if err := os.CopyFS(crashed, os.DirFS(first.stateDir)); err != nil {
-		t.Fatal(err)
-	}
+	crashed := copyStateDir(t, first.stateDir)
 	proxy.cutAll()
 	first.stop(t)
 	pause := srv.command(t, task, protocol.CommandPause, nil)
@@ -395,5 +394,23 @@ func TestGivenRepositoryThatIsNotAnHTTPSURLWhenTheTaskStartsThenItEndsSayingSoAn
 	}
 	if len(d.harness.started) != 0 {
 		t.Error("a harness started")
+	}
+}
+
+// copyStateDir copies a running daemon's state directory, as a crash
+// would leave it, and returns the copy. The daemon replaces state.json by
+// renaming a temporary file, which can vanish between the copy listing
+// it and reading it; the copy is then made again.
+func copyStateDir(t *testing.T, stateDir string) string {
+	t.Helper()
+	for attempt := 1; ; attempt++ {
+		crashed := t.TempDir()
+		err := os.CopyFS(crashed, os.DirFS(stateDir))
+		if err == nil {
+			return crashed
+		}
+		if !errors.Is(err, fs.ErrNotExist) || attempt == 5 {
+			t.Fatal(err)
+		}
 	}
 }

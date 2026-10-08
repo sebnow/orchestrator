@@ -348,10 +348,7 @@ func TestGivenContinuationJournalLeftByACrashWhenTheDaemonRestartsThenTheTaskIsP
 	resumed := first.nextProcess(t)
 	resumed.nextInput(t)
 	srv.waitForCount(t, task, protocol.KindHarnessStarted, 2)
-	crashed := t.TempDir()
-	if err := os.CopyFS(crashed, os.DirFS(stateDir)); err != nil {
-		t.Fatal(err)
-	}
+	crashed := copyStateDir(t, stateDir)
 	proxy.cutAll()
 	first.stop(t)
 
@@ -393,10 +390,7 @@ func TestGivenFirstTurnThatReportedItsSessionWhenTheDaemonDiesAndTheOwnerPrompts
 		rec, _ := mustLoadState(t, stateDir).record(task)
 		return rec.Session == "session-1"
 	})
-	crashed := t.TempDir()
-	if err := os.CopyFS(crashed, os.DirFS(stateDir)); err != nil {
-		t.Fatal(err)
-	}
+	crashed := copyStateDir(t, stateDir)
 	proxy.cutAll()
 	first.stop(t)
 	second := runDaemon(t, srv.url, crashed)
@@ -535,10 +529,7 @@ func TestGivenDaemonThatDiedLeavingItsHarnessRunningWhenANewOneStartsThenItKills
 	proc := first.nextProcess(t)
 	proc.nextInput(t)
 	srv.waitForEvent(t, task, "harness_started", isKind(protocol.KindHarnessStarted))
-	crashed := t.TempDir()
-	if err := os.CopyFS(crashed, os.DirFS(stateDir)); err != nil {
-		t.Fatal(err)
-	}
+	crashed := copyStateDir(t, stateDir)
 	proxy.cutAll()
 	first.stop(t)
 	// The harness outlived the daemon that started it.
