@@ -189,6 +189,7 @@ func TestGivenSpecWhenStartingThenClaudeRunsInStreamJSONModeWiredToTheGateway(t 
 		"--permission-prompt-tool": "mcp__orchestrator__permission",
 		"--append-system-prompt":   "You work for the orchestrator.",
 		"--allowedTools":           "mcp__orchestrator__acknowledge_pause",
+		"--disallowedTools":        "SendMessage,ListAgents",
 	}
 	for flag, want := range wantValues {
 		if got, _ := argValue(argv, flag); got != want {

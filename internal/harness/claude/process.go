@@ -53,6 +53,11 @@ var parentSessionEnv = []string{
 	"CLAUDE_PID",
 }
 
+// crossSessionTools are Claude Code's built-in tools that find and
+// message other Claude sessions on the same machine. A live run showed a
+// task loading them and messaging the owner's interactive session.
+var crossSessionTools = []string{"SendMessage", "ListAgents"}
+
 // Harness runs the Claude Code CLI.
 type Harness struct {
 	path    string
@@ -132,6 +137,10 @@ func arguments(spec harness.Spec) ([]string, error) {
 		"--strict-mcp-config",
 		"--mcp-config", string(config),
 		"--permission-prompt-tool", gatewayTool(spec.Gateway.PermissionTool),
+		// Claude Code's own messaging reaches other Claude sessions on the
+		// machine, not other tasks; a task must use the gateway's tools
+		// (docs/adr/2026-10-08-inbox-delivery.md, Consequences).
+		"--disallowedTools", strings.Join(crossSessionTools, ","),
 	}
 	if spec.SystemPrompt != "" {
 		args = append(args, "--append-system-prompt", spec.SystemPrompt)
