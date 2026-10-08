@@ -33,6 +33,8 @@ type Server struct {
 	store *Store
 	log   *slog.Logger
 	mux   *http.ServeMux
+	// handler is mux behind the cross-origin check.
+	handler http.Handler
 	// defaultModel is the model of a task created without one.
 	defaultModel string
 	// insecure serves every route without authentication.
@@ -96,6 +98,12 @@ func New(store *Store, log *slog.Logger, options Options) *Server {
 	owner.HandleFunc("GET /v1/tasks/{task}/events", s.getEvents)
 	s.routeGUI(owner)
 	s.mux.Handle("/", s.ownerOnly(owner))
+
+	// Rejects requests other than GET, HEAD and OPTIONS that a browser
+	// sent from another origin, so that a page on another site cannot
+	// submit the owner's forms, the login form included. Daemons and
+	// scripts send neither Sec-Fetch-Site nor Origin, and pass.
+	s.handler = http.NewCrossOriginProtection().Handler(s.mux)
 	return s
 }
 
@@ -122,7 +130,7 @@ func (s *Server) daemonOnly(next http.HandlerFunc) http.Handler {
 }
 
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	s.mux.ServeHTTP(w, r)
+	s.handler.ServeHTTP(w, r)
 }
 
 // EndStreams ends every open command stream and task page stream, and
