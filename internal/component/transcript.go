@@ -95,6 +95,14 @@ func TranscriptEntry(entry transcript.Entry) html.Node {
 	case transcript.HarnessExited:
 		label = "Harness exited with code " + strconv.Itoa(b.ExitCode)
 		body = html.Fragment(paragraph(b.Error), stderr(b.Stderr))
+		if b.Restarted {
+			next := "Resume continues its session."
+			if b.NewSession {
+				next = "No session was recorded, so Resume starts a new session with the task's first prompt."
+			}
+			label = "The daemon restarted during the turn; the task is paused"
+			body = html.Fragment(paragraph(next), stderr(b.Stderr))
+		}
 	case transcript.MessageSent:
 		from, label = "agent", "Agent sent a message to task "
 		subject, body = link(taskURL(string(b.To)), string(b.To)), preformatted(b.Text)

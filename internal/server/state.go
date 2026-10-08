@@ -31,7 +31,8 @@ const (
 	// TaskPausing: a pause was issued and has not taken effect yet.
 	TaskPausing TaskState = "pausing"
 	// TaskPaused: the owner's pause took effect and the task's process
-	// exited; a resume or a prompt starts its next process.
+	// exited, or a daemon restart cut its turn short; a resume or a
+	// prompt starts its next process.
 	TaskPaused TaskState = "paused"
 	// TaskYielded: the scheduler's pause took effect and the task's
 	// process exited. The scheduler resumes it when a slot is free
@@ -107,8 +108,11 @@ func (s TaskState) afterCommand(kind protocol.CommandKind) TaskState {
 // was issued before the pause settled, the task resumes right after. A
 // clean exit leaves a paused or yielded task so; a pause that had not
 // settled when the process exited did not take effect, and the task is
-// finished. A process started after a clean exit makes the task running
-// again.
+// finished. An exit that says a daemon restart cut the turn short pauses
+// a task with a process for the owner to resume
+// (docs/adr/2026-10-08-restart-recovery.md), and leaves a task between
+// processes as it is. A process started after a clean exit makes the task
+// running again.
 func (s TaskState) afterEvent(event protocol.Event, stopIssued bool, pausedBy pauseOrigin) TaskState {
 	switch {
 	case s.Terminal():
@@ -124,9 +128,16 @@ func (s TaskState) afterEvent(event protocol.Event, stopIssued bool, pausedBy pa
 	case event.Kind == protocol.KindHarnessExited:
 		var exit protocol.HarnessExited
 		decoded := json.Unmarshal(event.Payload, &exit) == nil
+		restarted, _ := restartOf(exit)
 		switch {
 		case stopIssued:
 			return TaskStopped
+		case decoded && restarted && s.Idle():
+			// The turn ended before the daemon restarted; only the
+			// process's exit was lost.
+			return s
+		case decoded && restarted:
+			return TaskPaused
 		case !decoded || exit.ExitCode != 0 || exit.Error != "":
 			return TaskFailed
 		case s == TaskPaused || s == TaskYielded:
@@ -136,6 +147,32 @@ func (s TaskState) afterEvent(event protocol.Event, stopIssued bool, pausedBy pa
 		}
 	}
 	return s
+}
+
+// The errors a daemon gives in harness_exited when its restart cut the
+// task's turn short and it can resume the task, continuing the recorded
+// harness session or, when none was recorded, starting a new one
+// (docs/adr/2026-10-08-restart-recovery.md). internal/daemon words them
+// the same.
+const (
+	exitRestarted          = "daemon restarted during the turn"
+	exitRestartedNoSession = "daemon restarted during the turn, before the harness reported a session"
+)
+
+// restartOf reports whether exit is a turn cut short by a daemon restart
+// that left the task resumable, and whether resuming it starts a new
+// harness session.
+func restartOf(exit protocol.HarnessExited) (restarted, newSession bool) {
+	if exit.ExitCode != -1 {
+		return false, false
+	}
+	switch exit.Error {
+	case exitRestarted:
+		return true, false
+	case exitRestartedNoSession:
+		return true, true
+	}
+	return false, false
 }
 
 // progress is what the server keeps per task as events are stored and
@@ -150,9 +187,14 @@ type progress struct {
 	PausedBy pauseOrigin
 }
 
-// seeEvent folds a stored event into p.
+// seeEvent folds a stored event into p. A task an event leaves paused
+// waits for the owner, even when the scheduler had asked for the pause
+// and a daemon restart cut it short.
 func (p *progress) seeEvent(event protocol.Event, stopIssued bool) {
 	p.State = p.State.afterEvent(event, stopIssued, p.PausedBy)
+	if p.State == TaskPaused {
+		p.PausedBy = pauseByOwner
+	}
 	p.forgetPause()
 	p.see(event.Time)
 	if event.Kind != protocol.KindHarnessOutput {

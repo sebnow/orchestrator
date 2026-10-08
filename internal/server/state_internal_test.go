@@ -66,6 +66,9 @@ func TestGivenEachStateWhenAnEventIsStoredThenTheStateFollowsTheTable(t *testing
 	exitedCleanly := controlEvent(protocol.KindHarnessExited, `{"exit_code":0}`)
 	exitedNonZero := controlEvent(protocol.KindHarnessExited, `{"exit_code":1}`)
 	restarted := controlEvent(protocol.KindHarnessExited, `{"exit_code":-1,"error":"daemon restarted"}`)
+	cutShort := controlEvent(protocol.KindHarnessExited, `{"exit_code":-1,"error":"daemon restarted during the turn"}`)
+	cutShortNoSession := controlEvent(protocol.KindHarnessExited, `{"exit_code":-1,"error":"daemon restarted during the turn, before the harness reported a session"}`)
+	cutShortWithCode := controlEvent(protocol.KindHarnessExited, `{"exit_code":1,"error":"daemon restarted during the turn"}`)
 	neverStarted := controlEvent(protocol.KindHarnessExited, `{"exit_code":-1,"error":"clone https://example.com/r.git: exit status 128"}`)
 	zeroWithError := controlEvent(protocol.KindHarnessExited, `{"exit_code":0,"error":"read harness output: broken pipe"}`)
 	output := controlEvent(protocol.KindHarnessOutput, `{"type":"assistant"}`)
@@ -92,7 +95,16 @@ func TestGivenEachStateWhenAnEventIsStoredThenTheStateFollowsTheTable(t *testing
 		{"exit after stop", TaskRunning, exitedCleanly, true, TaskStopped},
 		{"killed after stop", TaskPausing, restarted, true, TaskStopped},
 		{"non-zero exit", TaskRunning, exitedNonZero, false, TaskFailed},
-		{"daemon restarted", TaskAwaitingPermission, restarted, false, TaskFailed},
+		{"restart of a daemon that cannot resume", TaskAwaitingPermission, restarted, false, TaskFailed},
+		{"restart cut the turn short", TaskRunning, cutShort, false, TaskPaused},
+		{"restart cut a permission request short", TaskAwaitingPermission, cutShort, false, TaskPaused},
+		{"restart cut a pause short", TaskPausing, cutShort, false, TaskPaused},
+		{"restart cut the start short", TaskPending, cutShortNoSession, false, TaskPaused},
+		{"restart after a stop", TaskRunning, cutShort, true, TaskStopped},
+		{"restart text with an exit code", TaskRunning, cutShortWithCode, false, TaskFailed},
+		{"restart after the yield settled", TaskYielded, cutShort, false, TaskYielded},
+		{"restart after the pause settled", TaskPaused, cutShort, false, TaskPaused},
+		{"restart after a clean exit was journaled", TaskFinished, cutShort, false, TaskFinished},
 		{"clone failed", TaskPending, neverStarted, false, TaskFailed},
 		{"exit 0 with an error", TaskRunning, zeroWithError, false, TaskFailed},
 		{"undecodable exit", TaskRunning, controlEvent(protocol.KindHarnessExited, `"gone"`), false, TaskFailed},
@@ -229,12 +241,35 @@ func TestGivenStopIssuedWhenTheHarnessExitsThenTheTaskIsStopped(t *testing.T) {
 	l.event(protocol.KindHarnessExited, `{"exit_code":0}`, TaskStopped)
 }
 
-func TestGivenRunningTaskWhenTheDaemonRestartsThenTheTaskFailed(t *testing.T) {
+func TestGivenRunningTaskWhenADaemonThatCannotResumeItRestartsThenTheTaskFailed(t *testing.T) {
 	store, _ := openTestStore(t)
 	l := newLifecycle(t, store, "task-1")
 
 	l.event(protocol.KindHarnessStarted, `{"pid":1}`, TaskRunning)
 	l.event(protocol.KindHarnessExited, `{"exit_code":-1,"error":"daemon restarted"}`, TaskFailed)
+}
+
+func TestGivenRunningTaskWhenADaemonRestartCutsItsTurnShortThenItIsPausedForTheOwnerAndAResumeRunsIt(t *testing.T) {
+	store, _ := openTestStore(t)
+	l := newLifecycle(t, store, "task-1")
+
+	l.event(protocol.KindHarnessStarted, `{"pid":1}`, TaskRunning)
+	l.event(protocol.KindHarnessExited, `{"exit_code":-1,"error":"`+exitRestarted+`"}`, TaskPaused)
+	if p := readProgress(t, store, "task-1"); p.PausedBy != pauseByOwner {
+		t.Errorf("paused by %q, want the owner", p.PausedBy)
+	}
+	l.command(protocol.CommandResume, "", TaskRunning)
+	l.event(protocol.KindHarnessStarted, `{"pid":2}`, TaskRunning)
+}
+
+func TestGivenYieldUnderWayWhenADaemonRestartCutsTheTurnShortThenTheTaskWaitsForTheOwner(t *testing.T) {
+	p := progress{State: TaskPausing, PausedBy: pauseByScheduler}
+
+	p.seeEvent(controlEvent(protocol.KindHarnessExited, `{"exit_code":-1,"error":"`+exitRestarted+`"}`), false)
+
+	if p.State != TaskPaused || p.PausedBy != pauseByOwner {
+		t.Errorf("progress = %+v, want paused by the owner", p)
+	}
 }
 
 func TestGivenEventsAndCommandsWhenStoredThenLastActivityIsTheLatestAndCostTheHighestRunningTotal(t *testing.T) {

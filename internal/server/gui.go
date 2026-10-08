@@ -183,9 +183,21 @@ func (s *Server) attentionReason(ctx context.Context, summary taskSummary) (stri
 		}
 		return "awaits permission", nil
 	case TaskPaused:
+		// Only the latest process can have paused the task.
+	latest:
 		for _, entry := range slices.Backward(entries) {
-			if ack, ok := entry.Body.(transcript.PauseAcknowledged); ok && ack.Note != "" {
-				return "paused: " + ack.Note, nil
+			switch body := entry.Body.(type) {
+			case transcript.PauseAcknowledged:
+				if body.Note != "" {
+					return "paused: " + body.Note, nil
+				}
+				break latest
+			case transcript.HarnessExited:
+				if body.Restarted {
+					return "paused: the daemon restarted during its turn", nil
+				}
+			case transcript.HarnessStarted:
+				break latest
 			}
 		}
 		return "paused", nil

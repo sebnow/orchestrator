@@ -175,10 +175,17 @@ type HarnessStarted struct {
 
 // HarnessExited ends the task's harness process. ExitCode is -1 when the
 // process never started or was killed; Error then says why.
+//
+// Restarted is set when a daemon restart cut the turn short and left the
+// task paused, to be resumed by the owner; NewSession is then set when no
+// harness session was recorded, so that resuming starts a new one with
+// the task's first prompt.
 type HarnessExited struct {
-	ExitCode int
-	Error    string
-	Stderr   string
+	ExitCode   int
+	Error      string
+	Stderr     string
+	Restarted  bool
+	NewSession bool
 }
 
 // MessageSent is the agent sending Text to the task To through its

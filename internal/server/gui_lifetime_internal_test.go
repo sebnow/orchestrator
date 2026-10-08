@@ -112,3 +112,58 @@ func TestGivenStoppedTaskWhenACommandIsIssuedThroughTheAPIThenConflict(t *testin
 		t.Errorf("status = %d (%s), want 409", status, body)
 	}
 }
+
+// taskCutShortByARestart starts a task whose first turn a daemon restart
+// cut short, with exitError as the restart's harness_exited error.
+func taskCutShortByARestart(t *testing.T, srv testServer, exitError string) protocol.TaskID {
+	t.Helper()
+	task := startTaskViaForm(t, srv, "laptop", "The codeword is MARMALADE.")
+	events := &taskEvents{task: task}
+	events.add(protocol.KindHarnessStarted, `{"pid":7,"model":"haiku","workdir":"/w"}`)
+	events.add(protocol.KindHarnessExited, `{"exit_code":-1,"error":"`+exitError+`"}`)
+	events.ingest(t, srv, "laptop")
+	return task
+}
+
+func TestGivenTaskCutShortByADaemonRestartWhenShownThenItIsPausedForTheOwnerWithTheRestartAsTheReason(t *testing.T) {
+	srv := startTestServer(t)
+	task := taskCutShortByARestart(t, srv, exitRestarted)
+
+	page := getPage(t, srv.url+"/tasks/"+string(task))
+	dashboard := getPage(t, srv.url+"/")
+
+	requireContains(t, page, `<span class="badge state-paused">paused</span>`, resumeButton,
+		"The daemon restarted during the turn; the task is paused", "Resume continues its session.")
+	requireLacks(t, page, "Harness exited with code -1")
+	requireContains(t, dashboard, `<span class="reason">paused: the daemon restarted during its turn</span>`)
+}
+
+func TestGivenTaskCutShortBeforeItReportedASessionWhenShownThenItSaysResumeStartsANewSession(t *testing.T) {
+	srv := startTestServer(t)
+	task := taskCutShortByARestart(t, srv, exitRestartedNoSession)
+
+	page := getPage(t, srv.url+"/tasks/"+string(task))
+
+	requireContains(t, page, `<span class="badge state-paused">paused</span>`, resumeButton,
+		"No session was recorded, so Resume starts a new session with the task&#39;s first prompt.")
+}
+
+func TestGivenTaskCutShortByARestartThenResumedAndPausedWithoutANoteWhenListedThenTheReasonIsThePauseNotTheRestart(t *testing.T) {
+	srv := startTestServer(t)
+	task := taskCutShortByARestart(t, srv, exitRestarted)
+	postForm(t, srv, task, url.Values{"kind": {"resume"}})
+	admitTurns(t, srv.store)
+	events := &taskEvents{task: task, seq: 2}
+	events.add(protocol.KindHarnessStarted, `{"pid":8,"model":"haiku","workdir":"/w"}`)
+	events.ingest(t, srv, "laptop")
+	postForm(t, srv, task, url.Values{"kind": {"pause"}})
+	events.add(protocol.KindPauseAcknowledged, `{"note":""}`)
+	events.add(protocol.KindPauseSettled, `{"interrupted":false}`)
+	events.add(protocol.KindHarnessExited, `{"exit_code":0}`)
+	events.ingest(t, srv, "laptop")
+
+	dashboard := getPage(t, srv.url+"/")
+
+	requireContains(t, dashboard, `<span class="reason">paused</span>`)
+	requireLacks(t, dashboard, "the daemon restarted during its turn")
+}
