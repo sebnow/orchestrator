@@ -18,17 +18,16 @@ import (
 // ws.Ref. A ref that names a branch or tag is cloned shallow; any other
 // ref, such as a commit, needs a full clone and a checkout.
 //
-// The repository must be an https:// URL. git runs with no credentials
-// of the daemon's and with prompts turned off, so a repository that needs credentials fails rather than waits
-// (docs/adr/2026-10-07-task-credentials.md). It ignores the user's and
-// the system's git configuration, whose credential helpers and URL
-// rewrites would otherwise apply. A failed clone leaves no directory
-// behind.
+// The repository must be an https:// or ssh URL. git runs with prompts
+// turned off and ignores the user's and the system's git configuration,
+// whose credential helpers and URL rewrites would otherwise apply; ssh
+// still reads the daemon user's ~/.ssh. A failed clone leaves no
+// directory behind.
 func prepareWorkspace(ctx context.Context, dir string, ws *protocol.Workspace) error {
 	if ws == nil {
 		return os.MkdirAll(dir, 0o700)
 	}
-	if err := requireHTTPS(ws.Repo); err != nil {
+	if err := requireRemote(ws.Repo); err != nil {
 		return err
 	}
 	// git would read a leading dash as an option.
@@ -53,10 +52,14 @@ func prepareWorkspace(ctx context.Context, dir string, ws *protocol.Workspace) e
 	return nil
 }
 
+// runGit runs git in dir. GIT_SSH_COMMAND puts ssh in batch mode, so that
+// an unknown host key or a key's passphrase fails the command rather than
+// waits for an answer nobody gives.
 func runGit(ctx context.Context, dir string, args ...string) error {
 	cmd := exec.CommandContext(ctx, "git", args...)
 	cmd.Dir = dir
-	cmd.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0", "GIT_CONFIG_GLOBAL=/dev/null", "GIT_CONFIG_NOSYSTEM=1")
+	cmd.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0", "GIT_CONFIG_GLOBAL=/dev/null", "GIT_CONFIG_NOSYSTEM=1",
+		"GIT_SSH_COMMAND=ssh -o BatchMode=yes")
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
 	if err := cmd.Run(); err != nil {
@@ -65,14 +68,30 @@ func runGit(ctx context.Context, dir string, args ...string) error {
 	return nil
 }
 
-// requireHTTPS refuses a repository that is not an https:// URL. An ssh
-// or local repository could be read with the ssh keys or the files of the
-// OS user running the daemon, which a task must not borrow
-// (docs/adr/2026-10-07-task-credentials.md).
-func requireHTTPS(repo string) error {
-	u, err := url.Parse(repo)
-	if err != nil || u.Scheme != "https" || u.Host == "" {
-		return fmt.Errorf("repository %q is not an https:// URL; the daemon clones public repositories over https only", repo)
+// requireRemote refuses a repository that is not an https:// URL, an
+// ssh:// URL or an scp-like ssh address such as git@host:path, each with
+// a host. A local path, file:// or git:// would let a task read the
+// daemon machine's files or an unauthenticated remote.
+func requireRemote(repo string) error {
+	refused := fmt.Errorf("repository %q is not an https:// URL, an ssh:// URL or an ssh address such as git@host:path", repo)
+	if strings.Contains(repo, "://") {
+		u, err := url.Parse(repo)
+		if err != nil || u.Scheme != "https" && u.Scheme != "ssh" || u.Hostname() == "" || strings.HasPrefix(u.Hostname(), "-") {
+			return refused
+		}
+		return nil
+	}
+	// git reads host:path as ssh only when no slash precedes the colon.
+	address, path, found := strings.Cut(repo, ":")
+	if !found || path == "" || strings.Contains(address, "/") {
+		return refused
+	}
+	host := address
+	if _, after, ok := strings.Cut(address, "@"); ok {
+		host = after
+	}
+	if host == "" || strings.HasPrefix(host, "-") || strings.HasPrefix(address, "-") {
+		return refused
 	}
 	return nil
 }

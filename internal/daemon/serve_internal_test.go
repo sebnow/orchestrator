@@ -377,18 +377,18 @@ func TestGivenWorkspaceThatCannotBeClonedWhenTheTaskStartsThenItEndsWithGitsErro
 	}
 }
 
-func TestGivenRepositoryThatIsNotAnHTTPSURLWhenTheTaskStartsThenItEndsSayingSoAndNoHarnessStarts(t *testing.T) {
+func TestGivenRepositoryThatIsNeitherHTTPSNorSSHWhenTheTaskStartsThenItEndsSayingSoAndNoHarnessStarts(t *testing.T) {
 	srv := startServer(t)
 	d := runDaemon(t, srv.url, t.TempDir())
 
 	task := srv.createTask(t, testDaemon, protocol.StartTask{
-		Prompt: "Do the work.", Workspace: &protocol.Workspace{Repo: "git@github.com:octocat/Hello-World.git", Ref: "master"}, PauseLimits: testPauseLimits,
+		Prompt: "Do the work.", Workspace: &protocol.Workspace{Repo: "git://github.com/octocat/Hello-World.git", Ref: "master"}, PauseLimits: testPauseLimits,
 	})
 
 	events := srv.waitForEvent(t, task, "harness_exited", isKind(protocol.KindHarnessExited))
 	var exit protocol.HarnessExited
 	json.Unmarshal(events[0].Payload, &exit)
-	want := `prepare workspace: repository "git@github.com:octocat/Hello-World.git" is not an https:// URL`
+	want := `prepare workspace: repository "git://github.com/octocat/Hello-World.git" is not an https:// URL`
 	if len(events) != 1 || exit.ExitCode != -1 || !strings.HasPrefix(exit.Error, want) {
 		t.Errorf("events: %s", describe(events))
 	}

@@ -188,27 +188,46 @@ func TestGivenOwnerGitConfigThatRewritesTheRepositoryWhenPreparingThenTheCloneIg
 	}
 }
 
-func TestGivenRepositoryThatIsNotAnHTTPSURLWhenPreparingThenItIsRefusedBeforeGitRuns(t *testing.T) {
+func TestGivenRepositoryThatIsNeitherHTTPSNorSSHWhenPreparingThenItIsRefusedBeforeGitRuns(t *testing.T) {
 	repo := makeTestRepo(t)
 	for _, url := range []string{
 		repo.bare,
 		"file://" + repo.bare,
+		"git://github.com/octocat/Hello-World.git",
 		"http://github.com/octocat/Hello-World",
-		"ssh://git@github.com/octocat/Hello-World.git",
-		"git@github.com:octocat/Hello-World.git",
 		"https:///no-host",
+		"ssh:///no-host",
+		"./relative:path",
+		"/absolute/with:colon",
+		"-oProxyCommand=touch pwned:x",
+		"git@-oProxyCommand=x:path",
+		"host:",
 	} {
 		t.Run(url, func(t *testing.T) {
 			dir := filepath.Join(t.TempDir(), "task-1")
 
 			err := prepareWorkspace(t.Context(), dir, &protocol.Workspace{Repo: url, Ref: "main"})
 
-			if err == nil || !strings.Contains(err.Error(), "not an https:// URL") {
+			if err == nil || !strings.Contains(err.Error(), "is not an https:// URL, an ssh:// URL or an ssh address") {
 				t.Errorf("err = %v", err)
 			}
 			if _, statErr := os.Stat(dir); !errors.Is(statErr, fs.ErrNotExist) {
 				t.Errorf("workspace created: %v", statErr)
 			}
 		})
+	}
+}
+
+func TestGivenHTTPSOrSSHRepositoryWhenCheckedThenItIsAccepted(t *testing.T) {
+	for _, url := range []string{
+		"https://github.com/octocat/Hello-World",
+		"ssh://git@github.com/octocat/Hello-World.git",
+		"ssh://github.com:2222/octocat/Hello-World.git",
+		"git@github.com:octocat/Hello-World.git",
+		"github.com:octocat/Hello-World.git",
+	} {
+		if err := requireRemote(url); err != nil {
+			t.Errorf("%s: %v", url, err)
+		}
 	}
 }
