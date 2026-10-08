@@ -26,16 +26,19 @@ login wrote two user messages to one `claude -p` process, 25 seconds
 apart. The process stayed alive between them, emitted a `system/init` and
 a `result` per turn under the same `session_id`, and exited when stdin
 closed. The input format
-`{"type":"user","message":{"role":"user","content":"..."}}` is
-**UNVERIFIED** in the documentation and confirmed only by this
-experiment.
+`{"type":"user","message":{"role":"user","content":"..."}}` is not
+given for the CLI's stdin in the CLI reference or the headless page
+([marker verification](../design/2026-10-08-marker-verification.md),
+"stream-json").
+This experiment confirmed it, and it has carried every prompt of the
+daemon's live runs since (`internal/harness/claude/input.go`; the live
+tests in `internal/daemon` and `cmd/daemon`).
 
 ## Decision
 
 The Go daemon drives the Claude Code CLI process directly. The adapter
 between the harness and the client protocol is isolated behind an
-interface, because the stream-json format is undocumented in places and,
-**UNVERIFIED**, declared subject to change.
+interface, because the stream-json format is undocumented in places.
 
 ## Consequences
 
