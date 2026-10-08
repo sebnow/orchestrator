@@ -21,6 +21,19 @@ and spend subscription quota:
 
     nix develop -c go test -tags live ./...
 
+The browser tests, behind the `browser` build tag, load the GUI in a
+headless browser and check what htmx does with it. They run offline
+against an in-process server and a fake daemon:
+
+    nix develop -c go test -tags browser ./internal/server/
+
+They use `$ORCHESTRATOR_BROWSER` when it is set, or else the first of
+`chromium`, `google-chrome-stable` and `google-chrome` on `PATH`. The
+dev shell provides `chromium` on Linux and Google Chrome on macOS, as
+`google-chrome-stable` and `google-chrome`, because nixpkgs builds
+Chromium only for Linux. A failing step saves a screenshot, which
+`go test` keeps when given `-artifacts`.
+
 ## Running
 
 The server stores daemons, tasks and their events, and serves the GUI.
