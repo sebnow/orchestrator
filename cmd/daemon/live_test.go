@@ -969,3 +969,54 @@ func TestLiveGivenDaemonKilledMidTurnWhenItRestartsAndTheOwnerResumesThenTheTurn
 		t.Errorf("harness_started %d times, want 2", got)
 	}
 }
+
+// Cost: `claude --version` twice and two claude sessions: the three-step
+// turn that the daemon's clean shutdown interrupts, and the turn that the
+// owner's follow-up prompt starts after the daemon restarts.
+func TestLiveGivenDaemonShutDownCleanlyMidTurnWhenItRestartsAndTheOwnerFollowsUpThenANewProcessContinuesTheSession(t *testing.T) {
+	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Minute)
+	defer cancel()
+	sys := newLiveSystem(t)
+	logs := &syncBuffer{}
+	t.Cleanup(func() {
+		if t.Failed() {
+			t.Logf("daemon log:\n%s", logs)
+		}
+	})
+	first := sys.runDaemon(t, logs)
+	task := sys.startTaskViaGUI(t, ctx, threeSteps)
+	before := sys.waitUntilFirstPingRuns(t, ctx, task)
+
+	stoppedAt := time.Now()
+	if err := first.signal(t, syscall.SIGTERM); err != nil {
+		t.Fatalf("the daemon after SIGTERM: %v", err)
+	}
+	t.Logf("the daemon exited %s after SIGTERM", time.Since(stoppedAt).Round(100*time.Millisecond))
+	// The daemon sends a task's last events before it exits.
+	for _, event := range sys.events(t, task)[len(before):] {
+		switch msg, err := claude.Parse(event.Payload); {
+		case event.Kind == protocol.KindHarnessExited:
+			t.Logf("seq %d harness_exited %s", event.Seq, event.Payload)
+		case event.Kind == protocol.KindHarnessOutput && err == nil && (msg.Type == claude.TypeResult || msg.Type == "control_response"):
+			t.Logf("seq %d %s", event.Seq, event.Payload)
+		}
+	}
+	if state := sys.state(t, task); state != "finished" {
+		t.Fatalf("after the clean shutdown the task is %s, want finished", state)
+	}
+
+	sys.runDaemon(t, logs)
+	sys.command(t, task, url.Values{"kind": {"prompt"}, "text": {"Your last turn was cut short. Run whichever of the three pings " +
+		"did not finish, writing DONE-1, DONE-2 or DONE-3 after each as before, then reply with exactly FINISHED."}})
+	events := sys.waitForState(t, ctx, task, "finished", 2, allowOnlyPings)
+
+	sessions, results := sessionsAndResults(t, events)
+	requireOneSession(t, sessions)
+	t.Logf("session %s; pings asked for: %d before the shutdown, %d in all", sessions[0], pingRequests(before), pingRequests(events))
+	if len(results) == 0 || !strings.Contains(results[len(results)-1], "FINISHED") {
+		t.Errorf("results = %q, want the last to be FINISHED", results)
+	}
+	if got := len(harnessPIDs(events)); got != 2 {
+		t.Errorf("harness_started %d times, want 2", got)
+	}
+}
