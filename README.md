@@ -316,12 +316,15 @@ Documents come in three kinds, each under its own directory:
   dated. A note records what was known on its date and is not revised
   afterwards; later knowledge goes in a new note or an ADR.
 - `docs/adr/<date>-<need>.md`: architecture decision records, named after
-  the need (`server-storage`), not the solution (`use-sqlite`). Header
-  lines: `Status`, `Decided`, `Source`, and `Amended by` when a later
-  record supersedes or amends it. Sections: Context, Decision, Consequences,
-  and at most one closing `Revisit if` line. Do not edit an accepted
-  record beyond adding an `Amended by` pointer; a change of mind is a new
-  record.
+  the need they answer. Each starts with YAML frontmatter with the keys
+  `status` (`proposed`, `accepted` or `superseded`), `date` (the day the
+  decision was made), `source` (where the decision came from: a session,
+  a spike or a design note), and, when another record has replaced it,
+  `superseded-by` (the newer record's path); the newer record carries
+  `supersedes`. Sections: Context, Decision, Consequences, and at most one
+  `Revisit if`. There are no amendments: an accepted record is immutable
+  except for marking it superseded; a change of mind is a new record
+  that supersedes the old one.
 - `spikes/<name>/`: throwaway experiments with a README saying how to
   rerun them. A spike that commits logs carries a redaction script
   (`spikes/mod-vs-stdout/redact.py` is the first) and runs it before any
