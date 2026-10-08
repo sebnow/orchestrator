@@ -1,5 +1,5 @@
 ---
-status: proposed
+status: accepted
 date: 2026-10-08
 source: >-
   owner decision, 2026-10-08, to add authentication before the

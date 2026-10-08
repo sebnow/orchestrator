@@ -1,5 +1,5 @@
 ---
-status: proposed
+status: accepted
 date: 2026-10-08
 source: >-
   decided by the coordinating agent under the owner's standing
