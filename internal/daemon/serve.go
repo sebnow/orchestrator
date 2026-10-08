@@ -116,6 +116,7 @@ func Serve(ctx context.Context, cfg Config) error {
 	// without observing, and the sender learns those tasks from the state.
 	var snd *sender
 	d := New(stateDir, cfg.Harness, cfg.Gateway, func(event protocol.Event) { snd.notify(event.TaskID) })
+	d.forward = forwardTo(cfg.Client, cfg.Server, cfg.ID)
 	if err := d.recoverTasks(st, cfg.Log); err != nil {
 		return err
 	}

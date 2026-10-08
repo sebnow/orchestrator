@@ -19,6 +19,8 @@ import (
 const (
 	PermissionTool       = "permission"
 	AcknowledgePauseTool = "acknowledge_pause"
+	SpawnTaskTool        = "spawn_task"
+	SendMessageTool      = "send_message"
 )
 
 // Gateway is the MCP server the daemon hosts for its agents, over
@@ -40,6 +42,10 @@ type gatewayTask struct {
 	// acknowledgePause receives the agent's stop note and returns the
 	// confirmation the agent reads.
 	acknowledgePause func(note string) (string, error)
+	// spawnTask and sendMessage carry the agent's request to the server
+	// and return what the agent is told.
+	spawnTask   func(ctx context.Context, in spawnTaskInput) (string, error)
+	sendMessage func(ctx context.Context, in sendMessageInput) (string, error)
 }
 
 // StartGateway listens on a free loopback port.
@@ -94,6 +100,29 @@ func (g *Gateway) register(task protocol.TaskID, handlers gatewayTask) (url stri
 		text, err := handlers.acknowledgePause(in.Note)
 		if err != nil {
 			return nil, nil, err
+		}
+		return toolText(text), nil, nil
+	})
+	mcp.AddTool(server, &mcp.Tool{
+		Name: SpawnTaskTool,
+		Description: "Starts a child task: another agent that works on its own on the prompt you give it, " +
+			"and reports back to you with " + SendMessageTool + ". Returns the child's task id. " +
+			"You are not blocked; to wait for the child, end your turn, and its message arrives as your next prompt.",
+	}, func(ctx context.Context, req *mcp.CallToolRequest, in spawnTaskInput) (*mcp.CallToolResult, any, error) {
+		text, err := handlers.spawnTask(ctx, in)
+		if err != nil {
+			return toolError(err), nil, nil
+		}
+		return toolText(text), nil, nil
+	})
+	mcp.AddTool(server, &mcp.Tool{
+		Name: SendMessageTool,
+		Description: "Sends a message to another task by its task id, such as your parent or a child you started. " +
+			"The recipient reads it as its next prompt once its current turn has ended.",
+	}, func(ctx context.Context, req *mcp.CallToolRequest, in sendMessageInput) (*mcp.CallToolResult, any, error) {
+		text, err := handlers.sendMessage(ctx, in)
+		if err != nil {
+			return toolError(err), nil, nil
 		}
 		return toolText(text), nil, nil
 	})

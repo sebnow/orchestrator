@@ -31,6 +31,9 @@ type Daemon struct {
 	stateDir string
 	harness  harness.Harness
 	gateway  *Gateway
+	// forward carries agents' requests to the server; nil answers them
+	// with errNotConnected. Serve sets it before any task starts.
+	forward forwarder
 	// observe sees every event right after it is journaled. It runs on the
 	// goroutine that produced the event, so it must not block for long.
 	observe func(protocol.Event)
@@ -147,6 +150,8 @@ func (d *Daemon) start(ctx context.Context, j *journal, spec TaskSpec) (*Task, e
 	url, unregister, err := d.gateway.register(spec.ID, gatewayTask{
 		permission:       t.askPermission,
 		acknowledgePause: t.acknowledgePause,
+		spawnTask:        d.spawnTask(spec.ID),
+		sendMessage:      d.sendMessage(spec.ID),
 	})
 	if err != nil {
 		t.record(protocol.KindHarnessExited, protocol.HarnessExited{ExitCode: -1, Error: err.Error()})
@@ -161,7 +166,7 @@ func (d *Daemon) start(ctx context.Context, j *journal, spec TaskSpec) (*Task, e
 		Gateway: harness.Gateway{
 			URL:            url,
 			PermissionTool: PermissionTool,
-			Tools:          []string{AcknowledgePauseTool},
+			Tools:          []string{AcknowledgePauseTool, SpawnTaskTool, SendMessageTool},
 		},
 	})
 	if err != nil {

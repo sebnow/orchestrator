@@ -62,7 +62,7 @@ var unusedTask = gatewayTask{
 	acknowledgePause: func(string) (string, error) { return "", errors.New("unexpected acknowledgement") },
 }
 
-func TestGivenRegisteredTaskWhenListingToolsThenPermissionAndAcknowledgePauseAreOffered(t *testing.T) {
+func TestGivenRegisteredTaskWhenListingToolsThenEveryGatewayToolIsOffered(t *testing.T) {
 	g := startTestGateway(t)
 	url, _, err := g.register("task-1", unusedTask)
 	if err != nil {
@@ -79,7 +79,7 @@ func TestGivenRegisteredTaskWhenListingToolsThenPermissionAndAcknowledgePauseAre
 		names = append(names, tool.Name)
 	}
 	slices.Sort(names)
-	if !slices.Equal(names, []string{AcknowledgePauseTool, PermissionTool}) {
+	if !slices.Equal(names, []string{AcknowledgePauseTool, PermissionTool, SendMessageTool, SpawnTaskTool}) {
 		t.Errorf("tools = %q", names)
 	}
 	if !strings.HasPrefix(url, "http://127.0.0.1:") || !strings.HasSuffix(url, "/tasks/task-1/mcp") {
@@ -241,5 +241,34 @@ func TestGivenRegisteredTaskWhenRegisteringItAgainThenError(t *testing.T) {
 
 	if _, _, err := g.register("task-1", unusedTask); err == nil {
 		t.Error("registered twice")
+	}
+}
+
+func TestGivenSpawnAndSendCallsWhenTheyArriveThenTheTaskGetsTheArgumentsAndTheAgentTheReplyOrError(t *testing.T) {
+	g := startTestGateway(t)
+	task := unusedTask
+	task.spawnTask = func(_ context.Context, in spawnTaskInput) (string, error) {
+		return "spawned " + in.Prompt + " on " + in.Model, nil
+	}
+	task.sendMessage = func(_ context.Context, in sendMessageInput) (string, error) {
+		return "", errors.New("refused: task " + in.To + " has ended")
+	}
+	url, _, _ := g.register("task-1", task)
+	session := mustConnect(t, url)
+
+	spawned, err := session.CallTool(t.Context(), &mcp.CallToolParams{Name: SpawnTaskTool, Arguments: map[string]any{"prompt": "Say PEAR.", "model": "haiku"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	sent, err := session.CallTool(t.Context(), &mcp.CallToolParams{Name: SendMessageTool, Arguments: map[string]any{"to": "parent", "text": "PEAR"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if spawned.IsError || resultText(t, spawned) != "spawned Say PEAR. on haiku" {
+		t.Errorf("spawn result = %+v", spawned)
+	}
+	if !sent.IsError || resultText(t, sent) != "refused: task parent has ended" {
+		t.Errorf("send result = %+v", sent)
 	}
 }

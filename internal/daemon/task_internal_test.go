@@ -102,7 +102,7 @@ func TestGivenTaskSpecWhenStartingThenTheHarnessGetsTheSpecAndThePromptWithAUUID
 		t.Errorf("spec = %+v", spec)
 	}
 	if !strings.HasSuffix(spec.Gateway.URL, "/tasks/task-1/mcp") || spec.Gateway.PermissionTool != PermissionTool ||
-		!slices.Equal(spec.Gateway.Tools, []string{AcknowledgePauseTool}) {
+		!slices.Equal(spec.Gateway.Tools, []string{AcknowledgePauseTool, SpawnTaskTool, SendMessageTool}) {
 		t.Errorf("gateway = %+v", spec.Gateway)
 	}
 	prompt := f.proc.nextInput(t)

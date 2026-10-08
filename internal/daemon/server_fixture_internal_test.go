@@ -38,6 +38,8 @@ type serverFixture struct {
 
 	mu       sync.Mutex
 	requests []recordedRequest
+	// streamed is everything the server wrote to command streams.
+	streamed bytes.Buffer
 }
 
 type recordedRequest struct {
@@ -135,6 +137,9 @@ func newServerFixture(t *testing.T, insecure bool) (*serverFixture, *httptest.Se
 				http.Error(w, "down for the test", http.StatusServiceUnavailable)
 				return
 			}
+		}
+		if strings.HasSuffix(r.URL.Path, "/commands") {
+			w = &streamTap{ResponseWriter: w, f: f}
 		}
 		srv.ServeHTTP(w, r)
 	}))
@@ -298,4 +303,42 @@ func describe(events []protocol.Event) string {
 		fmt.Fprintf(&b, "\n  %d %s %s", event.Seq, event.Kind, event.Payload)
 	}
 	return b.String()
+}
+
+// streamTap copies what the server writes to a command stream into the
+// fixture.
+type streamTap struct {
+	http.ResponseWriter
+	f *serverFixture
+}
+
+func (s *streamTap) Write(p []byte) (int, error) {
+	s.f.mu.Lock()
+	s.f.streamed.Write(p)
+	s.f.mu.Unlock()
+	return s.ResponseWriter.Write(p)
+}
+
+func (s *streamTap) Unwrap() http.ResponseWriter { return s.ResponseWriter }
+
+// streamedCommands returns every command the server has written to a
+// command stream, in order, repeats included.
+func (f *serverFixture) streamedCommands(t *testing.T) []protocol.Command {
+	t.Helper()
+	f.mu.Lock()
+	text := f.streamed.String()
+	f.mu.Unlock()
+	var commands []protocol.Command
+	for line := range strings.Lines(text) {
+		data, ok := strings.CutPrefix(strings.TrimSuffix(line, "\n"), "data: ")
+		if !ok {
+			continue
+		}
+		var command protocol.Command
+		if err := json.Unmarshal([]byte(data), &command); err != nil {
+			t.Fatalf("streamed command %s: %v", data, err)
+		}
+		commands = append(commands, command)
+	}
+	return commands
 }
