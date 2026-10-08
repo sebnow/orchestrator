@@ -323,11 +323,13 @@ func startLiveSystem(t *testing.T, serverFlags ...string) liveSystem {
 }
 
 // newLiveSystem starts the server, with serverFlags, and prepares the
-// daemon's command line without starting the daemon.
+// daemon's command line without starting the daemon. The server leaves
+// permission requests to the test, as the owner, unless serverFlags say
+// otherwise.
 func newLiveSystem(t *testing.T, serverFlags ...string) liveSystem {
 	t.Helper()
 	bin := buildBinaries(t)
-	sys := liveSystem{server: startServer(t, bin, serverFlags...), invocations: filepath.Join(t.TempDir(), "invocations.log"), answered: map[string]bool{}}
+	sys := liveSystem{server: startServer(t, bin, append([]string{"-permissions", "ask"}, serverFlags...)...), invocations: filepath.Join(t.TempDir(), "invocations.log"), answered: map[string]bool{}}
 	wrapper := filepath.Join(bin, "claude-counting")
 	// Only the first argument is logged: the others include the system
 	// prompt, whose line breaks would count as further invocations.

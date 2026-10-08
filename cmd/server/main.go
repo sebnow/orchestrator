@@ -42,6 +42,13 @@ const shutdownTimeout = 30 * time.Second
 // minDaemonTimeout is the shortest -daemon-timeout the server accepts.
 const minDaemonTimeout = time.Minute
 
+// permissionPolicies are the policies -permissions names
+// (docs/adr/2026-10-08-permission-policy.md).
+var permissionPolicies = map[string]server.Policy{
+	"allow-all": server.AllowAll{},
+	"ask":       server.AskOwner{},
+}
+
 func main() {
 	os.Exit(run(os.Args[1:], os.Stdout, os.Stderr))
 }
@@ -93,6 +100,7 @@ func serve(args []string, stderr io.Writer) int {
 	fillerThreshold := flags.Float64("filler-threshold", server.DefaultSchedulePolicy.FillerThreshold, "five-hour window utilization, from 0 to 1, below which filler tasks run")
 	lowThreshold := flags.Float64("low-threshold", server.DefaultSchedulePolicy.LowThreshold, "five-hour window utilization, from 0 to 1, below which low-priority tasks run")
 	daemonTimeout := flags.Duration("daemon-timeout", server.DefaultDaemonTimeout, "how long a daemon may go unseen, with no command stream open, before it is lost and its tasks move to other daemons; at least 1m")
+	permissions := flags.String("permissions", "allow-all", "who answers the agents' permission requests: allow-all, the server, allowing every one at once; or ask, the owner")
 	if err := flags.Parse(args); err != nil {
 		return exitCode(err)
 	}
@@ -109,6 +117,11 @@ func serve(args []string, stderr io.Writer) int {
 	// while it reconnects.
 	if *daemonTimeout < minDaemonTimeout {
 		fmt.Fprintf(stderr, "server: -daemon-timeout must be at least %s\n", minDaemonTimeout)
+		return 2
+	}
+	policy, ok := permissionPolicies[*permissions]
+	if !ok {
+		fmt.Fprintf(stderr, "server: -permissions must be allow-all or ask, not %q\n", *permissions)
 		return 2
 	}
 	for name, threshold := range map[string]float64{"-filler-threshold": *fillerThreshold, "-low-threshold": *lowThreshold} {
@@ -175,6 +188,7 @@ func serve(args []string, stderr io.Writer) int {
 		Insecure:     *insecure,
 		Schedule: server.SchedulePolicy{SlotsPerDaemon: *slots, FillerThreshold: *fillerThreshold, LowThreshold: *lowThreshold,
 			DaemonTimeout: *daemonTimeout},
+		Permissions: policy,
 	})
 	httpServer := &http.Server{
 		Handler:   srv,

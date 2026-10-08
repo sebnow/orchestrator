@@ -67,6 +67,7 @@ func TestGivenSchedulingFlagsOutOfRangeWhenStartingThenTheServerRefusesAndNamesT
 		{"-filler-threshold", "1.5"},
 		{"-low-threshold", "2"},
 		{"-daemon-timeout", "30s"},
+		{"-permissions", "deny-all"},
 	} {
 		dbPath := filepath.Join(t.TempDir(), "server.db")
 
