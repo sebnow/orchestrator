@@ -6,6 +6,7 @@ import (
 	"io/fs"
 	"log/slog"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -87,6 +88,7 @@ func restartExit(rec taskRecord) protocol.HarnessExited {
 // A task with events but no journal and no process is between
 // processes, and stays as it is. A journal the state does not know is
 // adopted, so that its events are sent.
+// Last, the workspace of every task that can never run again is deleted.
 //
 // A journal that cannot be read is logged and left alone.
 func (d *Daemon) recoverTasks(st *state, log *slog.Logger, wait time.Duration) error {
@@ -156,7 +158,37 @@ func (d *Daemon) recoverTasks(st *state, log *slog.Logger, wait time.Duration) e
 			return err
 		}
 	}
+	d.sweepWorkspaces(st, log)
 	return nil
+}
+
+// sweepWorkspaces deletes the workspace of every task that can never run
+// on this daemon again: one the state does not know, because the daemon
+// forgot it or never recorded it, and one whose record cannot be resumed.
+// A directory that is not named after a task is left alone.
+func (d *Daemon) sweepWorkspaces(st *state, log *slog.Logger) {
+	entries, err := os.ReadDir(filepath.Join(d.stateDir, "workspaces"))
+	if errors.Is(err, fs.ErrNotExist) {
+		return
+	}
+	if err != nil {
+		log.Error("list workspaces", "error", err)
+		return
+	}
+	for _, entry := range entries {
+		task, err := protocol.ParseTaskID(entry.Name())
+		if err != nil || !entry.IsDir() {
+			continue
+		}
+		if rec, ok := st.record(task); ok && rec.resumable() {
+			continue
+		}
+		if err := deleteWorkspace(d.stateDir, task); err != nil {
+			log.Error("delete the workspace of a task that cannot run again", "task", task, "error", err)
+			continue
+		}
+		log.Info("deleted the workspace of a task that cannot run again", "task", task)
+	}
 }
 
 // journalTasks lists the tasks with a journal under stateDir.

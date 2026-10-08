@@ -341,7 +341,8 @@ func (s *service) cutShortByShutdown(task protocol.TaskID) func(string, protocol
 // and the seq to resume from, whether it was paused, and whether the task
 // has ended for good, because it was stopped or the harness failed
 // without the daemon cutting its turn short. The journal is released to
-// the sender.
+// the sender. A task that has ended for good has its workspace
+// deleted.
 func (s *service) processEnded(task protocol.TaskID, t *Task, stopped bool) {
 	st := t.State()
 	clean := st.Exit != nil && st.Exit.ExitCode == 0 && st.Exit.Error == ""
@@ -361,6 +362,9 @@ func (s *service) processEnded(task protocol.TaskID, t *Task, stopped bool) {
 	})
 	if err != nil {
 		s.log.Error("record the end of a process", "task", task, "error", err)
+	}
+	if rec, _ := s.state.record(task); rec.Ended {
+		s.discardWorkspace(task)
 	}
 	s.sender.notify(task)
 	s.log.Info("process ended", "task", task, "exit_code", st.Exit.ExitCode, "paused", st.Pause == Paused, "cut_short", st.CutShort, "stopped", stopped)
@@ -486,7 +490,7 @@ func (s *service) failStart(task protocol.TaskID, j *journal, cause error) *Task
 }
 
 // journalEnded records that task ended for good without a process
-// running, and releases its closed journal j.
+// running, releases its closed journal j, and deletes its workspace.
 func (s *service) journalEnded(task protocol.TaskID, j *journal) {
 	if err := s.state.closeJournal(task, func(rec *taskRecord) {
 		rec.Seq = j.lastSeq()
@@ -495,6 +499,7 @@ func (s *service) journalEnded(task protocol.TaskID, j *journal) {
 	}); err != nil {
 		s.log.Error("record the end of a task", "task", task, "error", err)
 	}
+	s.discardWorkspace(task)
 	s.sender.notify(task)
 }
 
@@ -562,4 +567,12 @@ func (s *service) forget(task protocol.TaskID) {
 		s.log.Error("delete the workspace of a forgotten task", "task", task, "error", err)
 	}
 	s.log.Info("task forgotten", "task", task)
+}
+
+// discardWorkspace deletes the workspace of task, which has ended for
+// good on this daemon: it was stopped, or failed in the daemon's view.
+func (s *service) discardWorkspace(task protocol.TaskID) {
+	if err := deleteWorkspace(s.cfg.StateDir, task); err != nil {
+		s.log.Error("delete the workspace of an ended task", "task", task, "error", err)
+	}
 }

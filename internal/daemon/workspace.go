@@ -78,9 +78,9 @@ func requireHTTPS(repo string) error {
 }
 
 // deleteWorkspace deletes the directory task works in under stateDir,
-// with everything in it. It is the one place the daemon deletes a
-// workspace, so that whatever must happen to a workspace's work first
-// happens here. A workspace that does not exist is not an error.
+// with everything in it. Every workspace a task has worked in is deleted
+// through it, so that whatever must happen to a workspace's work first
+// can happen here. A workspace that does not exist is not an error.
 func deleteWorkspace(stateDir string, task protocol.TaskID) error {
 	if err := os.RemoveAll(workspacePath(stateDir, task)); err != nil {
 		return fmt.Errorf("delete the workspace of task %s: %w", task, err)
