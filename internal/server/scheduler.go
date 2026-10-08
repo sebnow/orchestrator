@@ -214,15 +214,7 @@ func decide(s schedule, policy SchedulePolicy, now time.Time) decisions {
 			candidates = append(candidates, turn)
 		}
 	}
-	slices.SortStableFunc(candidates, func(a, b pendingTurn) int {
-		if a.Filler != b.Filler {
-			if a.Filler {
-				return 1
-			}
-			return -1
-		}
-		return cmp.Or(cmp.Compare(b.Priority.rank(), a.Priority.rank()), cmp.Compare(a.ID, b.ID))
-	})
+	slices.SortFunc(candidates, turnOrder)
 
 	var waits []slotWait
 	for _, turn := range candidates {

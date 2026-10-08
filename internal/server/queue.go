@@ -1,11 +1,13 @@
 package server
 
 import (
+	"cmp"
 	"context"
 	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"time"
 
 	"github.com/sebnow/orchestrator/internal/protocol"
@@ -299,4 +301,50 @@ func dropSchedulersResume(ctx context.Context, tx *sql.Tx, task protocol.TaskID,
 	}
 	fx.reschedule = true
 	return nil
+}
+
+// turnOrder is the order the scheduler considers waiting turns in:
+// non-filler before filler, then by priority, highest first, then oldest
+// first.
+func turnOrder(a, b pendingTurn) int {
+	if a.Filler != b.Filler {
+		if a.Filler {
+			return 1
+		}
+		return -1
+	}
+	return cmp.Or(cmp.Compare(b.Priority.rank(), a.Priority.rank()), cmp.Compare(a.ID, b.ID))
+}
+
+// queuePlace is where a task's waiting turn stands in the scheduler's
+// order, counting from 1, and why it waits.
+type queuePlace struct {
+	Position int    `json:"position"`
+	Reason   string `json:"reason"`
+}
+
+// queuePlaces returns the place of each task's first waiting turn. A
+// delivery to a task that is not finished waits for the task rather than
+// the scheduler, and is left out.
+func queuePlaces(ctx context.Context, tx *sql.Tx) (map[protocol.TaskID]queuePlace, error) {
+	turns, err := queryWaitingTurns(ctx, tx)
+	if err != nil {
+		return nil, err
+	}
+	turns = slices.DeleteFunc(turns, func(turn pendingTurn) bool {
+		return turn.Kind == turnDeliver && turn.State != TaskFinished
+	})
+	slices.SortFunc(turns, turnOrder)
+	places := make(map[protocol.TaskID]queuePlace)
+	for idx, turn := range turns {
+		if _, ok := places[turn.Task]; ok {
+			continue
+		}
+		reason := turn.Reason
+		if reason == "" {
+			reason = "waits for the scheduler"
+		}
+		places[turn.Task] = queuePlace{Position: idx + 1, Reason: reason}
+	}
+	return places, nil
 }

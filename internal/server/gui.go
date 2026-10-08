@@ -68,15 +68,20 @@ func guiTask(summary taskSummary, prompt string) component.Task {
 		CreatedAt:      summary.CreatedAt,
 		LastActivityAt: summary.LastActivityAt,
 		CostUSD:        summary.CostUSD,
+		Priority:       string(summary.Priority),
+		Filler:         summary.Filler,
 	}
 	if summary.ParentID != nil {
 		task.Parent = string(*summary.ParentID)
+	}
+	if summary.Queue != nil {
+		task.Queue = &component.QueuePlace{Position: summary.Queue.Position, Reason: summary.Queue.Reason}
 	}
 	return task
 }
 
 func (s *Server) getDashboard(w http.ResponseWriter, r *http.Request) {
-	s.writeDashboard(w, r, http.StatusOK, component.NewTask{Acknowledge: defaultPauseAcknowledge, Cleanup: defaultPauseCleanup}, "")
+	s.writeDashboard(w, r, http.StatusOK, component.NewTask{Acknowledge: defaultPauseAcknowledge, Cleanup: defaultPauseCleanup, Priority: string(PriorityNormal)}, "")
 }
 
 // writeDashboard writes the dashboard with input in the new-task form,
@@ -95,7 +100,8 @@ func (s *Server) writeDashboard(w http.ResponseWriter, r *http.Request, status i
 }
 
 // dashboardLists renders the tasks needing attention, every task, newest
-// first, and every daemon. It also returns the daemons' ids.
+// first, the account's quota reading, and every daemon. It also returns
+// the daemons' ids.
 func (s *Server) dashboardLists(ctx context.Context) (html.Node, []string, error) {
 	summaries, err := s.store.tasks(ctx)
 	if err != nil {
@@ -106,6 +112,10 @@ func (s *Server) dashboardLists(ctx context.Context) (html.Node, []string, error
 		return nil, nil, err
 	}
 	daemons, err := s.store.daemons(ctx)
+	if err != nil {
+		return nil, nil, err
+	}
+	reading, err := s.store.reading(ctx)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -122,11 +132,18 @@ func (s *Server) dashboardLists(ctx context.Context) (html.Node, []string, error
 			attention = append(attention, component.Attention{Task: task, Reason: reason})
 		}
 	}
+	connected := s.connectedDaemons()
 	ids := make([]string, len(daemons))
 	daemonRows := make([]html.Node, len(daemons))
 	for idx, daemon := range daemons {
 		ids[idx] = string(daemon.ID)
-		row := component.Daemon{ID: string(daemon.ID), LastSeen: daemon.LastSeen, Quota: daemon.Quota, QuotaAt: daemon.QuotaAt}
+		row := component.Daemon{
+			ID: string(daemon.ID), LastSeen: daemon.LastSeen, Quota: daemon.Quota, QuotaAt: daemon.QuotaAt,
+			Connected: slices.Contains(connected, daemon.ID), Slots: s.sched.policy.SlotsPerDaemon, InUse: daemon.InUse,
+		}
+		if daemon.Slots != nil {
+			row.Slots = *daemon.Slots
+		}
 		if daemon.Harness != nil {
 			row.Harness = daemon.Harness.Name + " " + daemon.Harness.Version
 		}
@@ -135,8 +152,18 @@ func (s *Server) dashboardLists(ctx context.Context) (html.Node, []string, error
 	return html.Fragment(
 		component.Section("Needs attention", component.AttentionList(attention)),
 		component.Section("Tasks", component.Table(component.TaskColumns, "No tasks yet.", taskRows...)),
+		component.Section("Budget", s.budget(reading)),
 		component.Section("Daemons", component.Table(component.DaemonColumns, "No daemon has connected yet.", daemonRows...)),
 	), ids, nil
+}
+
+// budget shows the account's quota reading as the scheduler uses it.
+func (s *Server) budget(reading *quotaReading) html.Node {
+	policy := s.sched.policy
+	if reading == nil {
+		return component.Budget(nil, time.Time{}, 0, policy.FillerThreshold, policy.LowThreshold)
+	}
+	return component.Budget(&reading.QuotaObserved, reading.At, s.sched.now().Sub(reading.At), policy.FillerThreshold, policy.LowThreshold)
 }
 
 // attentionReason says why a task waits for the owner, or returns "" when
@@ -210,6 +237,8 @@ func (s *Server) postTaskForm(w http.ResponseWriter, r *http.Request) {
 		Daemon:      r.PostForm.Get("daemon"),
 		Acknowledge: strings.TrimSpace(r.PostForm.Get("acknowledge")),
 		Cleanup:     strings.TrimSpace(r.PostForm.Get("cleanup")),
+		Priority:    r.PostForm.Get("priority"),
+		Filler:      r.PostForm.Get("filler"),
 	}
 	task, problem, err := s.startTaskFromForm(r.Context(), input)
 	if err != nil {
@@ -233,7 +262,7 @@ func (s *Server) postTaskForm(w http.ResponseWriter, r *http.Request) {
 			s.internalError(w, err)
 			return
 		}
-		fresh := component.NewTask{Daemon: input.Daemon, Acknowledge: input.Acknowledge, Cleanup: input.Cleanup}
+		fresh := component.NewTask{Daemon: input.Daemon, Acknowledge: input.Acknowledge, Cleanup: input.Cleanup, Priority: input.Priority, Filler: input.Filler}
 		s.writeHTML(w, http.StatusOK, html.Fragment(
 			component.OutOfBand(component.RegionNewTask,
 				component.NewTaskForm(fresh, daemons, s.defaultModel, "", string(task))),
@@ -248,9 +277,16 @@ func (s *Server) postTaskForm(w http.ResponseWriter, r *http.Request) {
 // returns its id. A problem with the input is returned as text for the
 // owner, with no error.
 func (s *Server) startTaskFromForm(ctx context.Context, input component.NewTask) (protocol.TaskID, string, error) {
-	daemon, err := protocol.ParseDaemonID(input.Daemon)
+	var daemon protocol.DaemonID
+	if input.Daemon != "" {
+		var err error
+		if daemon, err = protocol.ParseDaemonID(input.Daemon); err != nil {
+			return "", "Choose a daemon to run the task on, or any.", nil
+		}
+	}
+	priority, err := ParsePriority(input.Priority)
 	if err != nil {
-		return "", "Choose a daemon to run the task on.", nil
+		return "", "Choose low, normal or high priority.", nil
 	}
 	acknowledge, err := time.ParseDuration(input.Acknowledge)
 	if err != nil {
@@ -274,9 +310,12 @@ func (s *Server) startTaskFromForm(ctx context.Context, input component.NewTask)
 	if err := validateStart(start); err != nil {
 		return "", "The task was not started: " + err.Error() + ".", nil
 	}
-	turn, err := s.startTask(ctx, daemon, start)
+	turn, err := s.startTask(ctx, daemon, priority, input.Filler != "", start)
 	if errors.Is(err, errUnknownDaemon) {
 		return "", "Daemon " + input.Daemon + " has not connected yet.", nil
+	}
+	if errors.Is(err, errNoDaemon) {
+		return "", "No daemon has connected yet.", nil
 	}
 	return turn.TaskID, "", err
 }

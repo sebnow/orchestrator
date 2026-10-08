@@ -27,6 +27,17 @@ type Task struct {
 	// owner's. Children are the ids of the tasks this one spawned.
 	Parent   string
 	Children []string
+	Priority string
+	Filler   bool
+	// Queue is where the task's waiting turn stands; nil when none waits.
+	Queue *QueuePlace
+}
+
+// QueuePlace is where a task's waiting turn stands in the scheduler's
+// queue, counting from 1, and why it waits.
+type QueuePlace struct {
+	Position int
+	Reason   string
 }
 
 func taskURL(id string) string { return "/tasks/" + url.PathEscape(id) }
@@ -42,7 +53,7 @@ func cell(children ...html.Node) html.Node { return html.El("td", nil, children.
 // stateBadge maps a task state to its badge's class and label.
 func stateBadge(state string) (class, label string) {
 	switch state {
-	case "pending", "running", "pausing", "paused", "finished", "stopped", "failed":
+	case "queued", "pending", "running", "pausing", "paused", "yielded", "finished", "stopped", "failed":
 		return "state-" + state, state
 	case "awaiting_permission":
 		return "state-awaiting", "awaiting permission"
@@ -56,14 +67,45 @@ func StateBadge(state string) html.Node {
 	return badge(label, class)
 }
 
+// queueBadges shows the task's state and, when a turn of it waits, its
+// place in the queue. A task that has not started shows only the
+// latter.
+func queueBadges(task Task) html.Node {
+	if task.Queue == nil {
+		return StateBadge(task.State)
+	}
+	var state html.Node
+	if task.State != "queued" {
+		state = html.Fragment(StateBadge(task.State), html.Text(" "))
+	}
+	return html.Fragment(state, badge("queued #"+strconv.Itoa(task.Queue.Position), "state-queued"))
+}
+
+// queueReason says why the task's waiting turn waits, or is empty.
+func queueReason(task Task) html.Node {
+	if task.Queue == nil {
+		return nil
+	}
+	return html.El("span", attrs("class", "reason"), html.Text(" "+task.Queue.Reason))
+}
+
+// priorityLabel is the task's priority, marked when it is filler.
+func priorityLabel(task Task) string {
+	if task.Filler {
+		return task.Priority + ", filler"
+	}
+	return task.Priority
+}
+
 // TaskColumns head a Table of TaskRows.
-var TaskColumns = []string{"State", "Prompt", "Daemon", "Model", "Cost", "Last activity"}
+var TaskColumns = []string{"State", "Prompt", "Priority", "Daemon", "Model", "Cost", "Last activity"}
 
 // TaskRow is a task in the task list, linking to its page.
 func TaskRow(task Task) html.Node {
 	return html.El("tr", nil,
-		cell(StateBadge(task.State)),
+		cell(queueBadges(task), queueReason(task)),
 		cell(link(taskURL(task.ID), excerpt(task.Prompt)), lineage(task.Parent)),
+		cell(html.Text(priorityLabel(task))),
 		cell(html.Text(task.Daemon)),
 		cell(html.Text(task.Model)),
 		cell(html.Text(cost(task.CostUSD))),
@@ -105,7 +147,10 @@ func TaskHeader(task Task, controls html.Node) html.Node {
 	term := func(name string, value html.Node) html.Node {
 		return html.Fragment(html.El("dt", nil, html.Text(name)), html.El("dd", nil, value))
 	}
-	var parent, children html.Node
+	var parent, children, queue html.Node
+	if task.Queue != nil {
+		queue = term("Waits", html.Text(task.Queue.Reason))
+	}
 	if task.Parent != "" {
 		parent = term("Parent", link(taskURL(task.Parent), task.Parent))
 	}
@@ -122,7 +167,10 @@ func TaskHeader(task Task, controls html.Node) html.Node {
 	return html.El("header", attrs("class", "task-header"),
 		html.El("h1", nil, link(taskURL(task.ID), excerpt(task.Prompt))),
 		html.El("dl", nil,
-			term("State", StateBadge(task.State)),
+			term("State", queueBadges(task)),
+			queue,
+			term("Priority", html.Text(task.Priority)),
+			term("Filler", html.Text(yesNo(task.Filler))),
 			term("Daemon", html.Text(task.Daemon)),
 			term("Model", html.Text(task.Model)),
 			term("Cost", html.Text(cost(task.CostUSD))),
@@ -212,15 +260,22 @@ func PromptSubmit(closed string) html.Node {
 	return Button("Send", VariantPrimary, "", "")
 }
 
-// NewTask is what the owner entered to start a task.
+// NewTask is what the owner entered to start a task. An empty Daemon is
+// any connected daemon.
 type NewTask struct {
 	Prompt, Repo, Ref, Model, Daemon string
 	// Acknowledge and Cleanup are the pause limits as Go durations.
 	Acknowledge, Cleanup string
+	Priority             string
+	// Filler is "on" when the task is filler.
+	Filler string
 }
 
-// NewTaskForm starts a task on one of daemons. created, when set, is the
-// id of the task the last submission started.
+// Priorities are the priorities a task can have, lowest first.
+var Priorities = []string{"low", "normal", "high"}
+
+// NewTaskForm starts a task on one of daemons, or on any. created, when
+// set, is the id of the task the last submission started.
 func NewTaskForm(input NewTask, daemons []string, defaultModel, problem, created string) html.Node {
 	var notice, noDaemons html.Node
 	if created != "" {
@@ -229,13 +284,23 @@ func NewTaskForm(input NewTask, daemons []string, defaultModel, problem, created
 	if len(daemons) == 0 {
 		noDaemons = html.El("p", attrs("class", "empty"), html.Text("No daemon has connected yet."))
 	}
+	daemonOptions := []Option{{Value: "", Label: "Any connected daemon"}}
+	for _, daemon := range daemons {
+		daemonOptions = append(daemonOptions, Option{Value: daemon, Label: daemon})
+	}
+	priorityOptions := make([]Option, len(Priorities))
+	for idx, priority := range Priorities {
+		priorityOptions[idx] = Option{Value: priority, Label: priority}
+	}
 	return html.Fragment(notice, Form("/tasks", problem,
 		Field(FieldSpec{Kind: FieldTextarea, Name: "prompt", Label: "Prompt", Value: input.Prompt, Required: true}),
 		Field(FieldSpec{Name: "repo", Label: "Repository (https:// only)", Value: input.Repo, Placeholder: "none: an empty directory"}),
 		Field(FieldSpec{Name: "ref", Label: "Ref", Value: input.Ref}),
 		Field(FieldSpec{Name: "model", Label: "Model", Value: input.Model, Placeholder: "default: " + defaultModel}),
-		Field(FieldSpec{Kind: FieldSelect, Name: "daemon", Label: "Daemon", Value: input.Daemon, Options: daemons, Required: true}),
+		Field(FieldSpec{Kind: FieldSelect, Name: "daemon", Label: "Daemon", Value: input.Daemon, Options: daemonOptions}),
 		noDaemons,
+		Field(FieldSpec{Kind: FieldSelect, Name: "priority", Label: "Priority", Value: input.Priority, Options: priorityOptions}),
+		Field(FieldSpec{Kind: FieldCheckbox, Name: "filler", Label: "Filler: runs only on spare budget, and yields to other work", Value: input.Filler}),
 		Details("Pause limits",
 			Field(FieldSpec{Name: "acknowledge", Label: "Acknowledge within", Value: input.Acknowledge, Required: true}),
 			Field(FieldSpec{Name: "cleanup", Label: "Clean up within", Value: input.Cleanup, Required: true}),
@@ -245,17 +310,21 @@ func NewTaskForm(input NewTask, daemons []string, defaultModel, problem, created
 }
 
 // Daemon is a daemon as the GUI shows it. Quota is its latest reading,
-// taken at QuotaAt; nil when it has reported none.
+// taken at QuotaAt; nil when it has reported none. InUse of its Slots
+// are held by tasks.
 type Daemon struct {
-	ID       string
-	Harness  string
-	LastSeen time.Time
-	Quota    *protocol.QuotaObserved
-	QuotaAt  time.Time
+	ID        string
+	Harness   string
+	LastSeen  time.Time
+	Connected bool
+	Slots     int
+	InUse     int
+	Quota     *protocol.QuotaObserved
+	QuotaAt   time.Time
 }
 
 // DaemonColumns head a Table of DaemonRows.
-var DaemonColumns = []string{"Daemon", "Harness", "Last seen", "Quota"}
+var DaemonColumns = []string{"Daemon", "Harness", "Last seen", "Connected", "Slots", "Quota"}
 
 // DaemonRow is a daemon in the daemon list.
 func DaemonRow(daemon Daemon) html.Node {
@@ -267,8 +336,57 @@ func DaemonRow(daemon Daemon) html.Node {
 		cell(html.Text(daemon.ID)),
 		cell(html.Text(daemon.Harness)),
 		cell(timestamp(daemon.LastSeen)),
+		cell(html.Text(yesNo(daemon.Connected))),
+		cell(html.Text(fmt.Sprintf("%d of %d in use", daemon.InUse, daemon.Slots))),
 		cell(quota),
 	)
+}
+
+// Budget is the account's quota reading as the scheduler uses it: quota,
+// taken at at and age old, or nil when there is none; and the five-hour
+// utilization that filler and low-priority turns must stay below.
+func Budget(quota *protocol.QuotaObserved, at time.Time, age time.Duration, fillerBelow, lowBelow float64) html.Node {
+	thresholds := html.El("p", attrs("class", "notice"), html.Text(fmt.Sprintf(
+		"Filler runs while the five-hour window is below %s used, low priority below %s; "+
+			"a rejected reading holds every turn until its window resets.", percent(fillerBelow), percent(lowBelow))))
+	if quota == nil {
+		return html.Fragment(html.El("p", attrs("class", "empty"), html.Text("No reading yet, so filler waits for one.")), thresholds)
+	}
+	return html.Fragment(QuotaReadout(*quota, at),
+		html.El("p", attrs("class", "notice"), html.Text("Taken "+ago(age)+" ago, by the newest turn on any daemon.")),
+		thresholds)
+}
+
+func percent(fraction float64) string {
+	return strconv.FormatFloat(fraction*100, 'f', 0, 64) + "%"
+}
+
+// ago words an age in minutes, hours past two hours, or days past two
+// days.
+func ago(age time.Duration) string {
+	switch {
+	case age < time.Minute:
+		return "less than a minute"
+	case age < 2*time.Hour:
+		return plural(int(age/time.Minute), "minute")
+	case age < 48*time.Hour:
+		return plural(int(age/time.Hour), "hour")
+	}
+	return plural(int(age/(24*time.Hour)), "day")
+}
+
+func plural(count int, unit string) string {
+	if count == 1 {
+		return "1 " + unit
+	}
+	return strconv.Itoa(count) + " " + unit + "s"
+}
+
+func yesNo(on bool) string {
+	if on {
+		return "yes"
+	}
+	return "no"
 }
 
 // QuotaReadout shows a usage-limit reading: its status and how much of

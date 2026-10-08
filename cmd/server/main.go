@@ -86,12 +86,25 @@ func serve(args []string, stderr io.Writer) int {
 	tlsKey := flags.String("tls-key", "", "the server certificate's key (required unless -insecure-loopback)")
 	clientCA := flags.String("client-ca", "", "the CA certificate that daemons' certificates are verified against, from init-ca (required unless -insecure-loopback)")
 	insecure := flags.Bool("insecure-loopback", false, "serve plain HTTP without authentication, for development; -listen must be a loopback IP address")
+	slots := flags.Int("slots-per-daemon", server.DefaultSchedulePolicy.SlotsPerDaemon, "tasks each daemon runs at once, unless the daemon has a slot count of its own")
+	fillerThreshold := flags.Float64("filler-threshold", server.DefaultSchedulePolicy.FillerThreshold, "five-hour window utilization, from 0 to 1, below which filler tasks run")
+	lowThreshold := flags.Float64("low-threshold", server.DefaultSchedulePolicy.LowThreshold, "five-hour window utilization, from 0 to 1, below which low-priority tasks run")
 	if err := flags.Parse(args); err != nil {
 		return exitCode(err)
 	}
 	if *dbPath == "" || *defaultModel == "" || flags.NArg() > 0 {
 		flags.Usage()
 		return 2
+	}
+	if *slots < 1 {
+		fmt.Fprintln(stderr, "server: -slots-per-daemon must be at least 1")
+		return 2
+	}
+	for name, threshold := range map[string]float64{"-filler-threshold": *fillerThreshold, "-low-threshold": *lowThreshold} {
+		if threshold < 0 || threshold > 1 {
+			fmt.Fprintf(stderr, "server: %s must be from 0 to 1\n", name)
+			return 2
+		}
 	}
 	var tlsConfig *tls.Config
 	if *insecure {
@@ -146,7 +159,11 @@ func serve(args []string, stderr io.Writer) int {
 		}
 	}
 
-	srv := server.New(store, log, server.Options{DefaultModel: *defaultModel, Insecure: *insecure})
+	srv := server.New(store, log, server.Options{
+		DefaultModel: *defaultModel,
+		Insecure:     *insecure,
+		Schedule:     server.SchedulePolicy{SlotsPerDaemon: *slots, FillerThreshold: *fillerThreshold, LowThreshold: *lowThreshold},
+	})
 	httpServer := &http.Server{
 		Handler:   srv,
 		TLSConfig: tlsConfig,

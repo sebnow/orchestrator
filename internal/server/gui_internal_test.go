@@ -323,7 +323,8 @@ func TestGivenInvalidNewTaskWhenPostedThenTheFormSaysWhyAndKeepsWhatWasEntered(t
 		problem string
 	}{
 		"no prompt":        {startForm("laptop", " "), "Write a prompt for the task."},
-		"no daemon":        {startForm("", "count"), "Choose a daemon to run the task on."},
+		"unsafe daemon":    {startForm("../x", "count"), "Choose a daemon to run the task on, or any."},
+		"unknown priority": {func() url.Values { f := startForm("laptop", "count"); f.Set("priority", "urgent"); return f }(), "Choose low, normal or high priority."},
 		"unseen daemon":    {startForm("desktop", "count"), "Daemon desktop has not connected yet."},
 		"ref without repo": {func() url.Values { f := startForm("laptop", "count <b>"); f.Set("ref", "main"); return f }(), "The task was not started: workspace needs both repo and ref."},
 		"bad limit":        {func() url.Values { f := startForm("laptop", "count"); f.Set("cleanup", "soon"); return f }(), "The cleanup limit is not a duration such as 5m."},
@@ -430,7 +431,7 @@ func TestGivenStaticFilesWhenRequestedThenTheyAreServedWithTheirContentTypes(t *
 }
 
 func TestGivenEveryTaskStateWhenShownAsABadgeThenEachHasAColour(t *testing.T) {
-	for _, state := range []TaskState{TaskPending, TaskRunning, TaskAwaitingPermission, TaskPausing, TaskPaused, TaskFinished, TaskStopped, TaskFailed} {
+	for _, state := range []TaskState{TaskQueued, TaskPending, TaskRunning, TaskAwaitingPermission, TaskPausing, TaskPaused, TaskYielded, TaskFinished, TaskStopped, TaskFailed} {
 		var out strings.Builder
 		if err := html.Render(&out, component.StateBadge(string(state))); err != nil {
 			t.Fatal(err)

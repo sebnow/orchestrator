@@ -235,15 +235,22 @@ func stopIssued(ctx context.Context, tx *sql.Tx, task protocol.TaskID) (bool, er
 
 // taskSummary is a task as the task list shows it.
 type taskSummary struct {
-	ID       protocol.TaskID   `json:"id"`
+	ID protocol.TaskID `json:"id"`
+	// DaemonID is empty while the task waits to be placed on any daemon,
+	// or on its parent's unless that is full.
 	DaemonID protocol.DaemonID `json:"daemon_id"`
 	// ParentID names the task that spawned this one; nil for the owner's.
 	ParentID       *protocol.TaskID `json:"parent_id,omitempty"`
 	State          TaskState        `json:"state"`
 	Model          string           `json:"model"`
+	Priority       Priority         `json:"priority"`
+	Filler         bool             `json:"filler"`
 	CreatedAt      time.Time        `json:"created_at"`
 	LastActivityAt time.Time        `json:"last_activity_at"`
 	CostUSD        float64          `json:"cost_usd"`
+	// Queue is where the task's first waiting turn stands; nil when none
+	// waits for the scheduler.
+	Queue *queuePlace `json:"queue,omitempty"`
 }
 
 // taskDetail is one task: its summary and what it was started with.
@@ -252,18 +259,21 @@ type taskDetail struct {
 	Start protocol.StartTask `json:"start"`
 }
 
-const summaryColumns = `id, daemon_id, parent_id, state, model, created_at, last_activity_at, cost_usd`
+const summaryColumns = `id, daemon_id, placement, parent_id, state, model, priority, filler, created_at, last_activity_at, cost_usd`
 
 // scanSummary reads summaryColumns, followed by extra destinations.
 func scanSummary(row interface{ Scan(...any) error }, extra ...any) (taskSummary, error) {
 	var summary taskSummary
-	var id, daemon, state, created, lastActivity string
+	var id, daemon, placed, state, priority, created, lastActivity string
 	var parent sql.NullString
-	dest := append([]any{&id, &daemon, &parent, &state, &summary.Model, &created, &lastActivity, &summary.CostUSD}, extra...)
+	dest := append([]any{&id, &daemon, &placed, &parent, &state, &summary.Model, &priority, &summary.Filler, &created, &lastActivity, &summary.CostUSD}, extra...)
 	if err := row.Scan(dest...); err != nil {
 		return taskSummary{}, err
 	}
-	summary.ID, summary.DaemonID, summary.State = protocol.TaskID(id), protocol.DaemonID(daemon), TaskState(state)
+	summary.ID, summary.State, summary.Priority = protocol.TaskID(id), TaskState(state), Priority(priority)
+	if placement(placed) == placementBound {
+		summary.DaemonID = protocol.DaemonID(daemon)
+	}
 	if parent.Valid {
 		parentID := protocol.TaskID(parent.String)
 		summary.ParentID = &parentID
@@ -278,9 +288,25 @@ func scanSummary(row interface{ Scan(...any) error }, extra ...any) (taskSummary
 	return summary, nil
 }
 
+// placeInQueue sets summary's place in the queue from places.
+func (summary *taskSummary) placeInQueue(places map[protocol.TaskID]queuePlace) {
+	if place, ok := places[summary.ID]; ok {
+		summary.Queue = &place
+	}
+}
+
 // tasks returns every task's summary, oldest first.
 func (s *Store) tasks(ctx context.Context) ([]taskSummary, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT `+summaryColumns+` FROM tasks`)
+	tx, err := s.db.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
+	if err != nil {
+		return nil, fmt.Errorf("read tasks: %w", err)
+	}
+	defer tx.Rollback()
+	places, err := queuePlaces(ctx, tx)
+	if err != nil {
+		return nil, err
+	}
+	rows, err := tx.QueryContext(ctx, `SELECT `+summaryColumns+` FROM tasks`)
 	if err != nil {
 		return nil, fmt.Errorf("read tasks: %w", err)
 	}
@@ -291,6 +317,7 @@ func (s *Store) tasks(ctx context.Context) ([]taskSummary, error) {
 		if err != nil {
 			return nil, fmt.Errorf("read tasks: %w", err)
 		}
+		summary.placeInQueue(places)
 		summaries = append(summaries, summary)
 	}
 	if err := rows.Err(); err != nil {
@@ -305,10 +332,15 @@ func (s *Store) tasks(ctx context.Context) ([]taskSummary, error) {
 
 // task returns one task, or errUnknownTask.
 func (s *Store) task(ctx context.Context, task protocol.TaskID) (taskDetail, error) {
+	tx, err := s.db.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
+	if err != nil {
+		return taskDetail{}, fmt.Errorf("read task %q: %w", task, err)
+	}
+	defer tx.Rollback()
 	var detail taskDetail
 	var repo, ref sql.NullString
 	var acknowledge, cleanup int64
-	row := s.db.QueryRowContext(ctx, `
+	row := tx.QueryRowContext(ctx, `
 		SELECT `+summaryColumns+`, prompt, system_prompt, workspace_repo, workspace_ref, pause_acknowledge_ns, pause_cleanup_ns
 		FROM tasks WHERE id = ?`, string(task))
 	summary, err := scanSummary(row, &detail.Start.Prompt, &detail.Start.SystemPrompt, &repo, &ref, &acknowledge, &cleanup)
@@ -318,6 +350,11 @@ func (s *Store) task(ctx context.Context, task protocol.TaskID) (taskDetail, err
 	if err != nil {
 		return taskDetail{}, fmt.Errorf("read task %q: %w", task, err)
 	}
+	places, err := queuePlaces(ctx, tx)
+	if err != nil {
+		return taskDetail{}, err
+	}
+	summary.placeInQueue(places)
 	detail.taskSummary = summary
 	detail.Start.Model = summary.Model
 	if repo.Valid {

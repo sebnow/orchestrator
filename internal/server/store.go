@@ -760,6 +760,21 @@ type daemonSummary struct {
 	// observed at QuotaAt; nil when there is none.
 	Quota   *protocol.QuotaObserved
 	QuotaAt time.Time
+	// Slots is the daemon's own slot count; nil for the server's default.
+	Slots *int
+	// InUse counts the tasks holding a slot on the daemon.
+	InUse int
+}
+
+// reading returns the account's quota reading: the newest any daemon
+// reported, or nil when there is none.
+func (s *Store) reading(ctx context.Context) (*quotaReading, error) {
+	tx, err := s.db.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
+	if err != nil {
+		return nil, fmt.Errorf("read the quota reading: %w", err)
+	}
+	defer tx.Rollback()
+	return queryReading(ctx, tx)
 }
 
 // daemons returns every daemon that has been seen, by id, each with its
@@ -774,10 +789,12 @@ func (s *Store) daemons(ctx context.Context) ([]daemonSummary, error) {
 			SELECT t.daemon_id, e.time, e.payload,
 				row_number() OVER (PARTITION BY t.daemon_id ORDER BY julianday(e.time) DESC, e.rowid DESC) AS newest
 			FROM events e JOIN tasks t ON t.id = e.task_id
-			WHERE e.kind = ?)
-		SELECT d.id, d.last_seen, d.harness_name, d.harness_version, r.time, r.payload
+			WHERE e.kind = ?1)
+		SELECT d.id, d.last_seen, d.harness_name, d.harness_version, r.time, r.payload, d.slots,
+			(SELECT count(*) FROM tasks t WHERE t.daemon_id = d.id AND t.state IN (?2, ?3, ?4, ?5))
 		FROM daemons d LEFT JOIN readings r ON r.daemon_id = d.id AND r.newest = 1
-		ORDER BY d.id`, string(protocol.KindQuotaObserved))
+		ORDER BY d.id`, string(protocol.KindQuotaObserved),
+		string(TaskPending), string(TaskRunning), string(TaskAwaitingPermission), string(TaskPausing))
 	if err != nil {
 		return nil, fmt.Errorf("read daemons: %w", err)
 	}
@@ -786,10 +803,16 @@ func (s *Store) daemons(ctx context.Context) ([]daemonSummary, error) {
 	for rows.Next() {
 		var id, lastSeen string
 		var harnessName, harnessVersion, quotaTime, quotaPayload sql.NullString
-		if err := rows.Scan(&id, &lastSeen, &harnessName, &harnessVersion, &quotaTime, &quotaPayload); err != nil {
+		var slots sql.NullInt64
+		var inUse int
+		if err := rows.Scan(&id, &lastSeen, &harnessName, &harnessVersion, &quotaTime, &quotaPayload, &slots, &inUse); err != nil {
 			return nil, fmt.Errorf("read daemons: %w", err)
 		}
-		daemon := daemonSummary{ID: protocol.DaemonID(id)}
+		daemon := daemonSummary{ID: protocol.DaemonID(id), InUse: inUse}
+		if slots.Valid {
+			count := int(slots.Int64)
+			daemon.Slots = &count
+		}
 		if daemon.LastSeen, err = parseTime(lastSeen); err != nil {
 			return nil, fmt.Errorf("read daemon %q: %w", id, err)
 		}

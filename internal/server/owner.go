@@ -18,10 +18,12 @@ import (
 // most a prompt and a system prompt.
 const maxOwnerRequestBytes = 1 << 20
 
-// createTaskRequest is the body of POST /v1/tasks: the start_task payload
-// and the daemon to run it on.
+// createTaskRequest is the body of POST /v1/tasks: the start_task payload,
+// the daemon to run it on, or none for any, and how it is scheduled.
 type createTaskRequest struct {
 	DaemonID protocol.DaemonID `json:"daemon_id"`
+	Priority string            `json:"priority"`
+	Filler   bool              `json:"filler"`
 	protocol.StartTask
 }
 
@@ -31,15 +33,23 @@ type commandRequest struct {
 	Payload json.RawMessage      `json:"payload"`
 }
 
-// postTask creates a task on the named daemon and queues its start, and
-// returns the queued turn.
+// postTask creates a task on the named daemon, or on any, and queues its
+// start, and returns the queued turn.
 func (s *Server) postTask(w http.ResponseWriter, r *http.Request) {
 	var request createTaskRequest
 	if err := decodeStrict(http.MaxBytesReader(w, r.Body, maxOwnerRequestBytes), &request); err != nil {
 		http.Error(w, "decode task: "+err.Error(), http.StatusBadRequest)
 		return
 	}
-	daemon, err := protocol.ParseDaemonID(string(request.DaemonID))
+	var daemon protocol.DaemonID
+	if request.DaemonID != "" {
+		var err error
+		if daemon, err = protocol.ParseDaemonID(string(request.DaemonID)); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+	}
+	priority, err := ParsePriority(request.Priority)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
@@ -48,9 +58,13 @@ func (s *Server) postTask(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
-	turn, err := s.startTask(r.Context(), daemon, request.StartTask)
+	turn, err := s.startTask(r.Context(), daemon, priority, request.Filler, request.StartTask)
 	if errors.Is(err, errUnknownDaemon) {
 		http.Error(w, err.Error()+": it has not connected yet", http.StatusUnprocessableEntity)
+		return
+	}
+	if errors.Is(err, errNoDaemon) {
+		http.Error(w, err.Error(), http.StatusUnprocessableEntity)
 		return
 	}
 	if err != nil {
@@ -60,20 +74,25 @@ func (s *Server) postTask(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusCreated, turn)
 }
 
-// startTask creates a task on daemon under a new id, with the default
-// model when start names none and the composed system prompt, and returns
-// its queued start.
-func (s *Server) startTask(ctx context.Context, daemon protocol.DaemonID, start protocol.StartTask) (queuedTurn, error) {
+// startTask creates a task under a new id, on daemon or, when that is
+// empty, on any connected daemon, with the default model when start names
+// none and the composed system prompt, and returns its queued start.
+func (s *Server) startTask(ctx context.Context, daemon protocol.DaemonID, priority Priority, filler bool, start protocol.StartTask) (queuedTurn, error) {
 	if start.Model == "" {
 		start.Model = s.defaultModel
 	}
 	start.SystemPrompt = systemPrompt(nil, start.SystemPrompt)
+	placed := placementBound
+	if daemon == "" {
+		placed = placementAny
+	}
 	return s.store.createTask(ctx, newTask{
 		// rand.Text uses only letters and digits, so the id is always valid.
 		ID:        protocol.TaskID(rand.Text()),
 		Daemon:    daemon,
-		Placement: placementBound,
-		Priority:  PriorityNormal,
+		Placement: placed,
+		Priority:  priority,
+		Filler:    filler,
 		Start:     start,
 		Origin:    originOwner,
 	})

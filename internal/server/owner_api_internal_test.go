@@ -127,7 +127,7 @@ func TestGivenInvalidTaskWhenCreatingThenBadRequestAndNoCommandIsIssued(t *testi
 	for name, body := range map[string]string{
 		"not json":               `{`,
 		"unknown field":          `{"daemon_id":"laptop","prompt":"p","promt":"p",` + limits + `}`,
-		"no daemon":              `{"prompt":"p",` + limits + `}`,
+		"unknown priority":       `{"daemon_id":"laptop","priority":"urgent","prompt":"p",` + limits + `}`,
 		"unsafe daemon":          `{"daemon_id":"../x","prompt":"p",` + limits + `}`,
 		"no prompt":              `{"daemon_id":"laptop",` + limits + `}`,
 		"workspace without ref":  `{"daemon_id":"laptop","prompt":"p","workspace":{"repo":"r"},` + limits + `}`,
@@ -314,7 +314,7 @@ func TestGivenRunningTaskWhenListingAndGettingItThenItsStateActivityAndCostAreSh
 	}
 	created := first.CreatedAt.Format(time.RFC3339Nano)
 	requireJSONEqual(t, list[0], map[string]any{
-		"id": string(first.TaskID), "daemon_id": "laptop", "state": "running", "model": "haiku",
+		"id": string(first.TaskID), "daemon_id": "laptop", "state": "running", "model": "haiku", "priority": "normal", "filler": false,
 		"created_at": list[0]["created_at"], "last_activity_at": active.Format(time.RFC3339Nano), "cost_usd": 0.25,
 	})
 	if got, _ := time.Parse(time.RFC3339Nano, list[0]["created_at"].(string)); got.After(first.CreatedAt) || first.CreatedAt.Sub(got) > time.Second {
@@ -324,7 +324,7 @@ func TestGivenRunningTaskWhenListingAndGettingItThenItsStateActivityAndCostAreSh
 		t.Errorf("second task = %v", list[1])
 	}
 	requireJSONEqual(t, detail, map[string]any{
-		"id": string(first.TaskID), "daemon_id": "laptop", "state": "running", "model": "haiku",
+		"id": string(first.TaskID), "daemon_id": "laptop", "state": "running", "model": "haiku", "priority": "normal", "filler": false,
 		"created_at": list[0]["created_at"], "last_activity_at": active.Format(time.RFC3339Nano), "cost_usd": 0.25,
 		"start": map[string]any{
 			"prompt": "count to three", "system_prompt": systemPrompt(nil, "be brief"),

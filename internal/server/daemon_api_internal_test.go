@@ -44,9 +44,17 @@ func (b *syncBuffer) String() string {
 
 func startTestServer(t *testing.T) testServer {
 	t.Helper()
+	return startTestServerWith(t, Options{})
+}
+
+// startTestServerWith is startTestServer with the scheduling options of
+// options.
+func startTestServerWith(t *testing.T, options Options) testServer {
+	t.Helper()
 	store, _ := openTestStore(t)
 	logs := &syncBuffer{}
-	srv := New(store, slog.New(slog.NewTextHandler(logs, nil)), Options{DefaultModel: testDefaultModel, Insecure: true})
+	options.DefaultModel, options.Insecure = testDefaultModel, true
+	srv := New(store, slog.New(slog.NewTextHandler(logs, nil)), options)
 	httpServer := httptest.NewServer(srv)
 	ctx, stopScheduling := context.WithCancel(context.Background())
 	scheduled := make(chan struct{})

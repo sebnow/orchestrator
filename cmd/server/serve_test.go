@@ -57,3 +57,25 @@ func TestGivenTLSButNoOwnerTokenWhenStartingThenTheServerRefusesAndSaysHowToIssu
 		t.Errorf("status %d, stderr %q; want 1 naming issue-owner-token", status, stderr)
 	}
 }
+
+func TestGivenSchedulingFlagsOutOfRangeWhenStartingThenTheServerRefusesAndNamesTheFlag(t *testing.T) {
+	for _, tc := range []struct {
+		flag, value string
+	}{
+		{"-slots-per-daemon", "0"},
+		{"-filler-threshold", "-0.1"},
+		{"-filler-threshold", "1.5"},
+		{"-low-threshold", "2"},
+	} {
+		dbPath := filepath.Join(t.TempDir(), "server.db")
+
+		status, _, stderr := runCommand("-insecure-loopback", "-db", dbPath, tc.flag, tc.value)
+
+		if status != 2 || !strings.Contains(stderr, tc.flag) {
+			t.Errorf("%s %s: status %d, stderr %q; want 2 naming the flag", tc.flag, tc.value, status, stderr)
+		}
+		if _, err := os.Stat(dbPath); !errors.Is(err, fs.ErrNotExist) {
+			t.Errorf("%s %s: the database was opened: %v", tc.flag, tc.value, err)
+		}
+	}
+}

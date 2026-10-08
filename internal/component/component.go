@@ -167,6 +167,9 @@ const (
 	FieldHidden
 	// FieldPassword is a text input whose value the browser hides.
 	FieldPassword
+	// FieldCheckbox is ticked when its Value is not empty, and sends "on"
+	// when ticked.
+	FieldCheckbox
 )
 
 // FieldSpec describes one form field. Options are the choices of a
@@ -177,8 +180,13 @@ type FieldSpec struct {
 	Label       string
 	Value       string
 	Placeholder string
-	Options     []string
+	Options     []Option
 	Required    bool
+}
+
+// Option is one choice of a FieldSelect: Value is sent, Label shown.
+type Option struct {
+	Value, Label string
 }
 
 // Field is a labelled form control.
@@ -194,6 +202,12 @@ func Field(spec FieldSpec) html.Node {
 	switch spec.Kind {
 	case FieldHidden:
 		return html.El("input", append(list, html.Attr("type", "hidden"), html.Attr("value", spec.Value)))
+	case FieldCheckbox:
+		box := append(list, html.Attr("type", "checkbox"), html.Attr("value", "on"))
+		if spec.Value != "" {
+			box = append(box, html.Attr("checked", ""))
+		}
+		return html.El("label", attrs("class", "checkbox"), html.El("input", box), html.Text(" "+spec.Label))
 	case FieldPassword:
 		control = html.El("input", append(list, html.Attr("type", "password"), html.Attr("value", spec.Value)))
 	case FieldTextarea:
@@ -203,11 +217,11 @@ func Field(spec FieldSpec) html.Node {
 	case FieldSelect:
 		options := make([]html.Node, len(spec.Options))
 		for idx, option := range spec.Options {
-			optionAttrs := attrs("value", option)
-			if option == spec.Value {
+			optionAttrs := attrs("value", option.Value)
+			if option.Value == spec.Value {
 				optionAttrs = append(optionAttrs, html.Attr("selected", ""))
 			}
-			options[idx] = html.El("option", optionAttrs, html.Text(option))
+			options[idx] = html.El("option", optionAttrs, html.Text(option.Label))
 		}
 		control = html.El("select", list, options...)
 	default:
