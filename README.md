@@ -120,6 +120,14 @@ to run it on or any connected daemon, its priority, whether it is filler
 the agent wants to run a tool, and has buttons to pause, resume,
 interrupt or stop the task.
 
+A `stopped` or `failed` task's page, and a `failed` task among those
+that need attention, have a Dismiss button. A dismissed task no longer
+needs attention and is left out of the dashboard's list of every task,
+which says how many dismissed tasks it leaves out; `/?dismissed=show`
+includes them, marked as dismissed. Scripts dismiss a task with
+`POST /v1/tasks/{task}/dismiss`, which answers 409 unless the task is
+`stopped` or `failed`.
+
 ### Flags
 
 Server flags:
