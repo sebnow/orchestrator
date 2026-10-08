@@ -59,26 +59,33 @@ Daemon flags:
 - `-id` (required): the daemon's name, made of letters, digits, `.`,
   `_` and `-`. The new-task form offers daemons by this name.
 - `-state-dir` (required): created when missing. It holds `state.json`,
-  one journal per task under `journal/`, and each task's working
-  directory under `workspaces/<task>/`.
+  which records what each task needs to be resumed, one journal per task
+  under `journal/`, and each task's working directory under
+  `workspaces/<task>/`. Claude Code keeps the sessions themselves under
+  the OS user's `~/.claude/projects/`.
 - `-claude`: the `claude` executable, `claude` on `PATH` by default.
   The daemon runs `claude --version` when it starts and exits if that
   fails. Tasks use the Claude Code login of the OS user who starts the
   daemon and spend that account's quota.
 
 Without a repository, a task starts in an empty directory. With one, it
-starts in a clone checked out at the ref. git clones without the user's
-or the system's git configuration, so its credential helpers and URL
-rewrites are not used; give a public repository by its https URL.
+starts in a clone checked out at the ref. The repository must be a
+public one given by its `https://` URL; the daemon refuses any other.
+git clones without the user's or the system's git configuration, so its
+credential helpers and URL rewrites are not used.
 
-Between turns a task stays `running`, waiting for a follow-up prompt.
-It ends as `stopped` when stopped from its page, and as `finished` when
-the daemon shuts down.
+Each turn of a task runs in its own `claude` process, which exits when
+the turn ends. The task is then `finished`, or `paused` if it was paused
+during the turn. A follow-up prompt, or Resume on a paused task, starts
+a new process that continues the same Claude Code session in the same
+working directory. A task ends for good as `stopped` when stopped from
+its page, or as `failed`; the task page then takes no more prompts.
 
-SIGINT or SIGTERM shuts either program down. The daemon ends its tasks
-first; a second signal makes it exit at once. A daemon started again
-with the same `-state-dir` marks as `failed` every task its previous
-run did not end.
+SIGINT or SIGTERM shuts either program down. The daemon stops its
+running turns first; a second signal makes it exit at once. A daemon
+started again with the same `-state-dir` marks as `failed` every task
+whose turn its previous run did not end; a task that was between turns
+can still be resumed.
 
 Neither program authenticates requests, so anyone who can reach the
 server can start tasks that run commands on the daemon's machine. Keep
