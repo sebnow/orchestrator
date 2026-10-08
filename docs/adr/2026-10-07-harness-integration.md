@@ -3,6 +3,7 @@
 - Status: Accepted
 - Decided: 2026-10-06
 - Source: [initial brainstorm](../design/2026-10-06-brainstorm.md), decision 9
+- Amended by: [task lifetime](2026-10-08-task-lifetime.md), which ends the process after each turn and sends a follow-up to a new process with `--resume`
 
 ## Context
 
