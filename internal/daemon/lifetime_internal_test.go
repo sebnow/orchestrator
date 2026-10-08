@@ -122,7 +122,8 @@ func TestGivenFinishedTaskWhenTheOwnerPromptsThenANewProcessResumesItsSessionInT
 
 	second := d.nextProcess(t)
 	spec := second.spec
-	if spec.Resume != "session-1" || spec.Workdir != first.spec.Workdir || spec.Model != "fake-model" || spec.SystemPrompt != "Be brief." {
+	if spec.Resume != "session-1" || spec.Workdir != first.spec.Workdir || spec.Model != "fake-model" ||
+		spec.SystemPrompt != first.spec.SystemPrompt || !strings.HasSuffix(spec.SystemPrompt, "\n\nBe brief.") {
 		t.Errorf("second spec = %+v, first workdir %s", spec, first.spec.Workdir)
 	}
 	if in := finishTurn(t, second, "session-1"); in.text != "What is the codeword?" {

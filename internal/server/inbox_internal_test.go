@@ -285,6 +285,7 @@ func TestGivenRunningParentWhenItSpawnsThenTheChildStartsOnItsDaemonWithItsSetti
 	}
 	want := parentStart
 	want.Prompt = "Say PEAR."
+	want.SystemPrompt = systemPrompt(fromTask("parent"), "")
 	if child.ParentID == nil || *child.ParentID != "parent" || child.DaemonID != "laptop" || child.State != TaskPending || !reflect.DeepEqual(child.Start, want) {
 		t.Errorf("child = %+v, start %+v; want a pending child of parent on laptop with %+v", child.taskSummary, child.Start, want)
 	}
@@ -361,5 +362,39 @@ func TestGivenStoppedParentWhenItsChildFailsThenNoNoticeIsKept(t *testing.T) {
 
 	if n := waiting(t, store, "parent"); n != 0 {
 		t.Errorf("%d messages wait for the stopped parent", n)
+	}
+}
+
+func TestGivenOwnersTaskAndChildWhenStartedThenEachSystemPromptExplainsMessagingAndTheChildsNamesItsParent(t *testing.T) {
+	srv := startTestServer(t)
+	if _, err := srv.store.heldSeqs(t.Context(), "laptop"); err != nil {
+		t.Fatal(err)
+	}
+	start := protocol.StartTask{Prompt: "Plan.", SystemPrompt: "Be brief.", PauseLimits: testStart.PauseLimits}
+	command, err := srv.startTask(t.Context(), "laptop", start)
+	if err != nil {
+		t.Fatal(err)
+	}
+	parent := &lifecycle{t: t, store: srv.store, task: command.TaskID}
+	parent.drive(TaskRunning)
+	child := spawned(t, srv.store, command.TaskID, "child")
+
+	owners, err := srv.store.task(t.Context(), command.TaskID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	spawnedChild, err := srv.store.task(t.Context(), child.task)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if want := messagingPrompt + "\n\nBe brief."; owners.Start.SystemPrompt != want {
+		t.Errorf("owner's task system prompt = %q, want %q", owners.Start.SystemPrompt, want)
+	}
+	wantChild := messagingPrompt + "\n\nYou are a child task of task " + string(command.TaskID) + ", which waits for your result. " +
+		"When you have it, send it to task " + string(command.TaskID) + " with send_message before you end your turn; " +
+		"task " + string(command.TaskID) + " does not see your replies otherwise."
+	if spawnedChild.Start.SystemPrompt != wantChild {
+		t.Errorf("child's system prompt = %q\nwant %q", spawnedChild.Start.SystemPrompt, wantChild)
 	}
 }

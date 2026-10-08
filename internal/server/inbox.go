@@ -68,9 +68,10 @@ func (s *Store) spawnTask(ctx context.Context, daemon protocol.DaemonID, parent,
 		return protocol.Command{}, fmt.Errorf("read task %q: %w", parent, err)
 	}
 	start := protocol.StartTask{
-		Prompt:      spawn.Prompt,
-		Model:       model,
-		PauseLimits: protocol.PauseLimits{Acknowledge: time.Duration(acknowledge), Cleanup: time.Duration(cleanup)},
+		Prompt:       spawn.Prompt,
+		SystemPrompt: systemPrompt(&parent, ""),
+		Model:        model,
+		PauseLimits:  protocol.PauseLimits{Acknowledge: time.Duration(acknowledge), Cleanup: time.Duration(cleanup)},
 	}
 	if spawn.Model != "" {
 		start.Model = spawn.Model

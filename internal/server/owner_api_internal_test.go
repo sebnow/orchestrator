@@ -71,7 +71,7 @@ func TestGivenStreamingDaemonWhenOwnerCreatesTaskThenTheDaemonGetsTheStartAndIts
 	}
 	requireJSONEqual(t, start, protocol.StartTask{
 		Prompt:       "count to three",
-		SystemPrompt: "be brief",
+		SystemPrompt: systemPrompt(nil, "be brief"),
 		Workspace:    &protocol.Workspace{Repo: "https://example.com/o/r.git", Ref: "main"},
 		Model:        "haiku",
 		PauseLimits:  protocol.PauseLimits{Acknowledge: time.Minute, Cleanup: 5 * time.Minute},
@@ -290,7 +290,7 @@ func TestGivenRunningTaskWhenListingAndGettingItThenItsStateActivityAndCostAreSh
 		"id": string(first.TaskID), "daemon_id": "laptop", "state": "running", "model": "haiku",
 		"created_at": list[0]["created_at"], "last_activity_at": active.Format(time.RFC3339Nano), "cost_usd": 0.25,
 		"start": map[string]any{
-			"prompt": "count to three", "system_prompt": "be brief",
+			"prompt": "count to three", "system_prompt": systemPrompt(nil, "be brief"),
 			"workspace":    map[string]any{"repo": "https://example.com/o/r.git", "ref": "main"},
 			"model":        "haiku",
 			"pause_limits": map[string]any{"acknowledge": "1m0s", "cleanup": "5m0s"},

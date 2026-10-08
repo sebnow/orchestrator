@@ -61,11 +61,13 @@ func (s *Server) postTask(w http.ResponseWriter, r *http.Request) {
 }
 
 // startTask creates a task on daemon under a new id, with the default
-// model when start names none, and returns its start_task command.
+// model when start names none and the composed system prompt, and returns
+// its start_task command.
 func (s *Server) startTask(ctx context.Context, daemon protocol.DaemonID, start protocol.StartTask) (protocol.Command, error) {
 	if start.Model == "" {
 		start.Model = s.defaultModel
 	}
+	start.SystemPrompt = systemPrompt(nil, start.SystemPrompt)
 	// rand.Text uses only letters and digits, so the id is always valid.
 	return s.store.createTask(ctx, daemon, protocol.TaskID(rand.Text()), start)
 }
