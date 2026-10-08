@@ -86,7 +86,7 @@ func serve(args []string, stderr io.Writer) int {
 	tlsKey := flags.String("tls-key", "", "the server certificate's key (required unless -insecure-loopback)")
 	clientCA := flags.String("client-ca", "", "the CA certificate that daemons' certificates are verified against, from init-ca (required unless -insecure-loopback)")
 	insecure := flags.Bool("insecure-loopback", false, "serve plain HTTP without authentication, for development; -listen must be a loopback IP address")
-	slots := flags.Int("slots-per-daemon", server.DefaultSchedulePolicy.SlotsPerDaemon, "tasks each daemon runs at once, unless the daemon has a slot count of its own")
+	slots := flags.Int("slots-per-daemon", server.DefaultSchedulePolicy.SlotsPerDaemon, "tasks each daemon runs at once")
 	fillerThreshold := flags.Float64("filler-threshold", server.DefaultSchedulePolicy.FillerThreshold, "five-hour window utilization, from 0 to 1, below which filler tasks run")
 	lowThreshold := flags.Float64("low-threshold", server.DefaultSchedulePolicy.LowThreshold, "five-hour window utilization, from 0 to 1, below which low-priority tasks run")
 	if err := flags.Parse(args); err != nil {
