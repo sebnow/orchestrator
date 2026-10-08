@@ -104,7 +104,7 @@ func TestGivenPollingPageWhenItAsksForUpdatesThenItGetsTheEntriesAfterItsCursorA
 		t.Fatalf("status = %d (%s), want 200", got.status, got.body)
 	}
 	requireContains(t, got.body, "DONE-1", "DONE-3",
-		`<div hx-swap-oob="innerHTML:#task-live"><div hx-get="/tasks/`+string(task)+`/updates?after=`+strconv.FormatUint(events.seq, 10)+`-1-0" hx-trigger="every 5s"`)
+		`<div hx-swap-oob="innerHTML:#task-live"><div hx-get="/tasks/`+string(task)+`/updates?after=`+strconv.FormatUint(events.seq, 10)+`-1-0" hx-trigger="every 5s, task-changed from:body"`)
 	requireLacks(t, got.body, "Harness started", "Owner prompted", "sse-connect")
 }
 

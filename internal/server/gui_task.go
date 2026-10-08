@@ -293,16 +293,17 @@ func (s *Server) postCommandForm(w http.ResponseWriter, r *http.Request) {
 		s.writeHTML(w, http.StatusUnprocessableEntity, form)
 		return
 	}
+	// The header, the permission prompt and the prompt's button are left
+	// to the page's stream, or its poller, which the trigger makes poll at
+	// once. Were this response to swap them too, it could arrive after a
+	// newer update from the stream and leave the page showing the older
+	// state.
+	w.Header().Set("HX-Trigger", component.EventTaskChanged)
 	var promptForm html.Node
 	if refused.kind == protocol.CommandPrompt {
 		promptForm = component.OutOfBand(component.RegionPrompt, view.promptForm("", ""))
 	}
-	s.writeHTML(w, http.StatusOK, html.Fragment(
-		component.OutOfBand(component.RegionTaskHeader, view.header()),
-		component.OutOfBand(component.RegionPermission, view.permission("")),
-		component.OutOfBand(component.RegionPromptSubmit, component.PromptSubmit(view.promptClosed())),
-		promptForm,
-	))
+	s.writeHTML(w, http.StatusOK, html.Fragment(promptForm))
 }
 
 // getRawPage shows the task's stored events as they were stored.

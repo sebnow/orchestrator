@@ -553,8 +553,13 @@ func SSEFallback(taskID, cursor string, showUnknown bool) html.Node {
 		"hx-target", "#transcript", "hx-swap", "beforeend"))
 }
 
-// Polling fetches the updates after cursor in five seconds.
+// EventTaskChanged is the event a task page's form response triggers,
+// through the HX-Trigger header, once it has changed the task.
+const EventTaskChanged = "task-changed"
+
+// Polling fetches the updates after cursor in five seconds, or at once
+// when a form has changed the task.
 func Polling(taskID, cursor string, showUnknown bool) html.Node {
-	return html.El("div", attrs("hx-get", updatesURL(taskID, cursor, showUnknown), "hx-trigger", "every 5s",
+	return html.El("div", attrs("hx-get", updatesURL(taskID, cursor, showUnknown), "hx-trigger", "every 5s, "+EventTaskChanged+" from:body",
 		"hx-target", "#transcript", "hx-swap", "beforeend"))
 }

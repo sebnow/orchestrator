@@ -8,6 +8,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -274,24 +275,30 @@ func TestGivenRunningTaskWhenPauseFormPostedThenAPauseIsIssuedAndTheBrowserSentB
 	}
 }
 
-func TestGivenHTMXWhenPauseFormPostedThenTheResponseSwapsTheHeaderAndDisablesPrompting(t *testing.T) {
+// The page's stream, or its poller, is the only writer of the regions it
+// keeps current. A form response that swapped them too could arrive after
+// a newer stream update, such as the scheduler admitting a resume, and
+// leave the page showing the older state until the task next changed.
+func TestGivenHTMXWhenPauseFormPostedThenTheStreamNotTheResponseUpdatesTheHeaderAndDisablesPrompting(t *testing.T) {
 	srv := startTestServer(t)
-	task := startTaskViaForm(t, srv, "laptop", "Run ping five times")
-	events := &taskEvents{task: task}
-	events.add(protocol.KindHarnessStarted, `{"pid":7,"model":"haiku","workdir":"/w"}`)
-	events.ingest(t, srv, "laptop")
+	task, events := runningTask(t, srv)
+	stream := openEventStream(t, srv.url+"/tasks/"+string(task)+"/stream?after="+strconv.FormatUint(events.seq, 10)+"-1-0", "")
 
 	got := send(t, http.MethodPost, srv.url+"/tasks/"+string(task)+"/commands", url.Values{"kind": {"pause"}}, true)
 
 	if got.status != http.StatusOK {
 		t.Fatalf("status = %d (%s), want 200", got.status, got.body)
 	}
-	requireContains(t, got.body,
+	if trigger := got.header.Get("HX-Trigger"); trigger != component.EventTaskChanged {
+		t.Errorf("HX-Trigger = %q, want %q so that a polling page polls at once", trigger, component.EventTaskChanged)
+	}
+	requireLacks(t, got.body, "<html", `value="pause"`, "#task-header", "#permission", "#prompt-submit")
+	update := receiveUpdate(t, stream)
+	requireContains(t, update.data,
 		`<div hx-swap-oob="innerHTML:#task-header"><header class="task-header">`,
 		`<span class="badge state-pausing">pausing</span>`,
 		`<div hx-swap-oob="innerHTML:#prompt-submit"><button type="submit" class="primary" disabled="">Send</button>`,
 	)
-	requireLacks(t, got.body, "<html", `value="pause"`)
 }
 
 func TestGivenEmptyFollowUpWhenPostedThenTheFormSaysWhyAndNothingIsIssued(t *testing.T) {
