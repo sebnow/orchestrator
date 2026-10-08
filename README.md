@@ -197,7 +197,6 @@ Daemon flags:
   `workspaces/<task>/`. Claude Code keeps its sessions outside it:
   Claude Code 2.1.289 on macOS kept them under `~/.claude/projects/` of
   the user running it ([resume spike](docs/design/2026-10-08-resume-spike.md)).
-  **UNVERIFIED:** that other versions and platforms keep them there.
 - `-claude`: the `claude` executable, `claude` on `PATH` by default.
   The daemon runs `claude --version` when it starts and exits if that
   fails. Tasks use the Claude Code login of the OS user who starts the
