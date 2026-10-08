@@ -195,7 +195,7 @@ func TestGivenProcessStartingAfterAnEndedOneWhenRecoveringThenItsJournalEndsAsRe
 	st, _ := recoverIn(t, stateDir)
 
 	assertEndsWithRestartExit(t, readJournalFile(t, JournalPath(stateDir, "task-1")), 4, oldHarness, restartError)
-	if rec, _ := st.record("task-1"); rec.Ended || rec.Running || !rec.Paused || rec.StopNote != "old note" || !rec.Restarted || rec.Seq != 4 || !rec.resumable() {
+	if rec, _ := st.record("task-1"); rec.Ended || rec.Running || !rec.Paused || rec.StopNote != "old note" || !rec.CutShort || rec.Seq != 4 || !rec.resumable() {
 		t.Errorf("record = %+v", rec)
 	}
 }
@@ -209,7 +209,7 @@ func TestGivenRunningTaskWithoutARecordedSessionWhenRecoveringThenItStaysResumab
 	st, _ := recoverIn(t, stateDir)
 
 	assertEndsWithRestartExit(t, readJournalFile(t, JournalPath(stateDir, "task-1")), 3, oldHarness, restartNoSessionError)
-	if rec, _ := st.record("task-1"); rec.Ended || !rec.Restarted || !rec.resumable() {
+	if rec, _ := st.record("task-1"); rec.Ended || !rec.CutShort || !rec.resumable() {
 		t.Errorf("record = %+v", rec)
 	}
 }
@@ -222,7 +222,7 @@ func TestGivenRunningTaskWithNeitherASessionNorAFirstPromptWhenRecoveringThenItE
 	st, _ := recoverIn(t, stateDir)
 
 	assertEndsWithRestartExit(t, readJournalFile(t, JournalPath(stateDir, "task-1")), 3, oldHarness, restartLostError)
-	if rec, _ := st.record("task-1"); !rec.Ended || rec.Restarted {
+	if rec, _ := st.record("task-1"); !rec.Ended || rec.CutShort {
 		t.Errorf("record = %+v", rec)
 	}
 }
@@ -285,7 +285,7 @@ func TestGivenProcessWhoseOwnExitWasJournaledWhenRecoveringThenNoRestartExitFoll
 		t.Run(tc.name, func(t *testing.T) {
 			stateDir := t.TempDir()
 			settings := &taskSettings{Prompt: "Do the work.", Model: "fake-model"}
-			exitedProcess(t, stateDir, "task-1", taskRecord{Session: "session-1", Settings: settings, Restarted: true}, tc.exit)
+			exitedProcess(t, stateDir, "task-1", taskRecord{Session: "session-1", Settings: settings, CutShort: true}, tc.exit)
 			before, _ := os.ReadFile(JournalPath(stateDir, "task-1"))
 
 			st, _ := recoverIn(t, stateDir)
@@ -293,7 +293,7 @@ func TestGivenProcessWhoseOwnExitWasJournaledWhenRecoveringThenNoRestartExitFoll
 			if after, _ := os.ReadFile(JournalPath(stateDir, "task-1")); !bytes.Equal(before, after) {
 				t.Errorf("journal changed:\n%s\nbecame\n%s", before, after)
 			}
-			if rec, _ := st.record("task-1"); rec.Ended != tc.ended || rec.Restarted || rec.Running || rec.Seq != 2 {
+			if rec, _ := st.record("task-1"); rec.Ended != tc.ended || rec.CutShort || rec.Running || rec.Seq != 2 {
 				t.Errorf("record = %+v, want ended %v", rec, tc.ended)
 			}
 		})

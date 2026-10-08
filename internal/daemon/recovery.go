@@ -114,10 +114,10 @@ func (d *Daemon) recoverTasks(st *state, log *slog.Logger) error {
 			switch {
 			case ownExit:
 				rec.Ended = rec.Ended || !exitedCleanly
-				rec.Paused, rec.StopNote, rec.Restarted = false, "", false
+				rec.Paused, rec.StopNote, rec.CutShort = false, "", false
 			case cutShort:
 				rec.Ended = rec.Ended || !resumable
-				rec.Restarted = resumable
+				rec.CutShort = resumable
 			}
 		}); err != nil {
 			return err

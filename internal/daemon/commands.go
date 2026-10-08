@@ -29,16 +29,16 @@ const (
 // resumePrompt resumes a paused task.
 const resumePrompt = "Resume the task from where you stopped and finish it."
 
-// restartNote tells an agent resumed after a daemon restart why its turn
+// cutShortNote tells an agent resumed after a daemon restart why its turn
 // ended.
-const restartNote = " Your last turn was cut short when the daemon running you restarted; check what it left unfinished."
+const cutShortNote = " Your last turn was cut short when the daemon running you restarted; check what it left unfinished."
 
 // resumeText is the prompt that resumes a task with record rec: the stop
 // note of its settled pause, or why a restart cut its turn short.
 func resumeText(rec taskRecord) string {
 	text := resumePrompt
-	if rec.Restarted {
-		text += restartNote
+	if rec.CutShort {
+		text += cutShortNote
 	}
 	if rec.Paused && rec.StopNote != "" {
 		text += " Your note when you stopped: " + rec.StopNote

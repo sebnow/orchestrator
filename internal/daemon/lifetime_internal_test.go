@@ -371,7 +371,7 @@ func TestGivenContinuationJournalLeftByACrashWhenTheDaemonRestartsThenTheTaskIsP
 	if again.spec.Resume != "session-1" {
 		t.Errorf("spec = %+v, want session-1 resumed", again.spec)
 	}
-	if in := finishTurn(t, again, "session-1"); in.text != resumePrompt+restartNote {
+	if in := finishTurn(t, again, "session-1"); in.text != resumePrompt+cutShortNote {
 		t.Errorf("resume prompt = %q", in.text)
 	}
 	expectExit(t, again)

@@ -322,7 +322,7 @@ func (s *service) processEnded(task protocol.TaskID, t *Task, stopped bool) {
 			rec.StopNote = st.StopNote
 		}
 		rec.Ended = rec.Ended || stopped || !clean
-		rec.Restarted = false
+		rec.CutShort = false
 	})
 	if err != nil {
 		s.log.Error("record the end of a process", "task", task, "error", err)
