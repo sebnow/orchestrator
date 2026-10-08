@@ -54,7 +54,7 @@ func TestGivenMixedHistoryWhenAssemblingThenEachListKeepsItsOrderAndTheyInterlea
 		historyCommand(14, 10, "reboot", `{"now":true}`),
 	}
 
-	got := assemble(events, commands)
+	got := assemble("task-1", history{events: events, commands: commands})
 
 	type step struct {
 		Source transcript.Source
@@ -90,7 +90,7 @@ func TestGivenMixedHistoryWhenAssemblingThenEachListKeepsItsOrderAndTheyInterlea
 }
 
 func TestGivenUndecodableControlEventWhenAssemblingThenItIsKeptAsUnknown(t *testing.T) {
-	got := assemble([]protocol.Event{historyEvent(1, 0, protocol.KindHarnessExited, claude.Name, `"oops"`)}, nil)
+	got := assemble("task-1", history{events: []protocol.Event{historyEvent(1, 0, protocol.KindHarnessExited, claude.Name, `"oops"`)}})
 
 	want := transcript.Unknown{RecordKind: "harness_exited", Raw: json.RawMessage(`"oops"`)}
 	if len(got) != 1 || !reflect.DeepEqual(got[0].Body, want) {
@@ -163,5 +163,94 @@ func TestGivenWatchedTaskWhenEventsAreStoredOrCommandsIssuedThenOnlyItsWatchersA
 	}
 	if status, body := doRequest(t, http.MethodPost, srv.url+"/v1/tasks/task-2/commands", `{"kind":"stop"}`); status != http.StatusCreated || !signalled(other) {
 		t.Errorf("status %d (%s); want the other task's watcher signalled", status, body)
+	}
+}
+
+func TestGivenMessagesAndChildrenWhenAssemblingThenTheyInterleaveByTimeWithTheTasksOwnRecords(t *testing.T) {
+	parent, child, other := protocol.TaskID("task-1"), protocol.TaskID("child"), protocol.TaskID("other")
+	childStart := historyCommand(11, 2, protocol.CommandStartTask, `{"prompt":"Say PEAR.","pause_limits":{"acknowledge":"1m0s","cleanup":"5m0s"}}`)
+	childStart.TaskID = child
+	notice := "Your child task other has ended as failed. It will send no more messages."
+	h := history{
+		events: []protocol.Event{historyEvent(1, 1, protocol.KindHarnessStarted, claude.Name, `{"pid":7}`)},
+		commands: []protocol.Command{
+			historyCommand(10, 0, protocol.CommandStartTask, `{"prompt":"Plan.","pause_limits":{"acknowledge":"1m0s","cleanup":"5m0s"}}`),
+			childStart,
+			historyCommand(13, 5, protocol.CommandPrompt, `{"text":"(as worded)","from":"child"}`),
+			historyCommand(14, 6, protocol.CommandPrompt, `{"text":"Message from task child: lost","from":"child"}`),
+			historyCommand(15, 7, protocol.CommandPrompt, `{"text":"Carry on."}`),
+		},
+		messages: []storedMessage{
+			{ID: 1, From: &parent, To: child, Text: "Go.", CreatedAt: at(3)},
+			{ID: 2, From: &child, To: parent, Text: "PEAR", CreatedAt: at(3.5), DeliveredBy: 13},
+			{ID: 3, About: &other, AboutState: TaskFailed, To: parent, Text: notice, CreatedAt: at(4), DeliveredBy: 13},
+		},
+	}
+
+	got := assemble(parent, h)
+
+	type step struct {
+		Source transcript.Source
+		Time   time.Time
+		Body   transcript.Body
+	}
+	fromCommand := func(task protocol.TaskID, id uint64) transcript.Source {
+		return transcript.Source{TaskID: task, CommandID: id}
+	}
+	fromMessage := func(id uint64) transcript.Source { return transcript.Source{TaskID: parent, MessageID: id} }
+	want := []step{
+		{fromCommand(parent, 10), at(0), transcript.OwnerPrompt{Text: "Plan."}},
+		{transcript.Source{TaskID: parent, Seq: 1}, at(1), transcript.HarnessStarted{PID: 7}},
+		{fromCommand(child, 11), at(2), transcript.ChildSpawned{Child: child, Prompt: "Say PEAR."}},
+		{fromMessage(1), at(3), transcript.MessageSent{To: child, Text: "Go."}},
+		{fromMessage(3), at(4), transcript.ChildEnded{Child: other, State: "failed"}},
+		{fromCommand(parent, 13), at(5), transcript.MessageReceived{From: &child, Text: "PEAR"}},
+		{fromCommand(parent, 13), at(5), transcript.MessageReceived{Text: notice}},
+		{fromCommand(parent, 14), at(6), transcript.MessageReceived{From: &child, Text: "Message from task child: lost"}},
+		{fromCommand(parent, 15), at(7), transcript.OwnerPrompt{Text: "Carry on."}},
+	}
+	if len(got) != len(want) {
+		t.Fatalf("got %d entries, want %d: %+v", len(got), len(want), got)
+	}
+	for idx := range want {
+		g := step{got[idx].Source, got[idx].Time, got[idx].Body}
+		if !reflect.DeepEqual(g, want[idx]) {
+			t.Errorf("entry %d = %+v\nwant      %+v", idx, g, want[idx])
+		}
+	}
+}
+
+func TestGivenParentAndChildThatMessageWhenReadingTheirTranscriptsThenEachShowsItsSide(t *testing.T) {
+	srv := startTestServer(t)
+	parent := taskIn(t, srv.store, "parent", TaskRunning)
+	child := spawned(t, srv.store, "parent", "child")
+	child.drive(TaskRunning)
+	parent.event(protocol.KindHarnessExited, cleanly, TaskFinished)
+	sendFrom(t, srv.store, "child", "parent", "PEAR")
+	other := spawned(t, srv.store, "parent", "other")
+	other.drive(TaskFailed)
+
+	kindsOf := func(task protocol.TaskID) []transcript.Kind {
+		t.Helper()
+		entries, err := srv.Transcript(t.Context(), task)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var kinds []transcript.Kind
+		for _, entry := range entries {
+			if entry.Body.Kind() != transcript.KindHarnessStarted && entry.Body.Kind() != transcript.KindHarnessExited {
+				kinds = append(kinds, entry.Body.Kind())
+			}
+		}
+		return kinds
+	}
+
+	wantParent := []transcript.Kind{transcript.KindOwnerPrompt, transcript.KindChildSpawned, transcript.KindMessageReceived,
+		transcript.KindChildSpawned, transcript.KindChildEnded}
+	if got := kindsOf("parent"); !reflect.DeepEqual(got, wantParent) {
+		t.Errorf("parent's kinds = %v, want %v", got, wantParent)
+	}
+	if got, want := kindsOf("child"), []transcript.Kind{transcript.KindOwnerPrompt, transcript.KindMessageSent}; !reflect.DeepEqual(got, want) {
+		t.Errorf("child's kinds = %v, want %v", got, want)
 	}
 }

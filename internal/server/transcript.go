@@ -21,39 +21,78 @@ var normalisers = map[string]normaliser{
 }
 
 // Transcript returns the readable history of task, derived from its
-// stored events and commands.
+// stored events and commands, its children's starts, and the messages it
+// sent or was sent.
 func (s *Server) Transcript(ctx context.Context, task protocol.TaskID) ([]transcript.Entry, error) {
-	events, commands, err := s.store.taskHistory(ctx, task)
+	h, err := s.store.taskHistory(ctx, task)
 	if err != nil {
 		return nil, err
 	}
-	return assemble(events, commands), nil
+	return assemble(task, h), nil
 }
 
-// assemble merges a task's events, in seq order, with its commands, in id
-// order, into one transcript. Each list keeps its own order; where they
-// interleave is decided by time, an event first when the times are equal.
-// The times come from two clocks, the daemon's and the server's, so the
+// assemble merges task's history into one transcript: its events, in seq
+// order; its commands and its children's starts, in id order; and the
+// messages it sent and the notices that its children ended, in id order.
+// Each list keeps its own order; where they interleave is decided by
+// time, in that order of preference when the times are equal. Events are
+// stamped by the daemon's clock and the rest by the server's, so the
 // interleaving is only as good as their agreement.
-func assemble(events []protocol.Event, commands []protocol.Command) []transcript.Entry {
-	entries := make([]transcript.Entry, 0, len(events)+len(commands))
-	for len(events) > 0 || len(commands) > 0 {
-		if len(commands) == 0 || len(events) > 0 && !commands[0].Time.Before(events[0].Time) {
-			event := events[0]
-			events = events[1:]
-			source := transcript.Source{TaskID: event.TaskID, Seq: event.Seq}
-			for _, body := range eventBodies(event) {
-				entries = append(entries, transcript.Entry{Time: event.Time, Source: source, Body: body})
-			}
-			continue
+//
+// A message waiting in task's inbox is left out until the prompt that
+// delivers it, where it appears as a MessageReceived.
+func assemble(task protocol.TaskID, h history) []transcript.Entry {
+	delivered := make(map[uint64][]storedMessage)
+	var fromMessages []transcript.Entry
+	for _, message := range h.messages {
+		source := transcript.Source{TaskID: task, MessageID: message.ID}
+		switch {
+		case message.From != nil && *message.From == task:
+			fromMessages = append(fromMessages, transcript.Entry{Time: message.CreatedAt, Source: source,
+				Body: transcript.MessageSent{To: message.To, Text: message.Text}})
+		case message.About != nil:
+			fromMessages = append(fromMessages, transcript.Entry{Time: message.CreatedAt, Source: source,
+				Body: transcript.ChildEnded{Child: *message.About, State: string(message.AboutState)}})
 		}
-		command := commands[0]
-		commands = commands[1:]
-		entries = append(entries, transcript.Entry{
-			Time:   command.Time,
-			Source: transcript.Source{TaskID: command.TaskID, CommandID: command.ID},
-			Body:   commandBody(command),
-		})
+		if message.To == task && message.DeliveredBy != 0 {
+			delivered[message.DeliveredBy] = append(delivered[message.DeliveredBy], message)
+		}
+	}
+	var fromEvents []transcript.Entry
+	for _, event := range h.events {
+		source := transcript.Source{TaskID: event.TaskID, Seq: event.Seq}
+		for _, body := range eventBodies(event) {
+			fromEvents = append(fromEvents, transcript.Entry{Time: event.Time, Source: source, Body: body})
+		}
+	}
+	var fromCommands []transcript.Entry
+	for _, command := range h.commands {
+		source := transcript.Source{TaskID: command.TaskID, CommandID: command.ID}
+		for _, body := range commandBodies(task, command, delivered[command.ID]) {
+			fromCommands = append(fromCommands, transcript.Entry{Time: command.Time, Source: source, Body: body})
+		}
+	}
+	return mergeByTime(fromEvents, fromCommands, fromMessages)
+}
+
+// mergeByTime merges lists that each keep their own order, taking the
+// earliest head each time, and the head of the earlier list when times
+// are equal.
+func mergeByTime(lists ...[]transcript.Entry) []transcript.Entry {
+	total := 0
+	for _, list := range lists {
+		total += len(list)
+	}
+	entries := make([]transcript.Entry, 0, total)
+	for len(entries) < total {
+		next := -1
+		for idx, list := range lists {
+			if len(list) > 0 && (next < 0 || list[0].Time.Before(lists[next][0].Time)) {
+				next = idx
+			}
+		}
+		entries = append(entries, lists[next][0])
+		lists[next] = lists[next][1:]
 	}
 	return entries
 }
@@ -89,14 +128,40 @@ func eventBodies(event protocol.Event) []transcript.Body {
 	return []transcript.Body{body}
 }
 
-func commandBody(command protocol.Command) transcript.Body {
+// commandBodies describes a command in task's transcript. A start_task of
+// another task is a child of task starting. A prompt with a sender
+// delivered the messages in delivered, one entry each; when they cannot
+// be found, the prompt's own text and sender stand for them.
+func commandBodies(task protocol.TaskID, command protocol.Command, delivered []storedMessage) []transcript.Body {
 	var body transcript.Body
 	ok := true
 	switch command.Kind {
 	case protocol.CommandStartTask:
+		if command.TaskID != task {
+			body, ok = decodeBody(command.Payload, func(p protocol.StartTask) transcript.Body {
+				return transcript.ChildSpawned{Child: command.TaskID, Prompt: p.Prompt}
+			})
+			break
+		}
 		body, ok = decodeBody(command.Payload, func(p protocol.StartTask) transcript.Body { return transcript.OwnerPrompt{Text: p.Prompt} })
 	case protocol.CommandPrompt:
-		body, ok = decodeBody(command.Payload, func(p protocol.Prompt) transcript.Body { return transcript.OwnerPrompt{Text: p.Text} })
+		var prompt protocol.Prompt
+		if ok = json.Unmarshal(command.Payload, &prompt) == nil; !ok {
+			break
+		}
+		if prompt.From == nil {
+			body = transcript.OwnerPrompt{Text: prompt.Text}
+			break
+		}
+		if len(delivered) == 0 {
+			body = transcript.MessageReceived{From: prompt.From, Text: prompt.Text}
+			break
+		}
+		bodies := make([]transcript.Body, len(delivered))
+		for idx, message := range delivered {
+			bodies[idx] = transcript.MessageReceived{From: message.From, Text: message.Text}
+		}
+		return bodies
 	case protocol.CommandResume:
 		body = transcript.OwnerPrompt{Resume: true}
 	case protocol.CommandPause:
@@ -111,9 +176,9 @@ func commandBody(command protocol.Command) transcript.Body {
 		ok = false
 	}
 	if !ok {
-		return unknownRecord(string(command.Kind), command.Payload)
+		return []transcript.Body{unknownRecord(string(command.Kind), command.Payload)}
 	}
-	return body
+	return []transcript.Body{body}
 }
 
 // decodeBody decodes payload as P and converts it; it reports false when

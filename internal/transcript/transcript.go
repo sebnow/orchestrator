@@ -23,12 +23,16 @@ type Entry struct {
 }
 
 // Source names the stored record an entry was derived from: an event,
-// by task and seq, or a command, by id. Exactly one of Seq and CommandID
-// is non-zero. One event may yield several entries, which share a Source.
+// by task and seq, a command, by id, or a message between tasks, by id.
+// Exactly one of Seq, CommandID and MessageID is non-zero. One record may
+// yield several entries, which share a Source. TaskID is the task the
+// record belongs to, which for a child's start or a message may be
+// another task than the one whose transcript holds the entry.
 type Source struct {
 	TaskID    protocol.TaskID
 	Seq       uint64
 	CommandID uint64
+	MessageID uint64
 }
 
 // Kind names the type of an entry's Body.
@@ -51,6 +55,10 @@ const (
 	KindQuotaObserved       Kind = "quota_observed"
 	KindHarnessStarted      Kind = "harness_started"
 	KindHarnessExited       Kind = "harness_exited"
+	KindMessageSent         Kind = "message_sent"
+	KindMessageReceived     Kind = "message_received"
+	KindChildSpawned        Kind = "child_spawned"
+	KindChildEnded          Kind = "child_ended"
 	KindUnknown             Kind = "unknown"
 )
 
@@ -173,6 +181,34 @@ type HarnessExited struct {
 	Stderr   string
 }
 
+// MessageSent is the agent sending Text to the task To through its
+// inbox (docs/adr/2026-10-08-inbox-delivery.md).
+type MessageSent struct {
+	To   protocol.TaskID
+	Text string
+}
+
+// MessageReceived is a message delivered to the agent as a prompt. From
+// names the task that sent it, and is nil for the server's notice that
+// a child ended.
+type MessageReceived struct {
+	From *protocol.TaskID
+	Text string
+}
+
+// ChildSpawned is the agent starting the task Child with Prompt.
+type ChildSpawned struct {
+	Child  protocol.TaskID
+	Prompt string
+}
+
+// ChildEnded is the task Child, which the agent spawned, ending for good
+// in State, the server's name for a stopped or failed task.
+type ChildEnded struct {
+	Child protocol.TaskID
+	State string
+}
+
 // Unknown is a record no other Body describes, kept so that nothing is
 // silently dropped. RecordKind is the event or command kind; Type is the
 // harness's own type for a harness line, empty otherwise. Raw is the
@@ -199,6 +235,10 @@ func (PauseSettled) Kind() Kind        { return KindPauseSettled }
 func (QuotaObserved) Kind() Kind       { return KindQuotaObserved }
 func (HarnessStarted) Kind() Kind      { return KindHarnessStarted }
 func (HarnessExited) Kind() Kind       { return KindHarnessExited }
+func (MessageSent) Kind() Kind         { return KindMessageSent }
+func (MessageReceived) Kind() Kind     { return KindMessageReceived }
+func (ChildSpawned) Kind() Kind        { return KindChildSpawned }
+func (ChildEnded) Kind() Kind          { return KindChildEnded }
 func (Unknown) Kind() Kind             { return KindUnknown }
 
 func (OwnerPrompt) body()         {}
@@ -217,4 +257,8 @@ func (PauseSettled) body()        {}
 func (QuotaObserved) body()       {}
 func (HarnessStarted) body()      {}
 func (HarnessExited) body()       {}
+func (MessageSent) body()         {}
+func (MessageReceived) body()     {}
+func (ChildSpawned) body()        {}
+func (ChildEnded) body()          {}
 func (Unknown) body()             {}

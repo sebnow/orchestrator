@@ -58,12 +58,12 @@ func (l *lifecycle) drive(state TaskState) {
 // prompts returns the prompts issued to task, in order.
 func prompts(t *testing.T, store *Store, task protocol.TaskID) []protocol.Prompt {
 	t.Helper()
-	_, commands, err := store.taskHistory(t.Context(), task)
+	h, err := store.taskHistory(t.Context(), task)
 	if err != nil {
 		t.Fatal(err)
 	}
 	var out []protocol.Prompt
-	for _, command := range commands {
+	for _, command := range h.commands {
 		if command.Kind != protocol.CommandPrompt {
 			continue
 		}

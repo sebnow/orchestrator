@@ -552,47 +552,115 @@ func (s *Store) eventsAfter(ctx context.Context, task protocol.TaskID, after uin
 	return queryEvents(ctx, tx, task, after)
 }
 
-// taskHistory returns everything recorded for task: its events in seq
-// order and its commands in id order, read in one transaction.
-func (s *Store) taskHistory(ctx context.Context, task protocol.TaskID) ([]protocol.Event, []protocol.Command, error) {
+// history is everything recorded about a task: its events in seq order;
+// its commands, and the start_task of each of its children, in id order;
+// and the messages it sent or was sent, in id order.
+type history struct {
+	events   []protocol.Event
+	commands []protocol.Command
+	messages []storedMessage
+}
+
+// storedMessage is a message as the messages table keeps it. Exactly one
+// of From and About is set: From for an agent's message, About for the
+// server's notice that a child ended, AboutState being that child's
+// state. DeliveredBy is the id of the prompt that delivered it, 0 while
+// it waits.
+type storedMessage struct {
+	ID          uint64
+	From        *protocol.TaskID
+	To          protocol.TaskID
+	About       *protocol.TaskID
+	AboutState  TaskState
+	Text        string
+	CreatedAt   time.Time
+	DeliveredBy uint64
+}
+
+// taskHistory returns task's history, read in one transaction.
+func (s *Store) taskHistory(ctx context.Context, task protocol.TaskID) (history, error) {
 	tx, err := s.db.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
 	if err != nil {
-		return nil, nil, fmt.Errorf("read task history: %w", err)
+		return history{}, fmt.Errorf("read task history: %w", err)
 	}
 	defer tx.Rollback()
 	if err := requireTask(ctx, tx, task); err != nil {
-		return nil, nil, err
+		return history{}, err
 	}
-	events, err := queryEvents(ctx, tx, task, 0)
-	if err != nil {
-		return nil, nil, err
+	var h history
+	if h.events, err = queryEvents(ctx, tx, task, 0); err != nil {
+		return history{}, err
 	}
 	rows, err := tx.QueryContext(ctx, `
-		SELECT id, daemon_id, kind, time, payload FROM commands WHERE task_id = ? ORDER BY id`, string(task))
+		SELECT id, daemon_id, task_id, kind, time, payload FROM commands
+		WHERE task_id = ?1 OR kind = ?2 AND task_id IN (SELECT id FROM tasks WHERE parent_id = ?1)
+		ORDER BY id`, string(task), string(protocol.CommandStartTask))
 	if err != nil {
-		return nil, nil, fmt.Errorf("read commands of task %q: %w", task, err)
+		return history{}, fmt.Errorf("read commands of task %q: %w", task, err)
 	}
 	defer rows.Close()
-	var commands []protocol.Command
 	for rows.Next() {
 		var id int64
-		var daemon, kind, issued string
+		var daemon, owner, kind, issued string
 		var payload []byte
-		if err := rows.Scan(&id, &daemon, &kind, &issued, &payload); err != nil {
-			return nil, nil, fmt.Errorf("read commands of task %q: %w", task, err)
+		if err := rows.Scan(&id, &daemon, &owner, &kind, &issued, &payload); err != nil {
+			return history{}, fmt.Errorf("read commands of task %q: %w", task, err)
 		}
 		at, err := parseTime(issued)
 		if err != nil {
-			return nil, nil, fmt.Errorf("read command %d: %w", id, err)
+			return history{}, fmt.Errorf("read command %d: %w", id, err)
 		}
-		commands = append(commands, protocol.Command{
-			ID: uint64(id), DaemonID: protocol.DaemonID(daemon), TaskID: task, Kind: protocol.CommandKind(kind), Time: at, Payload: payload,
+		h.commands = append(h.commands, protocol.Command{
+			ID: uint64(id), DaemonID: protocol.DaemonID(daemon), TaskID: protocol.TaskID(owner), Kind: protocol.CommandKind(kind), Time: at, Payload: payload,
 		})
 	}
 	if err := rows.Err(); err != nil {
-		return nil, nil, fmt.Errorf("read commands of task %q: %w", task, err)
+		return history{}, fmt.Errorf("read commands of task %q: %w", task, err)
 	}
-	return events, commands, nil
+	rows.Close()
+	if h.messages, err = queryMessages(ctx, tx, task); err != nil {
+		return history{}, err
+	}
+	return h, nil
+}
+
+// queryMessages returns the messages task sent or was sent, in id order.
+func queryMessages(ctx context.Context, tx *sql.Tx, task protocol.TaskID) ([]storedMessage, error) {
+	rows, err := tx.QueryContext(ctx, `
+		SELECT m.id, m.from_task, m.to_task, m.about_task, coalesce(a.state, ''), m.text, m.created_at, coalesce(m.delivered_command_id, 0)
+		FROM messages m LEFT JOIN tasks a ON a.id = m.about_task
+		WHERE m.from_task = ?1 OR m.to_task = ?1 ORDER BY m.id`, string(task))
+	if err != nil {
+		return nil, fmt.Errorf("read messages of task %q: %w", task, err)
+	}
+	defer rows.Close()
+	var messages []storedMessage
+	for rows.Next() {
+		var message storedMessage
+		var id, delivered int64
+		var from, about sql.NullString
+		var to, state, created string
+		if err := rows.Scan(&id, &from, &to, &about, &state, &message.Text, &created, &delivered); err != nil {
+			return nil, fmt.Errorf("read messages of task %q: %w", task, err)
+		}
+		message.ID, message.To, message.AboutState, message.DeliveredBy = uint64(id), protocol.TaskID(to), TaskState(state), uint64(delivered)
+		if from.Valid {
+			sender := protocol.TaskID(from.String)
+			message.From = &sender
+		}
+		if about.Valid {
+			child := protocol.TaskID(about.String)
+			message.About = &child
+		}
+		if message.CreatedAt, err = parseTime(created); err != nil {
+			return nil, fmt.Errorf("read message %d: %w", id, err)
+		}
+		messages = append(messages, message)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("read messages of task %q: %w", task, err)
+	}
+	return messages, nil
 }
 
 // requireTask returns errUnknownTask when task is not recorded.
