@@ -58,6 +58,9 @@ type taskRecord struct {
 	// predates the Go name, so that state files written before keep their
 	// meaning.
 	CutShort bool `json:"restarted,omitempty"`
+	// Interrupted says the owner's interrupt, rather than the daemon, cut
+	// the latest process's turn short; it is set only with CutShort.
+	Interrupted bool `json:"interrupted,omitempty"`
 	// Harness is the harness process the task's latest process started,
 	// until the end of that process is recorded. Found set on start, it is
 	// a harness the previous daemon may have left running.

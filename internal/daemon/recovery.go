@@ -39,11 +39,36 @@ const (
 	stopNoSessionError = "daemon stopped during the turn, before the harness reported a session"
 )
 
+// The errors of the harness_exited event a daemon writes for a turn the
+// owner's interrupt cut short, when the task can be resumed. Claude Code
+// exits 1 after an interrupted turn
+// (docs/design/2026-10-08-interrupt-findings.md), which would fail the
+// task, whereas an interrupt is to leave the task's session alive
+// (docs/adr/2026-10-07-client-protocol.md). The server reads them as it
+// reads stopError and stopNoSessionError, and words them the same in
+// internal/server.
+const (
+	interruptError          = "interrupted by the owner"
+	interruptNoSessionError = "interrupted by the owner, before the harness reported a session"
+)
+
 // stopText is the harness_exited error a stopping daemon gives for a turn
 // it cut short, given the task's record and the session its process last
 // reported. It is empty for a task that cannot be resumed, which the
 // harness's own exit then ends.
 func stopText(rec taskRecord, session string) string {
+	return cutShortText(rec, session, stopError, stopNoSessionError)
+}
+
+// interruptText is stopText for a turn the owner's interrupt cut short.
+func interruptText(rec taskRecord, session string) string {
+	return cutShortText(rec, session, interruptError, interruptNoSessionError)
+}
+
+// cutShortText is withSession, or withoutSession when no session was
+// reported or recorded, for a task that can be resumed, and empty for any
+// other.
+func cutShortText(rec taskRecord, session, withSession, withoutSession string) string {
 	if session != "" {
 		rec.Session = session
 	}
@@ -51,9 +76,9 @@ func stopText(rec taskRecord, session string) string {
 	case !rec.resumable():
 		return ""
 	case rec.Session == "":
-		return stopNoSessionError
+		return withoutSession
 	default:
-		return stopError
+		return withSession
 	}
 }
 
@@ -149,10 +174,10 @@ func (d *Daemon) recoverTasks(st *state, log *slog.Logger, wait time.Duration) e
 			switch {
 			case ownExit:
 				rec.Ended = rec.Ended || !exitedCleanly
-				rec.Paused, rec.StopNote, rec.CutShort = false, "", false
+				rec.Paused, rec.StopNote, rec.CutShort, rec.Interrupted = false, "", false, false
 			case cutShort:
 				rec.Ended = rec.Ended || !resumable
-				rec.CutShort = resumable
+				rec.CutShort, rec.Interrupted = resumable, false
 			}
 		}); err != nil {
 			return err

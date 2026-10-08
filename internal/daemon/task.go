@@ -97,8 +97,8 @@ type State struct {
 	PausePickedUp bool
 	// StopNote is the agent's note from its latest pause acknowledgement.
 	StopNote string
-	// CutShort is set once Running is false when Stop interrupted the
-	// running turn and Exit reports it cut short rather than the
+	// CutShort is set once Running is false when Stop or Interrupt
+	// interrupted the running turn and Exit reports it cut short rather than the
 	// harness's own exit.
 	CutShort bool
 }
@@ -129,8 +129,8 @@ type Task struct {
 	exit        *protocol.HarnessExited
 	limits      PauseLimits
 	pause       pause
-	// cutShort is the one Stop was given when it interrupted a running
-	// turn; nil otherwise.
+	// cutShort is the one Stop or Interrupt was given when it interrupted
+	// a running turn, until a prompt starts another; nil otherwise.
 	cutShort     func(session string, own protocol.HarnessExited) string
 	exitCutShort bool
 }
@@ -301,11 +301,12 @@ func (t *Task) run(unregister func()) {
 }
 
 // reportCutShort returns the exit to journal for the harness's own exit
-// own, and whether it reports the turn cut short. A turn Stop interrupted
-// is reported with the error its cutShort gives, and ExitCode -1, unless
-// the harness exited cleanly or cutShort gives no error. Claude Code
-// exits 1 after an interrupted turn, because the turn's result is an
-// error (docs/design/2026-10-08-shutdown-findings.md).
+// own, and whether it reports the turn cut short. A turn Stop or
+// Interrupt interrupted is reported with the error its cutShort gives,
+// and ExitCode -1, unless the harness exited cleanly or cutShort gives no
+// error. Claude Code exits 1 after an interrupted turn, because the
+// turn's result is an error (docs/design/2026-10-08-shutdown-findings.md,
+// docs/design/2026-10-08-interrupt-findings.md).
 func (t *Task) reportCutShort(own protocol.HarnessExited) (protocol.HarnessExited, bool) {
 	t.mu.Lock()
 	cutShort, session := t.cutShort, t.session
@@ -443,6 +444,7 @@ func (t *Task) Prompt(text string) error {
 		return fmt.Errorf("%w: a pause is in progress", ErrBusy)
 	}
 	t.pause = pause{note: t.pause.note}
+	t.cutShort = nil
 	t.outstanding[id] = true
 	t.notifyLocked()
 	t.mu.Unlock()
@@ -459,9 +461,22 @@ func (t *Task) Prompt(text string) error {
 
 // Interrupt stops the harness's running turn at once. The session stays
 // alive and takes further prompts.
-func (t *Task) Interrupt() error {
+//
+// cutShort, when not nil, words the end of the turn as Stop's does: unless
+// the harness exits cleanly, the task journals a harness_exited with
+// ExitCode -1 and the error cutShort returns, and State.CutShort is set.
+// A prompt sent after the interrupt starts a turn of its own, whose end is
+// the harness's own again.
+func (t *Task) Interrupt(cutShort func(session string, own protocol.HarnessExited) string) error {
 	t.commands.Lock()
 	defer t.commands.Unlock()
+	// Set before the interrupt is sent, so that the harness cannot exit
+	// before the task knows its turn was cut short.
+	t.mu.Lock()
+	if !t.ended() {
+		t.cutShort = cutShort
+	}
+	t.mu.Unlock()
 	return t.interrupt()
 }
 

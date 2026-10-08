@@ -292,7 +292,7 @@ func TestGivenRunningTaskWhenStoppingThenItInterruptsClosesInputAndReturnsTheExi
 	if err := f.task.Prompt("more"); !errors.Is(err, ErrTaskEnded) {
 		t.Errorf("prompt after stop = %v, want ErrTaskEnded", err)
 	}
-	if err := f.task.Interrupt(); !errors.Is(err, ErrTaskEnded) {
+	if err := f.task.Interrupt(nil); !errors.Is(err, ErrTaskEnded) {
 		t.Errorf("interrupt after stop = %v, want ErrTaskEnded", err)
 	}
 }
@@ -397,7 +397,7 @@ func TestGivenRunningTaskWhenInterruptingThenTheHarnessGetsAnInterrupt(t *testin
 	defer f.end(t, protocol.HarnessExited{})
 	f.proc.nextInput(t)
 
-	if err := f.task.Interrupt(); err != nil {
+	if err := f.task.Interrupt(nil); err != nil {
 		t.Fatal(err)
 	}
 

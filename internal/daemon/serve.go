@@ -337,6 +337,20 @@ func (s *service) cutShortByShutdown(task protocol.TaskID) func(string, protocol
 	}
 }
 
+// cutShortByInterrupt words the end of task's turn when the owner's
+// interrupt cuts it short: the task stays resumable, as after a shutdown,
+// when its record allows.
+func (s *service) cutShortByInterrupt(task protocol.TaskID) func(string, protocol.HarnessExited) string {
+	return func(session string, own protocol.HarnessExited) string {
+		rec, _ := s.state.record(task)
+		text := interruptText(rec, session)
+		if text != "" {
+			s.log.Info("the owner's interrupt cut the turn short; the task can be resumed", "task", task, "exit_code", own.ExitCode, "error", own.Error)
+		}
+		return text
+	}
+}
+
 // processEnded records the end of task's process t: the harness session
 // and the seq to resume from, whether it was paused, and whether the task
 // has ended for good, because it was stopped or the harness failed
@@ -358,6 +372,7 @@ func (s *service) processEnded(task protocol.TaskID, t *Task, stopped bool) {
 		}
 		rec.Ended = rec.Ended || stopped || !clean && !st.CutShort
 		rec.CutShort = st.CutShort
+		rec.Interrupted = st.CutShort && (st.Exit.Error == interruptError || st.Exit.Error == interruptNoSessionError)
 		rec.Harness = nil
 	})
 	if err != nil {
