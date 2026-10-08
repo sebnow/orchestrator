@@ -411,33 +411,9 @@ func (sys liveSystem) waitForState(t *testing.T, ctx context.Context, task proto
 // poll.
 func (sys liveSystem) waitForStateEach(t *testing.T, ctx context.Context, task protocol.TaskID, state string, exits int, decide func(tool, command string) bool, each func()) []protocol.Event {
 	t.Helper()
-	answered := sys.answered
 	for {
 		events := sys.events(t, task)
-		for _, event := range events {
-			if event.Kind != protocol.KindPermissionRequested {
-				continue
-			}
-			var req struct {
-				RequestID string `json:"request_id"`
-				Tool      string `json:"tool"`
-				Input     struct {
-					Command string `json:"command"`
-				} `json:"input"`
-			}
-			json.Unmarshal(event.Payload, &req)
-			if answered[req.RequestID] {
-				continue
-			}
-			answered[req.RequestID] = true
-			decision := "deny"
-			if decide != nil && decide(req.Tool, req.Input.Command) {
-				decision = "allow"
-			}
-			t.Logf("permission %s %q: %s", req.Tool, req.Input.Command, decision)
-			sys.command(t, task, url.Values{"kind": {"answer_permission"}, "request_id": {req.RequestID}, "decision": {decision},
-				"message": {"Only ping is allowed in this test."}})
-		}
+		sys.answerPermissions(t, task, events, decide)
 		if each != nil {
 			each()
 		}
@@ -601,4 +577,35 @@ func pingRequests(events []protocol.Event) int {
 		}
 	}
 	return count
+}
+
+// answerPermissions answers, through the task page's form, each
+// permission request among task's events that the test has not answered
+// yet: allowed when decide accepts it, denied otherwise.
+func (sys liveSystem) answerPermissions(t *testing.T, task protocol.TaskID, events []protocol.Event, decide func(tool, command string) bool) {
+	t.Helper()
+	for _, event := range events {
+		if event.Kind != protocol.KindPermissionRequested {
+			continue
+		}
+		var req struct {
+			RequestID string `json:"request_id"`
+			Tool      string `json:"tool"`
+			Input     struct {
+				Command string `json:"command"`
+			} `json:"input"`
+		}
+		json.Unmarshal(event.Payload, &req)
+		if sys.answered[req.RequestID] {
+			continue
+		}
+		sys.answered[req.RequestID] = true
+		decision := "deny"
+		if decide != nil && decide(req.Tool, req.Input.Command) {
+			decision = "allow"
+		}
+		t.Logf("permission %s %q: %s", req.Tool, req.Input.Command, decision)
+		sys.command(t, task, url.Values{"kind": {"answer_permission"}, "request_id": {req.RequestID}, "decision": {decision},
+			"message": {"Only ping is allowed in this test."}})
+	}
 }
