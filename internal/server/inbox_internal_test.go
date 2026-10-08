@@ -392,7 +392,7 @@ func TestGivenOwnersTaskAndChildWhenStartedThenEachSystemPromptExplainsMessaging
 		t.Errorf("owner's task system prompt = %q, want %q", owners.Start.SystemPrompt, want)
 	}
 	wantChild := messagingPrompt + "\n\nYou are a child task of task " + string(command.TaskID) + ", which waits for your result. " +
-		"When you have it, send it to task " + string(command.TaskID) + " with send_message before you end your turn; " +
+		"When you have it, send it to task " + string(command.TaskID) + " with the orchestrator's send_message tool before you end your turn; " +
 		"task " + string(command.TaskID) + " does not see your replies otherwise."
 	if spawnedChild.Start.SystemPrompt != wantChild {
 		t.Errorf("child's system prompt = %q\nwant %q", spawnedChild.Start.SystemPrompt, wantChild)
