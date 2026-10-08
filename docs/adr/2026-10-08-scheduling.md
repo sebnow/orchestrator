@@ -1,8 +1,8 @@
-# Scheduling
-
-- Status: Proposed
-- Decided: 2026-10-08
-- Source: decided by the coordinating agent under the owner's standing
+---
+status: proposed
+date: 2026-10-08
+source: >-
+  decided by the coordinating agent under the owner's standing
   instruction, 2026-10-08, for the owner's review;
   [budget and pause](../design/2026-10-07-budget-and-pause.md), Idea;
   [graceful pause](2026-10-07-graceful-pause.md), Context and Decision;
@@ -11,6 +11,9 @@
   [harness billing](2026-10-07-harness-billing.md), Consequences;
   [harness adapter](2026-10-07-harness-adapter.md), Context and
   Consequences
+---
+
+# Scheduling
 
 ## Context
 

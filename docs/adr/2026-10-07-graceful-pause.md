@@ -1,11 +1,13 @@
-# Graceful pause
-
-- Status: Accepted
-- Decided: 2026-10-07
-- Source: [graceful pause spike](../design/2026-10-07-graceful-pause-spike.md),
+---
+status: accepted
+date: 2026-10-07
+source: >-
+  [graceful pause spike](../design/2026-10-07-graceful-pause-spike.md),
   lines 34-103 (Method), 199-314 (Answers), 316-338 (Recommendation), and
   340-357 (Open)
-- Amended by: [task lifetime](2026-10-08-task-lifetime.md), which resumes a paused task in a new process with `--resume` rather than with a further prompt to the same process
+---
+
+# Graceful pause
 
 ## Context
 

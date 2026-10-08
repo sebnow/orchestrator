@@ -1,11 +1,14 @@
-# Restart recovery
-
-- Status: Proposed
-- Decided: 2026-10-08
-- Source: coordinator decision, unattended;
+---
+status: proposed
+date: 2026-10-08
+source: >-
+  coordinator decision, unattended;
   [task lifetime](2026-10-08-task-lifetime.md), Decision and
   Consequences;
   [resume spike](../design/2026-10-08-resume-spike.md), Answers
+---
+
+# Restart recovery
 
 ## Context
 

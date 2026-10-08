@@ -1,11 +1,14 @@
-# Daemon authentication
-
-- Status: Proposed
-- Decided: 2026-10-08
-- Source: owner decision, 2026-10-08, to add authentication before the
+---
+status: proposed
+date: 2026-10-08
+source: >-
+  owner decision, 2026-10-08, to add authentication before the
   server is exposed to the internet;
   [client connectivity](2026-10-07-client-connectivity.md), Consequences;
   [client protocol](2026-10-07-client-protocol.md), Transport
+---
+
+# Daemon authentication
 
 ## Context
 

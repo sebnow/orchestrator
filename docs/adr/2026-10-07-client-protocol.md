@@ -1,8 +1,10 @@
-# Client protocol
+---
+status: accepted
+date: 2026-10-07
+source: owner decision, working session on 2026-10-07
+---
 
-- Status: Accepted
-- Decided: 2026-10-07
-- Source: owner decision, working session on 2026-10-07
+# Client protocol
 
 ## Context
 

@@ -1,9 +1,12 @@
-# Harness adapter
-
-- Status: Accepted
-- Decided: 2026-10-07
-- Source: [mod versus stdout spike](../design/2026-10-07-mod-vs-stdout-spike.md),
+---
+status: accepted
+date: 2026-10-07
+source: >-
+  [mod versus stdout spike](../design/2026-10-07-mod-vs-stdout-spike.md),
   section "Recommendation"
+---
+
+# Harness adapter
 
 ## Context
 

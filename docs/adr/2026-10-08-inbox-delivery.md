@@ -1,12 +1,14 @@
-# Inbox delivery
-
-- Status: Proposed
-- Decided: 2026-10-08
-- Source: owner decision, 2026-10-08;
+---
+status: proposed
+date: 2026-10-08
+source: >-
+  owner decision, 2026-10-08;
   [agent messaging](2026-10-07-agent-messaging.md), Consequences;
   [client protocol](2026-10-07-client-protocol.md), Agent requests;
   [task lifetime](2026-10-08-task-lifetime.md), Decision
-- Amended by: [scheduling](2026-10-08-scheduling.md), which queues each delivery and a child's start as turns the scheduler admits, and places a child elsewhere when its parent's daemon is full
+---
+
+# Inbox delivery
 
 ## Context
 

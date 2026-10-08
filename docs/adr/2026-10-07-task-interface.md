@@ -1,8 +1,10 @@
-# Task interface
+---
+status: accepted
+date: 2026-10-06
+source: [initial brainstorm](../design/2026-10-06-brainstorm.md), decision 5
+---
 
-- Status: Accepted
-- Decided: 2026-10-06
-- Source: [initial brainstorm](../design/2026-10-06-brainstorm.md), decision 5
+# Task interface
 
 ## Context
 

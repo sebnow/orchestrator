@@ -1,9 +1,12 @@
-# Client connectivity
-
-- Status: Accepted
-- Decided: 2026-10-06
-- Source: [initial brainstorm](../design/2026-10-06-brainstorm.md),
+---
+status: accepted
+date: 2026-10-06
+source: >-
+  [initial brainstorm](../design/2026-10-06-brainstorm.md),
   decisions 2 and 3
+---
+
+# Client connectivity
 
 ## Context
 
