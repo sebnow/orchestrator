@@ -611,3 +611,80 @@ func (sys liveSystem) answerPermissions(t *testing.T, task protocol.TaskID, even
 			"message": {"Only ping is allowed in this test."}})
 	}
 }
+
+// childOf returns the id of a task that parent spawned, or "" when it
+// has spawned none.
+func (sys liveSystem) childOf(t *testing.T, parent protocol.TaskID) protocol.TaskID {
+	t.Helper()
+	var tasks []struct {
+		ID       protocol.TaskID  `json:"id"`
+		ParentID *protocol.TaskID `json:"parent_id"`
+	}
+	call(t, http.MethodGet, sys.server+"/v1/tasks", nil, &tasks)
+	for _, task := range tasks {
+		if task.ParentID != nil && *task.ParentID == parent {
+			return task.ID
+		}
+	}
+	return ""
+}
+
+// callsTool reports whether the agent called the gateway tool name.
+func callsTool(events []protocol.Event, name string) bool {
+	for _, event := range events {
+		if event.Kind == protocol.KindHarnessOutput && strings.Contains(string(event.Payload), `"name":"mcp__orchestrator__`+name+`"`) {
+			return true
+		}
+	}
+	return false
+}
+
+// Cost: `claude --version` and three claude sessions: the parent's turn
+// that spawns the child, the child's turn that sends PEAR, and the
+// parent's turn that the child's message resumes.
+func TestLiveGivenParentThatSpawnsAChildWhenTheChildReportsThenTheParentIsResumedWithItsMessage(t *testing.T) {
+	ctx, cancel := context.WithTimeout(t.Context(), 8*time.Minute)
+	defer cancel()
+	sys := startLiveSystem(t)
+	parent := sys.startTaskViaGUI(t, ctx, "Use the spawn_task tool once to start one child task with exactly this prompt: "+
+		`"Reply with the word PEAR and send it to your parent." `+
+		"Then end your turn at once, without waiting for the child or checking on it. "+
+		"When the child's message arrives, reply with the word it sent.")
+
+	first := sys.waitForState(t, ctx, parent, "finished", 1, nil)
+	child := sys.childOf(t, parent)
+	if child == "" {
+		_, results := sessionsAndResults(t, first)
+		t.Fatalf("the parent spawned no child; called spawn_task: %v; results %q", callsTool(first, "spawn_task"), results)
+	}
+	answerChild := func() {
+		childEvents := sys.events(t, child)
+		sys.answerPermissions(t, child, childEvents, nil)
+		if sys.state(t, child) == "finished" && !callsTool(childEvents, "send_message") {
+			_, results := sessionsAndResults(t, childEvents)
+			t.Fatalf("the child finished without calling send_message; its results %q", results)
+		}
+	}
+	events := sys.waitForStateEach(t, ctx, parent, "finished", 2, nil, answerChild)
+
+	childEvents := sys.events(t, child)
+	if !callsTool(events, "spawn_task") || !callsTool(childEvents, "send_message") {
+		t.Errorf("spawn_task called: %v; send_message called by the child: %v", callsTool(events, "spawn_task"), callsTool(childEvents, "send_message"))
+	}
+	sessions, results := sessionsAndResults(t, events)
+	requireOneSession(t, sessions)
+	if len(results) < 2 || !strings.Contains(results[len(results)-1], "PEAR") {
+		t.Errorf("parent's results = %q, want the last to contain PEAR", results)
+	}
+	resp, err := http.Get(sys.server + "/tasks/" + string(parent))
+	if err != nil {
+		t.Fatal(err)
+	}
+	page, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if want := `Message from task <a href="/tasks/` + string(child) + `">`; !strings.Contains(string(page), want) {
+		t.Errorf("the parent's page lacks %s", want)
+	}
+	_, childResults := sessionsAndResults(t, childEvents)
+	t.Logf("parent %s, child %s; child's results %q", parent, child, childResults)
+}
