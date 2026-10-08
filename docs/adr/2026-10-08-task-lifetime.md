@@ -6,6 +6,7 @@
   [MVP smoke findings](../design/2026-10-08-mvp-smoke-findings.md),
   "A task stays running between turns" and Open;
   [resume spike](../design/2026-10-08-resume-spike.md), Answers
+- Amended by: [restart recovery](2026-10-08-restart-recovery.md), which leaves a task whose turn a daemon restart cut short `paused` and resumable rather than `failed`
 
 ## Context
 
