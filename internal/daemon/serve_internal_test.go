@@ -21,10 +21,13 @@ import (
 )
 
 type daemonFixture struct {
-	harness  *fakeHarness
-	stateDir string
-	cancel   context.CancelFunc
-	done     chan error
+	harness *fakeHarness
+	// processes is the daemon's process table: no real process is looked
+	// up or killed.
+	processes *fakeProcesses
+	stateDir  string
+	cancel    context.CancelFunc
+	done      chan error
 }
 
 // runDaemon serves a daemon with a fake harness until stop or the end of
@@ -37,8 +40,15 @@ func runDaemon(t *testing.T, server *url.URL, stateDir string) *daemonFixture {
 // runDaemonWithClient is runDaemon reaching the server with client.
 func runDaemonWithClient(t *testing.T, server *url.URL, stateDir string, client *http.Client) *daemonFixture {
 	t.Helper()
+	return runDaemonWithProcesses(t, server, stateDir, client, newFakeProcesses())
+}
+
+// runDaemonWithProcesses is runDaemonWithClient with procs as the
+// daemon's process table from its start.
+func runDaemonWithProcesses(t *testing.T, server *url.URL, stateDir string, client *http.Client, procs *fakeProcesses) *daemonFixture {
+	t.Helper()
 	ctx, cancel := context.WithCancel(context.Background())
-	f := &daemonFixture{harness: newFakeHarness(), stateDir: stateDir, cancel: cancel, done: make(chan error, 1)}
+	f := &daemonFixture{harness: newFakeHarness(), processes: procs, stateDir: stateDir, cancel: cancel, done: make(chan error, 1)}
 	gateway := startTestGateway(t)
 	go func() {
 		f.done <- Serve(ctx, Config{
@@ -52,6 +62,7 @@ func runDaemonWithClient(t *testing.T, server *url.URL, stateDir string, client 
 			MinBackoff:      5 * time.Millisecond,
 			MaxBackoff:      50 * time.Millisecond,
 			ShutdownTimeout: time.Second,
+			processes:       f.processes,
 		})
 	}()
 	t.Cleanup(func() { f.stop(t) })

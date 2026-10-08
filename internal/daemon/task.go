@@ -42,6 +42,13 @@ type Daemon struct {
 	// that a restart finds it recorded. It runs on the goroutine reading
 	// the harness's output.
 	sessionSeen func(protocol.TaskID, string)
+	// harnessStarted, when set, hears the pid of each harness process right
+	// after it starts, before its start is journaled, so that a restart
+	// can find the process if it outlives the daemon.
+	harnessStarted func(protocol.TaskID, int)
+	// processes finds and kills the harness processes a previous daemon
+	// left running.
+	processes processTable
 }
 
 // New returns a daemon that keeps journals under stateDir, runs h, and
@@ -50,7 +57,7 @@ func New(stateDir string, h harness.Harness, gateway *Gateway, observe func(prot
 	if observe == nil {
 		observe = func(protocol.Event) {}
 	}
-	return &Daemon{stateDir: stateDir, harness: h, gateway: gateway, observe: observe}
+	return &Daemon{stateDir: stateDir, harness: h, gateway: gateway, observe: observe, processes: psTable{}}
 }
 
 // TaskSpec is what the daemon needs to run a task.
@@ -194,6 +201,9 @@ func (d *Daemon) start(ctx context.Context, j *journal, spec TaskSpec) (*Task, e
 		return nil, err
 	}
 	t.proc = proc
+	if d.harnessStarted != nil {
+		d.harnessStarted(spec.ID, proc.PID())
+	}
 	if _, err := t.record(protocol.KindHarnessStarted, protocol.HarnessStarted{PID: proc.PID(), Model: spec.Model, Workdir: spec.Workdir}); err != nil {
 		proc.Kill()
 	}

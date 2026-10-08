@@ -6,10 +6,10 @@ import (
 	"errors"
 	"io"
 	"io/fs"
-	"log/slog"
 	"os"
 	"slices"
 	"testing"
+	"time"
 
 	"github.com/sebnow/orchestrator/internal/protocol"
 )
@@ -35,15 +35,11 @@ func writeJournal(t *testing.T, stateDir string, task protocol.TaskID, outputs i
 	}
 }
 
+// recoverIn recovers the tasks under stateDir on a machine running none
+// of their harnesses.
 func recoverIn(t *testing.T, stateDir string) (*state, *bytes.Buffer) {
 	t.Helper()
-	st := mustLoadState(t, stateDir)
-	var logs bytes.Buffer
-	d := New(stateDir, newFakeHarness(), nil, nil)
-	if err := d.recoverTasks(st, slog.New(slog.NewTextHandler(&logs, nil))); err != nil {
-		t.Fatal(err)
-	}
-	return st, &logs
+	return recoverWith(t, stateDir, newFakeProcesses(), time.Second)
 }
 
 func assertEndsWithRestartExit(t *testing.T, events []protocol.Event, wantSeq uint64, wantHarness protocol.Harness, wantError string) {

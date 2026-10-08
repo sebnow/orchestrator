@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io/fs"
 	"os"
+	"slices"
 	"strings"
 	"testing"
 
@@ -501,4 +502,56 @@ func TestGivenFirstTurnBeforeASessionWhenTheDaemonShutsDownThenResumeStartsANewS
 		t.Errorf("events: %s", describe(events))
 	}
 	srv.waitForState(t, task, "paused")
+}
+
+func TestGivenHarnessThatStartsWhenItsProcessEndsThenTheRecordHeldItsPIDAndStartTimeUntilThen(t *testing.T) {
+	srv := startServer(t)
+	stateDir := t.TempDir()
+	d := runDaemon(t, srv.url, stateDir)
+	d.processes.run(4242, "Thu Oct  8 18:10:35 2026", -1)
+	task := srv.createTask(t, testDaemon, protocol.StartTask{Prompt: "Do the work.", PauseLimits: testPauseLimits})
+	proc := d.nextProcess(t)
+
+	want := harnessProcess{PID: 4242, Started: "Thu Oct  8 18:10:35 2026"}
+	eventually(t, "the harness to be recorded", func() bool {
+		rec, _ := mustLoadState(t, stateDir).record(task)
+		return rec.Harness != nil && *rec.Harness == want
+	})
+	finishTurn(t, proc, "session-1")
+	expectExit(t, proc)
+	eventually(t, "the harness to be forgotten", func() bool {
+		rec, _ := mustLoadState(t, stateDir).record(task)
+		return rec.Harness == nil && !rec.Running
+	})
+}
+
+func TestGivenDaemonThatDiedLeavingItsHarnessRunningWhenANewOneStartsThenItKillsTheHarnessBeforeThePauseIsReported(t *testing.T) {
+	srv := startServer(t)
+	proxy := startProxy(t, srv.url)
+	stateDir := t.TempDir()
+	first := runDaemon(t, proxy.url(), stateDir)
+	first.processes.run(4242, "Thu Oct  8 18:10:35 2026", -1)
+	task := srv.createTask(t, testDaemon, protocol.StartTask{Prompt: "Do the work.", PauseLimits: testPauseLimits})
+	proc := first.nextProcess(t)
+	proc.nextInput(t)
+	srv.waitForEvent(t, task, "harness_started", isKind(protocol.KindHarnessStarted))
+	crashed := t.TempDir()
+	if err := os.CopyFS(crashed, os.DirFS(stateDir)); err != nil {
+		t.Fatal(err)
+	}
+	proxy.cutAll()
+	first.stop(t)
+	// The harness outlived the daemon that started it.
+	orphans := newFakeProcesses()
+	orphans.run(4242, "Thu Oct  8 18:10:35 2026", -1)
+
+	second := runDaemonWithProcesses(t, srv.url, crashed, nil, orphans)
+
+	srv.waitForState(t, task, "paused")
+	if killed := second.processes.killedPIDs(); !slices.Equal(killed, []int{4242}) {
+		t.Errorf("killed %v, want the harness 4242", killed)
+	}
+	if rec, _ := mustLoadState(t, crashed).record(task); rec.Harness != nil {
+		t.Errorf("record = %+v", rec)
+	}
 }

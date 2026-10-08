@@ -42,6 +42,10 @@ type Config struct {
 	// ShutdownTimeout bounds stopping the running tasks once ctx ends, and
 	// then bounds sending their last events; zero means 30 s.
 	ShutdownTimeout time.Duration
+
+	// processes finds and kills harness processes; nil uses ps and
+	// signals. Tests set it so that no real process is touched.
+	processes processTable
 }
 
 // workspacePath returns the directory task works in under stateDir.
@@ -122,7 +126,19 @@ func Serve(ctx context.Context, cfg Config) error {
 			cfg.Log.Error("record harness session", "task", task, "error", err)
 		}
 	}
-	if err := d.recoverTasks(st, cfg.Log); err != nil {
+	if cfg.processes != nil {
+		d.processes = cfg.processes
+	}
+	d.harnessStarted = func(task protocol.TaskID, pid int) {
+		started, err := d.processes.started(pid)
+		if err != nil {
+			cfg.Log.Warn("look up the harness's start time; a restart will leave it alone if it outlives the daemon", "task", task, "pid", pid, "error", err)
+		}
+		if err := st.updateTask(task, func(rec *taskRecord) { rec.Harness = &harnessProcess{PID: pid, Started: started} }); err != nil {
+			cfg.Log.Error("record the harness process", "task", task, "error", err)
+		}
+	}
+	if err := d.recoverTasks(st, cfg.Log, cfg.ShutdownTimeout); err != nil {
 		return err
 	}
 	snd = newSender(cfg.Client, cfg.Server, cfg.ID, stateDir, st, cfg.Log, backoff{min: cfg.MinBackoff, max: cfg.MaxBackoff})
@@ -340,6 +356,7 @@ func (s *service) processEnded(task protocol.TaskID, t *Task, stopped bool) {
 		}
 		rec.Ended = rec.Ended || stopped || !clean && !st.CutShort
 		rec.CutShort = st.CutShort
+		rec.Harness = nil
 	})
 	if err != nil {
 		s.log.Error("record the end of a process", "task", task, "error", err)
@@ -473,6 +490,7 @@ func (s *service) journalEnded(task protocol.TaskID, j *journal) {
 	if err := s.state.closeJournal(task, func(rec *taskRecord) {
 		rec.Seq = j.lastSeq()
 		rec.Ended = true
+		rec.Harness = nil
 	}); err != nil {
 		s.log.Error("record the end of a task", "task", task, "error", err)
 	}

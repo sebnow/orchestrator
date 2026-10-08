@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/sebnow/orchestrator/internal/protocol"
 )
@@ -70,9 +71,11 @@ func restartExit(rec taskRecord) protocol.HarnessExited {
 }
 
 // recoverTasks closes the record of every task a previous daemon process
-// left in the middle of a turn. It takes the harness to have exited with
-// that process, which nothing enforces
-// (docs/adr/2026-10-08-restart-recovery.md, Consequences). Each journal
+// left in the middle of a turn. It first waits up to wait for the harness
+// processes that previous process left running to exit, and kills those
+// that do not (reapOrphans), so that the harness has exited before its
+// turn is reported cut short (docs/adr/2026-10-08-shutdown-recovery.md).
+// Each journal
 // that does not end in harness_exited gets one, with ExitCode -1 and an
 // Error from restartExit. So does a task whose record says a process was
 // running or starting, unless its journal ends in that process's own
@@ -86,7 +89,8 @@ func restartExit(rec taskRecord) protocol.HarnessExited {
 // adopted, so that its events are sent.
 //
 // A journal that cannot be read is logged and left alone.
-func (d *Daemon) recoverTasks(st *state, log *slog.Logger) error {
+func (d *Daemon) recoverTasks(st *state, log *slog.Logger, wait time.Duration) error {
+	d.reapOrphans(st, log, wait)
 	journals, err := journalTasks(d.stateDir)
 	if err != nil {
 		return err
@@ -139,6 +143,7 @@ func (d *Daemon) recoverTasks(st *state, log *slog.Logger) error {
 		if err := st.updateTask(task, func(rec *taskRecord) {
 			rec.Seq = max(rec.Seq, seq)
 			rec.Running = false
+			rec.Harness = nil
 			switch {
 			case ownExit:
 				rec.Ended = rec.Ended || !exitedCleanly

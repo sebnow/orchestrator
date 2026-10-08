@@ -58,6 +58,10 @@ type taskRecord struct {
 	// predates the Go name, so that state files written before keep their
 	// meaning.
 	CutShort bool `json:"restarted,omitempty"`
+	// Harness is the harness process the task's latest process started,
+	// until the end of that process is recorded. Found set on start, it is
+	// a harness the previous daemon may have left running.
+	Harness *harnessProcess `json:"harness,omitempty"`
 	// Running says a process of the task holds its journal. Found set on
 	// start, it is a process the previous daemon left behind, even one
 	// that had not yet journaled its start.
