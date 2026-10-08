@@ -109,11 +109,12 @@ its certificate, which names it, but not `-ca`.
 
 ### Using the GUI
 
-The dashboard lists the tasks that need attention, every task, and the
-connected daemons, and has the form that starts a task: its prompt, an
-optional repository and ref, the model, the daemon to run it on, and its
-pause limits. Each task page shows the transcript, asks for permission
-when the agent wants to run a tool, and has buttons to pause, resume,
+The dashboard lists the tasks that need attention, every task, the
+account's quota reading and the daemons, and has the form that starts a
+task: its prompt, an optional repository and ref, the model, the daemon
+to run it on or any connected daemon, its priority, whether it is filler
+(see [Scheduling](#scheduling)), and its pause limits. Each task page shows the transcript, asks for permission when
+the agent wants to run a tool, and has buttons to pause, resume,
 interrupt or stop the task.
 
 ### Flags
@@ -134,6 +135,12 @@ Server flags:
   `-tls-key` and `-client-ca`.
 - `-default-model`: the model of a task started without one, `haiku`
   by default.
+- `-slots-per-daemon`: how many tasks each daemon runs at once, 2 by
+  default.
+- `-filler-threshold`: the utilization of the account's five-hour quota
+  window, from 0 to 1, below which filler tasks run; 0.5 by default
+  (see [Scheduling](#scheduling)).
+- `-low-threshold`: the same for low-priority tasks; 0.85 by default.
 
 Without `-insecure-loopback`, the server also refuses to start until an
 owner token has been issued into its database.
@@ -179,9 +186,9 @@ git clones without the user's or the system's git configuration, so its
 credential helpers and URL rewrites are not used.
 
 Each turn of a task runs in its own `claude` process, which exits when
-the turn ends. The task is then `finished`, or `paused` if it was paused
-during the turn. A follow-up prompt, or Resume on a paused task, starts
-a new process that continues the same Claude Code session in the same
+the turn ends. The task is then `finished`, `paused` if the owner paused
+it during the turn, or `yielded` if the scheduler did. A follow-up
+prompt, or Resume on a paused or yielded task, starts a new process that continues the same Claude Code session in the same
 working directory. A task ends for good as `stopped` when stopped from
 its page, or as `failed`; the task page then takes no more prompts.
 
@@ -191,12 +198,14 @@ the daemon gives it, `spawn_task` and `send_message`
 explains them in a system prompt it gives every task, ahead of any
 system prompt given through the owner API. A child runs on its parent's
 daemon, in a fresh clone of the parent's repository if it has one,
-with the parent's model unless the agent names another, and is told to
-send its result to its parent. A message to a `finished` task becomes
-its next prompt at once; one to a running task waits until its turn
-ends, and one to a `paused` task until the owner resumes it and that
-turn ends. Messages to `stopped` or `failed` tasks are refused, and a
-parent is told when its child stops or fails. The task page links a
+with the parent's priority and filler flag, and the parent's model
+unless the agent names another, and is told to send its result to its
+parent. When the parent's daemon has no free slot, the child goes to the
+connected daemon with the most free slots instead. A message to a
+`finished` task becomes its next turn; one to a running task waits until
+its turn ends, and one to a `paused` task until the owner resumes it and
+that turn ends. Messages to `stopped` or `failed` tasks are refused, and
+a parent is told when its child stops or fails. The task page links a
 task's parent and children and shows the messages it sent and received.
 
 SIGINT or SIGTERM shuts either program down. The daemon stops its
@@ -204,6 +213,48 @@ running turns first; a second signal makes it exit at once. A daemon
 started again with the same `-state-dir` marks as `failed` every task
 whose turn its previous run did not end; a task that was between turns
 can still be resumed.
+
+### Scheduling
+
+A task's start, a follow-up prompt, a resume and a message delivery
+each become a turn in a single queue shared by all daemons, and a
+scheduler decides when each one starts
+([scheduling](docs/adr/2026-10-08-scheduling.md)). `POST /v1/tasks`
+answers 201 with the queued start; a prompt or resume posted to
+`/v1/tasks/{task}/commands` answers 202 with the queued turn. Pause,
+interrupt, stop and permission answers are sent to the daemon at once,
+without queueing.
+
+- **Slots.** Each daemon runs at most `-slots-per-daemon` tasks at once.
+  A task holds a slot from the admission of its turn until its process
+  exits. A task started without a daemon goes to the connected daemon
+  with the most free slots, and stays on that daemon, where its
+  workspace is. Turns for a daemon that is not connected wait until it
+  reconnects; a task bound to a daemon that never returns stays queued
+  until the owner stops it.
+- **Priority.** A task is `low`, `normal` or `high`, `normal` by
+  default. Waiting turns are admitted highest priority first, oldest
+  first within a priority. A turn that cannot run yet does not hold up
+  those behind it.
+- **Filler.** A filler task runs only when other work leaves slots and
+  budget spare: its turns wait while any non-filler turn waits for a
+  slot. When a non-filler turn waits for a slot on a daemon running
+  filler, the scheduler pauses the filler task there whose current turn
+  started last. That task shows as `yielded`, and the scheduler queues
+  its resume as a filler turn. An owner's resume of a `yielded` task is
+  a non-filler turn.
+- **Budget.** Daemons report the account's quota, a status and each
+  window's utilization, from an undocumented Claude Code event seen once
+  per process, so the newest reading from any daemon is only as fresh
+  as the newest turn. Filler runs only while the five-hour window's
+  utilization is below `-filler-threshold`, and low priority below
+  `-low-threshold`. With no reading, or once the reading's five-hour
+  window has reset, filler waits and everything else runs. A reading
+  with status `rejected` holds every turn until the earliest of its
+  windows resets. The dashboard shows the reading and its age.
+
+A task whose turn waits shows a `queued` badge with its place in the
+queue and the reason it waits.
 
 ## Version control
 
