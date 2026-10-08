@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"slices"
 	"strings"
 
 	"github.com/sebnow/orchestrator/internal/component"
@@ -14,9 +15,11 @@ import (
 )
 
 // taskView is what a task page shows: the task and its transcript.
+// Unrecognised entries are hidden unless showUnknown is set.
 type taskView struct {
-	detail  taskDetail
-	entries []transcript.Entry
+	detail      taskDetail
+	entries     []transcript.Entry
+	showUnknown bool
 }
 
 func (s *Server) readTaskView(ctx context.Context, task protocol.TaskID) (taskView, error) {
@@ -119,7 +122,10 @@ func (v taskView) page(refused refusal) html.Node {
 	return component.Page("Task "+v.id(),
 		component.RegionOf(component.RegionTaskHeader, v.header()),
 		component.RegionOf(component.RegionPermission, v.permission(permissionProblem)),
-		component.Section("Transcript", component.Transcript(v.entries), component.LiveUpdates(v.id(), at.String())),
+		component.Section("Transcript",
+			component.RegionOf(component.RegionUnknown, v.unknownToggle()),
+			component.Transcript(v.visible(v.entries)),
+			component.LiveUpdates(v.id(), at.String(), v.showUnknown)),
 		component.Section("Follow up", component.RegionOf(component.RegionPrompt, v.promptForm(promptText, promptProblem))),
 	)
 }
@@ -129,6 +135,7 @@ func (s *Server) getTaskPage(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	view.showUnknown = showsUnknown(r)
 	s.writeHTML(w, http.StatusOK, view.page(refusal{}))
 }
 
@@ -254,4 +261,34 @@ func (s *Server) getRawPage(w http.ResponseWriter, r *http.Request) {
 		component.TaskHeader(guiTask(detail.taskSummary, detail.Start.Prompt), nil),
 		component.Section("Stored events", component.Table(component.EventColumns, "No events stored yet.", rows...)),
 	))
+}
+
+// showsUnknown reports whether the request asks for the transcript's
+// unrecognised entries.
+func showsUnknown(r *http.Request) bool {
+	return r.URL.Query().Get(component.UnknownParam) == component.UnknownShown
+}
+
+// visible returns entries without the unrecognised ones, unless the view
+// shows them.
+func (v taskView) visible(entries []transcript.Entry) []transcript.Entry {
+	if v.showUnknown {
+		return entries
+	}
+	return slices.DeleteFunc(slices.Clone(entries), isUnknown)
+}
+
+func isUnknown(entry transcript.Entry) bool {
+	_, unknown := entry.Body.(transcript.Unknown)
+	return unknown
+}
+
+func (v taskView) unknownToggle() html.Node {
+	count := 0
+	for _, entry := range v.entries {
+		if isUnknown(entry) {
+			count++
+		}
+	}
+	return component.UnknownToggle(v.id(), count, v.showUnknown)
 }

@@ -1,6 +1,7 @@
 package component
 
 import (
+	"fmt"
 	"net/url"
 	"strconv"
 	"strings"
@@ -274,31 +275,69 @@ func EventRow(event protocol.Event) html.Node {
 	)
 }
 
+// UnknownParam set to UnknownShown makes a task page, and the updates
+// that keep it live, show the transcript's unrecognised entries.
+const (
+	UnknownParam = "unknown"
+	UnknownShown = "show"
+	unknownQuery = UnknownParam + "=" + UnknownShown
+)
+
+// UnknownToggle says how many unrecognised entries the transcript hides,
+// or shows when shown is set, with a link that flips it. It is empty when
+// there are none.
+func UnknownToggle(taskID string, count int, shown bool) html.Node {
+	if count == 0 {
+		return nil
+	}
+	noun := "entries"
+	if count == 1 {
+		noun = "entry"
+	}
+	if shown {
+		return html.El("p", attrs("class", "notice"),
+			html.Text(fmt.Sprintf("Showing %d unrecognised %s. ", count, noun)),
+			link(taskURL(taskID), "Hide them"))
+	}
+	return html.El("p", attrs("class", "notice"),
+		html.Text(fmt.Sprintf("%d unrecognised %s hidden. ", count, noun)),
+		link(taskURL(taskID)+"?"+unknownQuery, "Show them"))
+}
+
+// liveQuery is the query of a request for the updates after cursor.
+func liveQuery(cursor string, showUnknown bool) string {
+	query := "after=" + url.QueryEscape(cursor)
+	if showUnknown {
+		query += "&" + unknownQuery
+	}
+	return query
+}
+
 // LiveUpdates keeps a task page current from cursor on, the position
 // after the last entry the page shows: server-sent events append new
 // entries to the transcript, and when they fail SSEFallback switches the
-// page to Polling.
-func LiveUpdates(taskID, cursor string) html.Node {
+// page to Polling. showUnknown keeps unrecognised entries in the updates.
+func LiveUpdates(taskID, cursor string, showUnknown bool) html.Node {
 	return RegionOf(RegionLive,
-		html.El("div", attrs("hx-ext", "sse", "sse-connect", taskURL(taskID)+"/stream?after="+url.QueryEscape(cursor),
+		html.El("div", attrs("hx-ext", "sse", "sse-connect", taskURL(taskID)+"/stream?"+liveQuery(cursor, showUnknown),
 			"sse-swap", "message", "hx-target", "#transcript", "hx-swap", "beforeend")),
-		RegionOf(RegionFallback, SSEFallback(taskID, cursor)),
+		RegionOf(RegionFallback, SSEFallback(taskID, cursor, showUnknown)),
 	)
 }
 
-func updatesURL(taskID, cursor string) string {
-	return taskURL(taskID) + "/updates?after=" + url.QueryEscape(cursor)
+func updatesURL(taskID, cursor string, showUnknown bool) string {
+	return taskURL(taskID) + "/updates?" + liveQuery(cursor, showUnknown)
 }
 
 // SSEFallback fetches the updates after cursor once, when server-sent
 // events fail; the response replaces RegionLive with Polling.
-func SSEFallback(taskID, cursor string) html.Node {
-	return html.El("div", attrs("hx-get", updatesURL(taskID, cursor), "hx-trigger", "htmx:sseError from:body once",
+func SSEFallback(taskID, cursor string, showUnknown bool) html.Node {
+	return html.El("div", attrs("hx-get", updatesURL(taskID, cursor, showUnknown), "hx-trigger", "htmx:sseError from:body once",
 		"hx-target", "#transcript", "hx-swap", "beforeend"))
 }
 
 // Polling fetches the updates after cursor in five seconds.
-func Polling(taskID, cursor string) html.Node {
-	return html.El("div", attrs("hx-get", updatesURL(taskID, cursor), "hx-trigger", "every 5s",
+func Polling(taskID, cursor string, showUnknown bool) html.Node {
+	return html.El("div", attrs("hx-get", updatesURL(taskID, cursor, showUnknown), "hx-trigger", "every 5s",
 		"hx-target", "#transcript", "hx-swap", "beforeend"))
 }

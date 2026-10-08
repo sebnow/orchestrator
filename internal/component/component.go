@@ -203,6 +203,9 @@ const (
 	RegionLive Region = "task-live"
 	// RegionFallback holds what takes over when server-sent events fail.
 	RegionFallback Region = "task-fallback"
+	// RegionUnknown says how many unrecognised transcript entries a task
+	// page hides or shows.
+	RegionUnknown Region = "task-unknown"
 )
 
 // RegionOf is region with children as its content.

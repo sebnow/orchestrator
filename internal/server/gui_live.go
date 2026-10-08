@@ -81,17 +81,19 @@ func changesPermission(entry transcript.Entry) bool {
 // cursor past the entries.
 func (v taskView) update(c cursor, polling bool) (html.Node, cursor) {
 	fresh, next := c.after(v.entries)
+	fresh = v.visible(fresh)
 	var permission html.Node
 	if slices.ContainsFunc(fresh, changesPermission) {
 		permission = component.OutOfBand(component.RegionPermission, v.permission(""))
 	}
-	live := component.OutOfBand(component.RegionFallback, component.SSEFallback(v.id(), next.String()))
+	live := component.OutOfBand(component.RegionFallback, component.SSEFallback(v.id(), next.String(), v.showUnknown))
 	if polling {
-		live = component.OutOfBand(component.RegionLive, component.Polling(v.id(), next.String()))
+		live = component.OutOfBand(component.RegionLive, component.Polling(v.id(), next.String(), v.showUnknown))
 	}
 	return html.Fragment(
 		component.TranscriptEntries(fresh),
 		component.OutOfBand(component.RegionTaskHeader, v.header()),
+		component.OutOfBand(component.RegionUnknown, v.unknownToggle()),
 		permission,
 		component.OutOfBand(component.RegionPromptSubmit, component.PromptSubmit(v.promptClosed())),
 		live,
@@ -151,6 +153,7 @@ func (s *Server) streamTask(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 		}
+		view.showUnknown = showsUnknown(r)
 		fragment, next := view.update(at, false)
 		if !first || next != at {
 			if err := writeEvent(w, next.String(), fragment); err != nil {
@@ -215,6 +218,7 @@ func (s *Server) getTaskUpdates(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	view.showUnknown = showsUnknown(r)
 	fragment, _ := view.update(at, true)
 	s.writeHTML(w, http.StatusOK, fragment)
 }
