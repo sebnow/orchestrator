@@ -136,6 +136,11 @@ func arguments(spec harness.Spec) ([]string, error) {
 	if spec.SystemPrompt != "" {
 		args = append(args, "--append-system-prompt", spec.SystemPrompt)
 	}
+	if spec.Resume != "" {
+		// The session keeps the system prompt it recorded first; passing
+		// one again is harmless (docs/design/2026-10-08-resume-spike.md).
+		args = append(args, "--resume", spec.Resume)
+	}
 	if len(spec.Gateway.Tools) > 0 {
 		args = append(args, "--allowedTools")
 		for _, tool := range spec.Gateway.Tools {
@@ -242,6 +247,9 @@ func classify(line []byte) harness.Output {
 		return out
 	}
 	_, out.TurnEnded = msg.Result()
+	if _, isInit := msg.Init(); isInit || out.TurnEnded {
+		out.SessionID = msg.SessionID
+	}
 	out.Answering = msg.Answering()
 	if info, ok := msg.RateLimit(); ok {
 		quota := quotaObserved(info)

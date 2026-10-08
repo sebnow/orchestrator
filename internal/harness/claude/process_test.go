@@ -374,3 +374,42 @@ func TestGivenDenyWhenEncodingDecisionThenReplyDeniesWithTheMessage(t *testing.T
 		t.Errorf("got %s, want %s", got, want)
 	}
 }
+
+func TestGivenSessionToResumeWhenStartingThenClaudeResumesIt(t *testing.T) {
+	spec := testSpec
+	spec.Resume = "d3b7060b-bcd0-4d5e-8775-506cfc91cf06"
+
+	_, init, _ := startFake(t, spec)
+
+	if got, _ := argValue(init.Argv, "--resume"); got != spec.Resume {
+		t.Errorf("--resume = %q, want %q; argv %q", got, spec.Resume, init.Argv)
+	}
+}
+
+func TestGivenNoSessionToResumeWhenStartingThenANewSessionStarts(t *testing.T) {
+	_, init, _ := startFake(t, testSpec)
+
+	if slices.Contains(init.Argv, "--resume") {
+		t.Errorf("argv = %q", init.Argv)
+	}
+}
+
+func TestGivenInitAndResultWhenReadingThenBothReportTheSessionAndOtherLinesDoNot(t *testing.T) {
+	proc, _, outputs := startFake(t, testSpec)
+	if err := proc.Prompt("prompt-1", "hello"); err != nil {
+		t.Fatal(err)
+	}
+	result := read(t, proc)
+
+	if outputs[0].SessionID != "fake-session" {
+		t.Errorf("init session = %q", outputs[0].SessionID)
+	}
+	if result.SessionID != "fake-session" {
+		t.Errorf("result session = %q", result.SessionID)
+	}
+	for _, out := range outputs[1:] {
+		if out.SessionID != "" {
+			t.Errorf("line %s reports session %q", out.Line, out.SessionID)
+		}
+	}
+}

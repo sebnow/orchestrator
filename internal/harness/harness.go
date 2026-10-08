@@ -31,7 +31,11 @@ type Spec struct {
 	Model   string
 	// SystemPrompt is added to the harness's own; empty adds nothing.
 	SystemPrompt string
-	Gateway      Gateway
+	// Resume names the harness session to continue, as reported in
+	// Output.SessionID by an earlier process of the task; empty starts a
+	// new session.
+	Resume  string
+	Gateway Gateway
 }
 
 // Gateway is the daemon's MCP endpoint for one task.
@@ -45,9 +49,11 @@ type Gateway struct {
 	Tools []string
 }
 
-// Process is one running harness. Read, Wait and the writing methods may
-// be called from different goroutines; the writing methods are safe for
-// concurrent use with each other.
+// Process is one running harness. It lives for one turn of its task: the
+// daemon closes its input once the turn has ended and nothing it sent is
+// outstanding (docs/adr/2026-10-08-task-lifetime.md). Read, Wait and the
+// writing methods may be called from different goroutines; the writing
+// methods are safe for concurrent use with each other.
 type Process interface {
 	PID() int
 	// Read returns the next line of output and io.EOF after the last.
@@ -73,6 +79,9 @@ type Output struct {
 	// Answering lists the ids of the prompts this line shows the harness
 	// answering.
 	Answering []string
+	// SessionID names the harness session the line reports, when it
+	// reports one; Spec.Resume continues that session in a new process.
+	SessionID string
 	Quota     *protocol.QuotaObserved
 }
 
