@@ -56,6 +56,31 @@ var migrations = [...]string{
 	) STRICT;
 	CREATE INDEX messages_by_recipient ON messages (to_task, delivered_command_id);
 	CREATE INDEX messages_by_sender ON messages (from_task);`,
+	// Version 5 lets the server schedule turns
+	// (docs/adr/2026-10-08-scheduling.md). A task gains its priority, its
+	// filler flag, how its first turn is placed, and who asked for the
+	// pause under way or in effect; a daemon gains its slot count, NULL
+	// for the server's default. A turn waits in turns until the scheduler
+	// admits it by issuing its command, admitted_command_id; reason says
+	// why it waits. Quota readings are looked up by kind.
+	`ALTER TABLE tasks ADD COLUMN priority TEXT NOT NULL DEFAULT 'normal' CHECK (priority IN ('low', 'normal', 'high'));
+	ALTER TABLE tasks ADD COLUMN filler INTEGER NOT NULL DEFAULT 0 CHECK (filler IN (0, 1));
+	ALTER TABLE tasks ADD COLUMN placement TEXT NOT NULL DEFAULT 'bound' CHECK (placement IN ('bound', 'any', 'parent'));
+	ALTER TABLE tasks ADD COLUMN pause_origin TEXT CHECK (pause_origin IN ('owner', 'scheduler'));
+	ALTER TABLE daemons ADD COLUMN slots INTEGER CHECK (slots >= 0);
+	CREATE TABLE turns (
+		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		task_id TEXT NOT NULL REFERENCES tasks (id),
+		kind TEXT NOT NULL CHECK (kind IN ('start_task', 'prompt', 'resume', 'deliver')),
+		payload TEXT,
+		origin TEXT NOT NULL CHECK (origin IN ('owner', 'server', 'scheduler')),
+		filler INTEGER NOT NULL CHECK (filler IN (0, 1)),
+		created_at TEXT NOT NULL,
+		reason TEXT NOT NULL DEFAULT '',
+		admitted_command_id INTEGER REFERENCES commands (id)
+	) STRICT;
+	CREATE INDEX turns_by_task ON turns (task_id, admitted_command_id);
+	CREATE INDEX events_by_kind ON events (kind);`,
 }
 
 // schemaVersion is the version this server migrates databases to. A
@@ -502,6 +527,22 @@ func insertCommand(ctx context.Context, tx *sql.Tx, daemon protocol.DaemonID, ta
 		if err := notifyParent(ctx, tx, task, p.State, fx); err != nil {
 			return protocol.Command{}, err
 		}
+	}
+	return command, nil
+}
+
+// yieldTask pauses task, assigned to daemon, for the scheduler, so that
+// the task is yielded rather than paused once the pause settles
+// (docs/adr/2026-10-08-scheduling.md).
+func yieldTask(ctx context.Context, tx *sql.Tx, daemon protocol.DaemonID, task protocol.TaskID, fx *effects) (protocol.Command, error) {
+	command, err := insertCommand(ctx, tx, daemon, task, protocol.CommandPause, nil, fx)
+	if err != nil {
+		return protocol.Command{}, err
+	}
+	_, err = tx.ExecContext(ctx, `UPDATE tasks SET pause_origin = ? WHERE id = ? AND state = ?`,
+		string(pauseByScheduler), string(task), string(TaskPausing))
+	if err != nil {
+		return protocol.Command{}, fmt.Errorf("record the yield of task %q: %w", task, err)
 	}
 	return command, nil
 }

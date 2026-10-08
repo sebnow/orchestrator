@@ -96,7 +96,7 @@ func TestGivenEachStateWhenAnEventIsStoredThenTheStateFollowsTheTable(t *testing
 		{"exit after a stop took effect", TaskStopped, exitedNonZero, false, TaskStopped},
 		{"start after the end", TaskFailed, started, false, TaskFailed},
 	} {
-		if got := tc.from.afterEvent(tc.event, tc.stopIssued); got != tc.want {
+		if got := tc.from.afterEvent(tc.event, tc.stopIssued, pauseByOwner); got != tc.want {
 			t.Errorf("%s: %s + %s = %s, want %s", tc.name, tc.from, tc.event.Kind, got, tc.want)
 		}
 	}
@@ -299,8 +299,8 @@ func TestGivenVersionOneDatabaseWhenOpeningStoreThenItIsMigratedAndItsTasksKeepP
 	if err := store.db.QueryRowContext(t.Context(), `SELECT version FROM schema_version`).Scan(&version); err != nil {
 		t.Fatal(err)
 	}
-	if version != schemaVersion || schemaVersion != 4 {
-		t.Errorf("schema version = %d (server knows %d), want 4", version, schemaVersion)
+	if version != schemaVersion || schemaVersion != 5 {
+		t.Errorf("schema version = %d (server knows %d), want 5", version, schemaVersion)
 	}
 	if has, err := store.HasOwnerToken(t.Context()); err != nil || has {
 		t.Errorf("migrated HasOwnerToken = %v, %v; want false", has, err)
@@ -348,4 +348,108 @@ func TestGivenMigratedDatabaseWhenComparedWithANewOneThenTheTasksTablesHaveTheSa
 		return out
 	}
 	requireJSONEqual(t, columns(migrated), columns(fresh))
+}
+
+func TestGivenEachStateWhenTheSchedulersPauseAppliesThenTheStateFollowsTheTable(t *testing.T) {
+	settled := controlEvent(protocol.KindPauseSettled, `{"interrupted":false}`)
+	exitedCleanly := controlEvent(protocol.KindHarnessExited, `{"exit_code":0}`)
+	started := controlEvent(protocol.KindHarnessStarted, `{"pid":1}`)
+	for _, tc := range []struct {
+		name  string
+		from  TaskState
+		event protocol.Event
+		want  TaskState
+	}{
+		{"pause settles", TaskPausing, settled, TaskYielded},
+		{"clean exit while yielded", TaskYielded, exitedCleanly, TaskYielded},
+		{"next process of a yielded task", TaskYielded, started, TaskRunning},
+		{"clean exit before the pause settled", TaskPausing, exitedCleanly, TaskFinished},
+	} {
+		if got := tc.from.afterEvent(tc.event, false, pauseByScheduler); got != tc.want {
+			t.Errorf("%s: %s + %s = %s, want %s", tc.name, tc.from, tc.event.Kind, got, tc.want)
+		}
+	}
+	for _, tc := range []struct {
+		kind protocol.CommandKind
+		want TaskState
+	}{
+		{protocol.CommandResume, TaskRunning},
+		{protocol.CommandPrompt, TaskRunning},
+		{protocol.CommandPause, TaskPaused},
+		{protocol.CommandStop, TaskStopped},
+		{protocol.CommandInterrupt, TaskYielded},
+	} {
+		if got := TaskYielded.afterCommand(tc.kind); got != tc.want {
+			t.Errorf("yielded + %s command = %s, want %s", tc.kind, got, tc.want)
+		}
+	}
+}
+
+// yield pauses the lifecycle's task for the scheduler.
+func (l *lifecycle) yield(want TaskState) {
+	l.t.Helper()
+	tx, err := l.store.db.BeginTx(l.t.Context(), nil)
+	if err != nil {
+		l.t.Fatal(err)
+	}
+	defer tx.Rollback()
+	var fx effects
+	if _, err := yieldTask(l.t.Context(), tx, "laptop", l.task, &fx); err != nil {
+		l.t.Fatal(err)
+	}
+	if err := tx.Commit(); err != nil {
+		l.t.Fatal(err)
+	}
+	if got := readProgress(l.t, l.store, l.task).State; got != want {
+		l.t.Fatalf("after the scheduler's pause: state = %s, want %s", got, want)
+	}
+}
+
+func TestGivenRunningTaskWhenTheSchedulerPausesItThenItIsYieldedOnceThePauseSettlesAndAResumeRunsIt(t *testing.T) {
+	store, _ := openTestStore(t)
+	l := newLifecycle(t, store, "task-1")
+	l.event(protocol.KindHarnessStarted, `{"pid":1}`, TaskRunning)
+
+	l.yield(TaskPausing)
+	if p := readProgress(t, store, "task-1"); p.PausedBy != pauseByScheduler {
+		t.Errorf("paused by %q, want the scheduler", p.PausedBy)
+	}
+	l.event(protocol.KindPauseAcknowledged, `{"note":"after step 1"}`, TaskPausing)
+	l.event(protocol.KindPauseSettled, `{"interrupted":false}`, TaskYielded)
+	l.event(protocol.KindHarnessExited, `{"exit_code":0}`, TaskYielded)
+	l.command(protocol.CommandResume, "", TaskRunning)
+	if p := readProgress(t, store, "task-1"); p.PausedBy != "" {
+		t.Errorf("paused by %q after the resume, want nobody", p.PausedBy)
+	}
+	l.event(protocol.KindHarnessStarted, `{"pid":2}`, TaskRunning)
+	l.event(protocol.KindHarnessExited, `{"exit_code":0}`, TaskFinished)
+}
+
+func TestGivenTheSchedulersPauseWhenTheOwnerPausesTooThenTheTaskEndsUpPausedForTheOwner(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		drive func(l *lifecycle)
+	}{
+		{"while pausing", func(l *lifecycle) {
+			l.command(protocol.CommandPause, "", TaskPausing)
+			l.event(protocol.KindPauseSettled, `{"interrupted":false}`, TaskPaused)
+		}},
+		{"once yielded", func(l *lifecycle) {
+			l.event(protocol.KindPauseSettled, `{"interrupted":false}`, TaskYielded)
+			l.command(protocol.CommandPause, "", TaskPaused)
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			store, _ := openTestStore(t)
+			l := newLifecycle(t, store, "task-1")
+			l.event(protocol.KindHarnessStarted, `{"pid":1}`, TaskRunning)
+			l.yield(TaskPausing)
+
+			tc.drive(l)
+
+			if p := readProgress(t, store, "task-1"); p.PausedBy != pauseByOwner {
+				t.Errorf("paused by %q, want the owner", p.PausedBy)
+			}
+		})
+	}
 }

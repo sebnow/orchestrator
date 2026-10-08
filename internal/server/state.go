@@ -27,9 +27,13 @@ const (
 	TaskAwaitingPermission TaskState = "awaiting_permission"
 	// TaskPausing: a pause was issued and has not taken effect yet.
 	TaskPausing TaskState = "pausing"
-	// TaskPaused: the pause took effect and the task's process exited; a
-	// resume or a prompt starts its next process.
+	// TaskPaused: the owner's pause took effect and the task's process
+	// exited; a resume or a prompt starts its next process.
 	TaskPaused TaskState = "paused"
+	// TaskYielded: the scheduler's pause took effect and the task's
+	// process exited. The scheduler resumes it when a slot is free
+	// (docs/adr/2026-10-08-scheduling.md).
+	TaskYielded TaskState = "yielded"
 	// TaskFinished: the task's process exited with code 0 after its turn,
 	// with no stop issued and no pause in effect. A prompt starts its next
 	// process (docs/adr/2026-10-08-task-lifetime.md).
@@ -48,16 +52,28 @@ func (s TaskState) Terminal() bool {
 
 // Idle reports whether the task is between processes and can be resumed.
 func (s TaskState) Idle() bool {
-	return s == TaskFinished || s == TaskPaused
+	return s == TaskFinished || s == TaskPaused || s == TaskYielded
 }
+
+// pauseOrigin says who asked for the pause a task is under: the owner,
+// whose pause holds the task until the owner resumes it, or the
+// scheduler, which yields a filler task's slot and resumes it itself.
+type pauseOrigin string
+
+const (
+	pauseByOwner     pauseOrigin = "owner"
+	pauseByScheduler pauseOrigin = "scheduler"
+)
 
 // afterCommand returns the state once a command of kind is issued.
 //
-// A prompt resumes a paused task as a resume does, because the daemon
-// treats both alike, and either one issued while a pause is under way
-// applies once the pause settles, so the task is running thereafter. A
-// prompt to a finished task starts its next process. A stop to a task
-// between processes ends it at once, as no process is left to report it.
+// A prompt resumes a paused or yielded task as a resume does, because
+// the daemon treats both alike, and either one issued while a pause is
+// under way applies once the pause settles, so the task is running
+// thereafter. A prompt to a finished task starts its next process. A
+// pause to a yielded task makes the scheduler's hold the owner's. A stop
+// to a task between processes ends it at once, as no process is left to
+// report it.
 func (s TaskState) afterCommand(kind protocol.CommandKind) TaskState {
 	switch {
 	case s.Terminal():
@@ -66,7 +82,9 @@ func (s TaskState) afterCommand(kind protocol.CommandKind) TaskState {
 		return TaskStopped
 	case kind == protocol.CommandPause && (s == TaskPending || s == TaskRunning || s == TaskAwaitingPermission):
 		return TaskPausing
-	case (kind == protocol.CommandResume || kind == protocol.CommandPrompt) && (s == TaskPausing || s == TaskPaused):
+	case kind == protocol.CommandPause && s == TaskYielded:
+		return TaskPaused
+	case (kind == protocol.CommandResume || kind == protocol.CommandPrompt) && (s == TaskPausing || s == TaskPaused || s == TaskYielded):
 		return TaskRunning
 	case kind == protocol.CommandPrompt && s == TaskFinished:
 		return TaskRunning
@@ -78,14 +96,16 @@ func (s TaskState) afterCommand(kind protocol.CommandKind) TaskState {
 
 // afterEvent returns the state once event is stored. stopIssued says
 // whether a stop has been issued for the task; it matters only for
-// harness_exited.
+// harness_exited. pausedBy names who asked for the pause under way; it
+// matters only for pause_settled.
 //
 // pause_settled takes effect only while pausing: when a resume or prompt
 // was issued before the pause settled, the task resumes right after. A
-// clean exit leaves a paused task paused; a pause that had not settled
-// when the process exited did not take effect, and the task is finished.
-// A process started after a clean exit makes the task running again.
-func (s TaskState) afterEvent(event protocol.Event, stopIssued bool) TaskState {
+// clean exit leaves a paused or yielded task so; a pause that had not
+// settled when the process exited did not take effect, and the task is
+// finished. A process started after a clean exit makes the task running
+// again.
+func (s TaskState) afterEvent(event protocol.Event, stopIssued bool, pausedBy pauseOrigin) TaskState {
 	switch {
 	case s.Terminal():
 		return s
@@ -93,6 +113,8 @@ func (s TaskState) afterEvent(event protocol.Event, stopIssued bool) TaskState {
 		return TaskRunning
 	case event.Kind == protocol.KindPermissionRequested && s == TaskRunning:
 		return TaskAwaitingPermission
+	case event.Kind == protocol.KindPauseSettled && s == TaskPausing && pausedBy == pauseByScheduler:
+		return TaskYielded
 	case event.Kind == protocol.KindPauseSettled && s == TaskPausing:
 		return TaskPaused
 	case event.Kind == protocol.KindHarnessExited:
@@ -103,8 +125,8 @@ func (s TaskState) afterEvent(event protocol.Event, stopIssued bool) TaskState {
 			return TaskStopped
 		case !decoded || exit.ExitCode != 0 || exit.Error != "":
 			return TaskFailed
-		case s == TaskPaused:
-			return TaskPaused
+		case s == TaskPaused || s == TaskYielded:
+			return s
 		default:
 			return TaskFinished
 		}
@@ -119,11 +141,15 @@ type progress struct {
 	LastActivity time.Time
 	// CostUSD is the highest running total the harness has reported.
 	CostUSD float64
+	// PausedBy names who asked for the pause while the task is pausing,
+	// paused or yielded; it is empty otherwise.
+	PausedBy pauseOrigin
 }
 
 // seeEvent folds a stored event into p.
 func (p *progress) seeEvent(event protocol.Event, stopIssued bool) {
-	p.State = p.State.afterEvent(event, stopIssued)
+	p.State = p.State.afterEvent(event, stopIssued, p.PausedBy)
+	p.forgetPause()
 	p.see(event.Time)
 	if event.Kind != protocol.KindHarnessOutput {
 		return
@@ -139,10 +165,22 @@ func (p *progress) seeEvent(event protocol.Event, stopIssued bool) {
 	}
 }
 
-// seeCommand folds an issued command into p.
+// seeCommand folds an issued command into p. A pause the command puts
+// the task under is the owner's; the scheduler marks its own.
 func (p *progress) seeCommand(command protocol.Command) {
 	p.State = p.State.afterCommand(command.Kind)
+	if command.Kind == protocol.CommandPause && (p.State == TaskPausing || p.State == TaskPaused) {
+		p.PausedBy = pauseByOwner
+	}
+	p.forgetPause()
 	p.see(command.Time)
+}
+
+// forgetPause clears PausedBy once the task is under no pause.
+func (p *progress) forgetPause() {
+	if p.State != TaskPausing && p.State != TaskPaused && p.State != TaskYielded {
+		p.PausedBy = ""
+	}
 }
 
 func (p *progress) see(at time.Time) {
@@ -153,13 +191,14 @@ func (p *progress) see(at time.Time) {
 
 func loadProgress(ctx context.Context, tx *sql.Tx, task protocol.TaskID) (progress, error) {
 	var state, lastActivity string
+	var pausedBy sql.NullString
 	var p progress
-	err := tx.QueryRowContext(ctx, `SELECT state, last_activity_at, cost_usd FROM tasks WHERE id = ?`, string(task)).
-		Scan(&state, &lastActivity, &p.CostUSD)
+	err := tx.QueryRowContext(ctx, `SELECT state, last_activity_at, cost_usd, pause_origin FROM tasks WHERE id = ?`, string(task)).
+		Scan(&state, &lastActivity, &p.CostUSD, &pausedBy)
 	if err != nil {
 		return progress{}, fmt.Errorf("read progress of task %q: %w", task, err)
 	}
-	p.State = TaskState(state)
+	p.State, p.PausedBy = TaskState(state), pauseOrigin(pausedBy.String)
 	if p.LastActivity, err = parseTime(lastActivity); err != nil {
 		return progress{}, fmt.Errorf("read progress of task %q: %w", task, err)
 	}
@@ -167,8 +206,12 @@ func loadProgress(ctx context.Context, tx *sql.Tx, task protocol.TaskID) (progre
 }
 
 func saveProgress(ctx context.Context, tx *sql.Tx, task protocol.TaskID, p progress) error {
-	_, err := tx.ExecContext(ctx, `UPDATE tasks SET state = ?, last_activity_at = ?, cost_usd = ? WHERE id = ?`,
-		string(p.State), formatTime(p.LastActivity), p.CostUSD, string(task))
+	var pausedBy any
+	if p.PausedBy != "" {
+		pausedBy = string(p.PausedBy)
+	}
+	_, err := tx.ExecContext(ctx, `UPDATE tasks SET state = ?, last_activity_at = ?, cost_usd = ?, pause_origin = ? WHERE id = ?`,
+		string(p.State), formatTime(p.LastActivity), p.CostUSD, pausedBy, string(task))
 	if err != nil {
 		return fmt.Errorf("record progress of task %q: %w", task, err)
 	}
