@@ -175,4 +175,3 @@ func TestGivenJournalHeldByAProcessOrNotHeldWholeWhenDroppingThenItStays(t *test
 		t.Errorf("journal: %v", err)
 	}
 }
-

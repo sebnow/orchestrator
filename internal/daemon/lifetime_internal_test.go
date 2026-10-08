@@ -2,8 +2,8 @@ package daemon
 
 import (
 	"encoding/json"
-	"fmt"
 	"errors"
+	"fmt"
 	"io/fs"
 	"os"
 	"strings"

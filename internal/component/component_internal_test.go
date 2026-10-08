@@ -129,13 +129,13 @@ func TestGivenMessagesAndChildrenWhenRenderedThenEachSaysWhatHappenedAndLinksThe
 		want string
 	}{
 		{transcript.MessageSent{To: child, Text: "PEAR"},
-			`<li class="entry from-agent"><header>never Agent sent a message to task <a href="/tasks/child-1">child-1</a></header><pre>`+"\n"+`PEAR</pre></li>`},
+			`<li class="entry from-agent"><header>never Agent sent a message to task <a href="/tasks/child-1">child-1</a></header><pre>` + "\n" + `PEAR</pre></li>`},
 		{transcript.MessageReceived{From: &child, Text: "PEAR"},
-			`<li class="entry from-task"><header>never Message from task <a href="/tasks/child-1">child-1</a></header><pre>`+"\n"+`PEAR</pre></li>`},
+			`<li class="entry from-task"><header>never Message from task <a href="/tasks/child-1">child-1</a></header><pre>` + "\n" + `PEAR</pre></li>`},
 		{transcript.MessageReceived{Text: "Your child task child-1 has ended as failed."},
-			`<li class="entry from-task"><header>never Notice from the orchestrator</header><pre>`+"\n"+`Your child task child-1 has ended as failed.</pre></li>`},
+			`<li class="entry from-task"><header>never Notice from the orchestrator</header><pre>` + "\n" + `Your child task child-1 has ended as failed.</pre></li>`},
 		{transcript.ChildSpawned{Child: child, Prompt: "Say PEAR."},
-			`<li class="entry from-agent"><header>never Agent started child task <a href="/tasks/child-1">child-1</a></header><pre>`+"\n"+`Say PEAR.</pre></li>`},
+			`<li class="entry from-agent"><header>never Agent started child task <a href="/tasks/child-1">child-1</a></header><pre>` + "\n" + `Say PEAR.</pre></li>`},
 		{transcript.ChildEnded{Child: child, State: "failed"},
 			`<li class="entry from-daemon"><header>never Child task <a href="/tasks/child-1">child-1</a> ended as failed</header></li>`},
 		{transcript.OwnerPrompt{Text: "Say PEAR.", SpawnedBy: &child},
