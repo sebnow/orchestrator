@@ -76,6 +76,8 @@ const (
 	KindPauseSettled Kind = "pause_settled"
 	// KindQuotaObserved: QuotaObserved.
 	KindQuotaObserved Kind = "quota_observed"
+	// KindBranchPushed: BranchPushed.
+	KindBranchPushed Kind = "branch_pushed"
 )
 
 // Harness identifies the harness that produced a task's events.
@@ -157,4 +159,18 @@ type QuotaWindow struct {
 	// Utilization is the fraction of the window used, from 0 to 1.
 	Utilization float64   `json:"utilization"`
 	ResetsAt    time.Time `json:"resets_at"`
+}
+
+// BranchPushed reports the daemon pushing a task's branch, on which the
+// task's work leaves the daemon (docs/adr/2026-10-08-work-delivery.md).
+// Branch is the branch's name and Commit the commit pushed. Ahead counts
+// the branch's commits beyond the ref the task started from, and
+// Uncommitted the files left modified or untracked in the workspace.
+// Error says why the push failed, and is empty when it succeeded.
+type BranchPushed struct {
+	Branch      string `json:"branch"`
+	Commit      string `json:"commit"`
+	Ahead       int    `json:"ahead"`
+	Uncommitted int    `json:"uncommitted"`
+	Error       string `json:"error"`
 }
