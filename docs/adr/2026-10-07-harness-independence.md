@@ -24,7 +24,7 @@ pause agents and to read the subscription's quota figures
 
 [Harness integration](2026-10-07-harness-integration.md) puts the adapter
 behind an interface because the stream-json format is undocumented in
-places and, **UNVERIFIED**, declared subject to change.
+places.
 
 The initial brainstorm left open how agents reach the server to spawn
 agents, read and write inboxes, and answer permission prompts: through an
