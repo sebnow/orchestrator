@@ -3,7 +3,9 @@ package daemon
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"io"
+	"io/fs"
 	"log/slog"
 	"os"
 	"slices"
@@ -78,7 +80,7 @@ func TestGivenJournalWithoutExitWhenRecoveringThenHarnessExitedDaemonRestartedIs
 func TestGivenJournalThatEndsInExitWhenRecoveringThenItIsUnchanged(t *testing.T) {
 	stateDir := t.TempDir()
 	writeJournal(t, stateDir, "task-1", 1)
-	j, _, err := reopenJournal(stateDir, "task-1", testHarness)
+	j, _, err := reopenJournal(stateDir, "task-1", testHarness, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -155,4 +157,75 @@ func TestGivenACorruptJournalWhenRecoveringThenItIsLoggedAndLeftAndOtherTasksAre
 		t.Errorf("logs = %s", logs)
 	}
 	assertEndsWithRestartExit(t, readJournalFile(t, JournalPath(stateDir, "task-2")), 2, oldHarness)
+}
+
+// startingProcess records, as the service does before starting a process,
+// that task has a process with its journal open.
+func startingProcess(t *testing.T, stateDir string, task protocol.TaskID, rec taskRecord) {
+	t.Helper()
+	st := mustLoadState(t, stateDir)
+	if err := st.updateTask(task, func(r *taskRecord) { *r = rec }); err != nil {
+		t.Fatal(err)
+	}
+	j, err := st.openJournal(task, func(rec taskRecord) (*journal, error) {
+		j, _, err := reopenJournal(stateDir, task, oldHarness, rec.Seq)
+		if errors.Is(err, fs.ErrNotExist) {
+			return createJournalAfter(stateDir, task, oldHarness, rec.Seq)
+		}
+		return j, err
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	j.close()
+}
+
+func TestGivenProcessStartingAfterAnEndedOneWhenRecoveringThenItsJournalEndsAsRestartedAndTheTaskIsNotResumed(t *testing.T) {
+	stateDir := t.TempDir()
+	writeJournal(t, stateDir, "task-1", 1)
+	j, _, err := reopenJournal(stateDir, "task-1", oldHarness, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	j.appendControl(protocol.KindHarnessExited, protocol.HarnessExited{})
+	j.close()
+	settings := &taskSettings{Model: "fake-model"}
+	startingProcess(t, stateDir, "task-1", taskRecord{Seq: 3, Session: "session-1", Settings: settings})
+
+	st, _ := recoverIn(t, stateDir)
+
+	assertEndsWithRestartExit(t, readJournalFile(t, JournalPath(stateDir, "task-1")), 4, oldHarness)
+	if rec, _ := st.record("task-1"); !rec.Ended || rec.Running || rec.Seq != 4 {
+		t.Errorf("record = %+v", rec)
+	}
+}
+
+func TestGivenProcessStartingWithItsJournalDeletedWhenRecoveringThenANewJournalContinuesAfterTheRecordedSeq(t *testing.T) {
+	stateDir := t.TempDir()
+	settings := &taskSettings{Model: "fake-model"}
+	startingProcess(t, stateDir, "task-1", taskRecord{Acked: 6, Seq: 6, Session: "session-1", Settings: settings})
+
+	recoverIn(t, stateDir)
+
+	events := readJournalFile(t, JournalPath(stateDir, "task-1"))
+	if len(events) != 1 || events[0].Seq != 7 || events[0].Kind != protocol.KindHarnessExited {
+		t.Errorf("journal = %+v", events)
+	}
+}
+
+func TestGivenTaskBetweenProcessesWhenRecoveringThenItIsLeftResumable(t *testing.T) {
+	stateDir := t.TempDir()
+	st := mustLoadState(t, stateDir)
+	st.updateTask("task-1", func(r *taskRecord) {
+		*r = taskRecord{Acked: 6, Seq: 6, Session: "session-1", Settings: &taskSettings{Model: "fake-model"}}
+	})
+
+	recovered, _ := recoverIn(t, stateDir)
+
+	if _, err := os.Stat(JournalPath(stateDir, "task-1")); !errors.Is(err, fs.ErrNotExist) {
+		t.Errorf("journal: %v", err)
+	}
+	if rec, _ := recovered.record("task-1"); !rec.resumable() {
+		t.Errorf("record = %+v", rec)
+	}
 }

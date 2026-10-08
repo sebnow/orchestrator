@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io/fs"
 	"log/slog"
 	"net/http"
 	"net/url"
@@ -178,33 +179,45 @@ func (s *service) accept(command protocol.Command) error {
 	if err := s.state.recordStart(command.ID, task); err != nil {
 		return err
 	}
-	w := &worker{wake: make(chan struct{}, 1)}
 	s.mu.Lock()
-	s.running[task] = w
+	s.spawnLocked(task, command)
 	s.applied = command.ID
 	s.mu.Unlock()
-	s.workers.Go(func() { s.work(task, w, command) })
 	return nil
 }
 
-// route queues a command for its task's worker, or logs and skips it when
-// the daemon is not running the task.
+// route queues a command for its task's worker. A task the daemon knows
+// but has no worker for is between processes; a worker is started for
+// it. A command for a task the daemon does not know is logged and
+// skipped.
 func (s *service) route(command protocol.Command) {
 	s.mu.Lock()
 	w, ok := s.running[command.TaskID]
-	if ok {
+	known := ok || s.state.known(command.TaskID)
+	switch {
+	case ok:
 		w.queue = append(w.queue, command)
 		select {
 		case w.wake <- struct{}{}:
 		default:
 		}
+	case known:
+		s.spawnLocked(command.TaskID, command)
 	}
 	s.mu.Unlock()
-	if !ok {
-		s.log.Warn("command for a task this daemon is not running; skipped",
+	if !known {
+		s.log.Warn("command for a task this daemon does not know; skipped",
 			"command", command.ID, "kind", command.Kind, "task", command.TaskID)
 	}
 	s.recordApplied(command.ID)
+}
+
+// spawnLocked starts a worker for task with command queued. s.mu must be
+// held.
+func (s *service) spawnLocked(task protocol.TaskID, command protocol.Command) {
+	w := &worker{queue: []protocol.Command{command}, wake: make(chan struct{}, 1)}
+	s.running[task] = w
+	s.workers.Go(func() { s.work(task, w) })
 }
 
 func (s *service) recordApplied(id uint64) {
@@ -224,81 +237,124 @@ func (s *service) lastApplied() uint64 {
 	return s.applied
 }
 
-// work starts the task, then applies its commands until it ends or the
-// daemon shuts down, when it stops the task.
-func (s *service) work(task protocol.TaskID, w *worker, start protocol.Command) {
-	t := s.startTask(start)
-	var done <-chan struct{}
-	if t != nil {
-		done = t.Done()
-	}
-	for t != nil {
+// work applies task's commands in order while the task has a process or
+// commands are queued, starting a process for each command that needs
+// one. When the daemon shuts down it stops the running process. The
+// worker ends once the task has no process and no command waits.
+func (s *service) work(task protocol.TaskID, w *worker) {
+	var t *Task
+	for {
+		s.mu.Lock()
+		commands := w.queue
+		w.queue = nil
+		if len(commands) == 0 && t == nil {
+			delete(s.running, task)
+			s.mu.Unlock()
+			return
+		}
+		s.mu.Unlock()
+		for _, command := range commands {
+			t = s.apply(task, t, command)
+		}
+		if t == nil {
+			continue
+		}
 		select {
 		case <-w.wake:
-		case <-done:
+		case <-t.Done():
+			s.processEnded(task, t, false)
 			t = nil
-			continue
 		case <-s.stopping.Done():
 			ctx, cancel := context.WithTimeout(context.Background(), s.cfg.ShutdownTimeout)
 			t.Stop(ctx)
 			cancel()
+			s.processEnded(task, t, false)
 			t = nil
-			continue
 		}
-		s.mu.Lock()
-		commands := w.queue
-		w.queue = nil
-		s.mu.Unlock()
-		for _, command := range commands {
-			s.apply(t, command)
-		}
-	}
-
-	s.mu.Lock()
-	delete(s.running, task)
-	skipped := w.queue
-	s.mu.Unlock()
-	for _, command := range skipped {
-		s.log.Warn("command for a task that has ended; skipped", "command", command.ID, "kind", command.Kind, "task", task)
 	}
 }
 
-// startTask prepares the task's workspace and starts its harness. When
-// either fails the task's journal ends with harness_exited saying why, and
-// startTask returns nil.
+// awaitExit waits for the process t, whose turn is over, to exit, and
+// records its end. If the daemon shuts down first, or the process has not
+// exited within the shutdown timeout, it is stopped, and killed when it
+// does not exit then either.
+func (s *service) awaitExit(task protocol.TaskID, t *Task) {
+	timeout := time.NewTimer(s.cfg.ShutdownTimeout)
+	defer timeout.Stop()
+	select {
+	case <-t.Done():
+	case <-s.stopping.Done():
+		s.stopProcess(t)
+	case <-timeout.C:
+		s.log.Warn("process did not exit after its turn; stopping it", "task", task)
+		s.stopProcess(t)
+	}
+	s.processEnded(task, t, false)
+}
+
+func (s *service) stopProcess(t *Task) {
+	ctx, cancel := context.WithTimeout(context.Background(), s.cfg.ShutdownTimeout)
+	defer cancel()
+	t.Stop(ctx)
+}
+
+// processEnded records the end of task's process t: the harness session
+// and the seq to resume from, whether it was paused, and whether the task
+// has ended for good, because it was stopped or the harness failed. The
+// journal is released to the sender.
+func (s *service) processEnded(task protocol.TaskID, t *Task, stopped bool) {
+	st := t.State()
+	clean := st.Exit != nil && st.Exit.ExitCode == 0 && st.Exit.Error == ""
+	err := s.state.closeJournal(task, func(rec *taskRecord) {
+		rec.Seq = t.lastSeq()
+		if st.SessionID != "" {
+			rec.Session = st.SessionID
+		}
+		rec.Paused = st.Pause == Paused
+		rec.StopNote = ""
+		if rec.Paused {
+			rec.StopNote = st.StopNote
+		}
+		rec.Ended = rec.Ended || stopped || !clean
+	})
+	if err != nil {
+		s.log.Error("record the end of a process", "task", task, "error", err)
+	}
+	s.sender.notify(task)
+	s.log.Info("process ended", "task", task, "exit_code", st.Exit.ExitCode, "paused", st.Pause == Paused, "stopped", stopped)
+}
+
+// startTask prepares the task's workspace and starts its first process.
+// When either fails the task's journal ends with harness_exited saying
+// why, the task has ended for good, and startTask returns nil.
 func (s *service) startTask(command protocol.Command) *Task {
 	task := command.TaskID
-	j, err := createJournal(s.cfg.StateDir, task, s.cfg.Harness.Info())
+	j, err := s.state.openJournal(task, func(taskRecord) (*journal, error) {
+		return createJournal(s.cfg.StateDir, task, s.cfg.Harness.Info())
+	})
 	if err != nil {
 		// Without a journal the server cannot be told; a restart ends the
 		// task, which the state knows.
 		s.log.Error("start task", "task", task, "error", err)
 		return nil
 	}
-	fail := func(err error) *Task {
-		s.log.Warn("task did not start", "task", task, "error", err)
-		event, err := j.appendControl(protocol.KindHarnessExited, protocol.HarnessExited{ExitCode: -1, Error: err.Error()})
-		if err == nil {
-			s.sender.notify(event.TaskID)
-		}
-		j.close()
-		return nil
-	}
 	start, err := decodePayload[protocol.StartTask](command)
 	if err != nil {
-		return fail(err)
+		return s.failStart(task, j, err)
 	}
 	limits := PauseLimits(start.PauseLimits)
 	if err := limits.validate(); err != nil {
-		return fail(err)
+		return s.failStart(task, j, err)
+	}
+	settings := taskSettings{Model: start.Model, SystemPrompt: start.SystemPrompt, Acknowledge: limits.Acknowledge, Cleanup: limits.Cleanup}
+	if err := s.state.updateTask(task, func(rec *taskRecord) { rec.Settings = &settings }); err != nil {
+		return s.failStart(task, j, fmt.Errorf("record task settings: %w", err))
 	}
 	workdir := workspacePath(s.cfg.StateDir, task)
 	if err := prepareWorkspace(s.stopping, workdir, start.Workspace); err != nil {
-		return fail(fmt.Errorf("prepare workspace: %w", err))
+		return s.failStart(task, j, fmt.Errorf("prepare workspace: %w", err))
 	}
-	// The harness outlives the daemon's context; shutting down stops it
-	// gracefully.
-	t, err := s.daemon.start(context.Background(), j, TaskSpec{
+	return s.startProcess(task, j, TaskSpec{
 		ID:           task,
 		Prompt:       start.Prompt,
 		Workdir:      workdir,
@@ -306,10 +362,96 @@ func (s *service) startTask(command protocol.Command) *Task {
 		SystemPrompt: start.SystemPrompt,
 		Pause:        limits,
 	})
-	if err != nil {
-		s.log.Warn("task did not start", "task", task, "error", err)
-		return t
+}
+
+// resume starts a new process of task that continues its harness session
+// with prompt (docs/adr/2026-10-08-task-lifetime.md). A task that cannot
+// be resumed gets a harness_exited saying why, which ends it for good.
+func (s *service) resume(task protocol.TaskID, prompt string) (*Task, error) {
+	if s.stopping.Err() != nil {
+		return nil, errors.New("the daemon is shutting down")
 	}
-	s.log.Info("task started", "task", task, "workdir", workdir)
+	rec, ok := s.state.record(task)
+	if !ok || rec.Ended {
+		return nil, errors.New("the task has ended")
+	}
+	j, err := s.openTaskJournal(task)
+	if err != nil {
+		return nil, err
+	}
+	if !rec.resumable() {
+		s.failStart(task, j, errors.New("no harness session to resume"))
+		return nil, errors.New("no harness session to resume")
+	}
+	t := s.startProcess(task, j, TaskSpec{
+		ID:           task,
+		Prompt:       prompt,
+		Workdir:      workspacePath(s.cfg.StateDir, task),
+		Model:        rec.Settings.Model,
+		SystemPrompt: rec.Settings.SystemPrompt,
+		Pause:        rec.Settings.limits(),
+		Session:      rec.Session,
+	})
+	if t == nil {
+		return nil, errors.New("the harness did not start")
+	}
+	return t, nil
+}
+
+// startProcess starts a process of task on its open journal j. When the
+// harness does not start the journal ends with harness_exited saying why,
+// the task has ended for good, and startProcess returns nil.
+func (s *service) startProcess(task protocol.TaskID, j *journal, spec TaskSpec) *Task {
+	// The harness outlives the daemon's context; shutting down stops it
+	// gracefully.
+	t, err := s.daemon.start(context.Background(), j, spec)
+	if t == nil {
+		s.log.Warn("task did not start", "task", task, "error", err)
+		s.journalEnded(task, j)
+		return nil
+	}
+	if err != nil {
+		s.log.Warn("task prompt not sent", "task", task, "error", err)
+	}
+	s.log.Info("process started", "task", task, "workdir", spec.Workdir, "resumed", spec.Session != "")
 	return t
+}
+
+// failStart ends the journal j of task, whose process did not start,
+// with harness_exited saying why.
+func (s *service) failStart(task protocol.TaskID, j *journal, cause error) *Task {
+	s.log.Warn("task did not start", "task", task, "error", cause)
+	j.appendControl(protocol.KindHarnessExited, protocol.HarnessExited{ExitCode: -1, Error: cause.Error()})
+	j.close()
+	s.journalEnded(task, j)
+	return nil
+}
+
+// journalEnded records that task ended for good without a process
+// running, and releases its closed journal j.
+func (s *service) journalEnded(task protocol.TaskID, j *journal) {
+	if err := s.state.closeJournal(task, func(rec *taskRecord) {
+		rec.Seq = j.lastSeq()
+		rec.Ended = true
+	}); err != nil {
+		s.log.Error("record the end of a task", "task", task, "error", err)
+	}
+	s.sender.notify(task)
+}
+
+// openTaskJournal opens the journal of a task that has no process: the
+// one its last process left, or a new one continuing after its last seq
+// when the sender has deleted that.
+func (s *service) openTaskJournal(task protocol.TaskID) (*journal, error) {
+	j, err := s.state.openJournal(task, func(rec taskRecord) (*journal, error) {
+		j, _, err := reopenJournal(s.cfg.StateDir, task, s.cfg.Harness.Info(), rec.Seq)
+		if errors.Is(err, fs.ErrNotExist) {
+			return createJournalAfter(s.cfg.StateDir, task, s.cfg.Harness.Info(), rec.Seq)
+		}
+		return j, err
+	})
+	if err != nil {
+		return nil, fmt.Errorf("open journal: %w", err)
+	}
+	return j, nil
 }

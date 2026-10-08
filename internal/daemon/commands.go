@@ -156,55 +156,133 @@ func readEvents(r io.Reader, seen func(), dispatch func(id, data string) error) 
 	return scanner.Err()
 }
 
-// apply applies a command to its running task. A command that cannot
-// apply is logged and dropped.
-func (s *service) apply(t *Task, command protocol.Command) {
-	err := s.applyCommand(t, command)
-	if err != nil {
-		s.log.Warn("command not applied", "command", command.ID, "kind", command.Kind, "task", command.TaskID, "error", err)
-		return
+// apply applies a command to task, whose process is t, or nil when it
+// has none, and returns the task's process afterwards. A command that
+// cannot apply is logged and dropped.
+func (s *service) apply(task protocol.TaskID, t *Task, command protocol.Command) *Task {
+	if t != nil && isDone(t) {
+		s.processEnded(task, t, false)
+		t = nil
 	}
-	s.log.Info("command applied", "command", command.ID, "kind", command.Kind, "task", command.TaskID)
+	t, err := s.applyCommand(task, t, command)
+	if err != nil {
+		s.log.Warn("command not applied", "command", command.ID, "kind", command.Kind, "task", task, "error", err)
+		return t
+	}
+	s.log.Info("command applied", "command", command.ID, "kind", command.Kind, "task", task)
+	return t
 }
 
-func (s *service) applyCommand(t *Task, command protocol.Command) error {
+// errNoProcess reports a command that needs a running process while the
+// task is between processes.
+var errNoProcess = errors.New("the task has no running process")
+
+func (s *service) applyCommand(task protocol.TaskID, t *Task, command protocol.Command) (*Task, error) {
 	switch command.Kind {
+	case protocol.CommandStartTask:
+		if t != nil {
+			return t, errors.New("the task is already running")
+		}
+		if rec, _ := s.state.record(task); rec.Settings != nil || rec.Seq > 0 {
+			return nil, errors.New("the task has already started")
+		}
+		return s.startTask(command), nil
 	case protocol.CommandPrompt:
 		prompt, err := decodePayload[protocol.Prompt](command)
 		if err != nil {
-			return err
+			return t, err
 		}
-		if err := s.waitForPauseToSettle(t); err != nil {
-			return err
-		}
-		return t.Prompt(prompt.Text)
-	case protocol.CommandPause:
-		return t.Pause()
+		return s.prompt(task, t, prompt.Text)
 	case protocol.CommandResume:
-		if err := s.waitForPauseToSettle(t); err != nil {
-			return err
+		if t != nil {
+			if err := s.waitForPauseToSettle(t); err != nil {
+				return t, err
+			}
+			if state := t.State(); !state.Closing && state.Running {
+				return t, errors.New("task is not paused")
+			}
+			s.awaitExit(task, t)
 		}
-		if state := t.State(); state.Pause != Paused {
-			return fmt.Errorf("task is not paused")
+		// The owner sees the task as paused, or pausing, when it issues a
+		// resume; a task whose pause did not take effect before its turn
+		// ended resumes all the same, so that it does not stay running
+		// with no process.
+		rec, _ := s.state.record(task)
+		text := resumePrompt
+		if rec.Paused && rec.StopNote != "" {
+			text += " Your note when you stopped: " + rec.StopNote
 		}
-		return t.Prompt(resumePrompt)
+		return s.resume(task, text)
+	case protocol.CommandPause:
+		if t == nil {
+			return nil, errNoProcess
+		}
+		return t, t.Pause()
 	case protocol.CommandInterrupt:
-		return t.Interrupt()
+		if t == nil {
+			return nil, errNoProcess
+		}
+		return t, t.Interrupt()
 	case protocol.CommandStop:
+		if t == nil {
+			return nil, s.stopIdle(task)
+		}
 		ctx, cancel := context.WithTimeout(context.Background(), s.cfg.ShutdownTimeout)
 		defer cancel()
 		t.Stop(ctx)
-		return nil
+		s.processEnded(task, t, true)
+		return nil, nil
 	case protocol.CommandAnswerPermission:
 		answer, err := decodePayload[protocol.AnswerPermission](command)
 		if err != nil {
-			return err
+			return t, err
 		}
-		return t.AnswerPermission(answer.RequestID, harness.Decision{Allow: answer.Allow, Message: answer.Message})
-	case protocol.CommandStartTask:
-		return errors.New("the task is already running")
+		if t == nil {
+			return nil, fmt.Errorf("%w: %s", ErrStale, answer.RequestID)
+		}
+		return t, t.AnswerPermission(answer.RequestID, harness.Decision{Allow: answer.Allow, Message: answer.Message})
 	default:
-		return fmt.Errorf("unknown command kind %q", command.Kind)
+		return t, fmt.Errorf("unknown command kind %q", command.Kind)
+	}
+}
+
+// prompt sends text to t while its turn runs. Once t's turn is over, or
+// when the task has no process, it waits for t to exit and resumes the
+// task in a new process with text.
+func (s *service) prompt(task protocol.TaskID, t *Task, text string) (*Task, error) {
+	if t != nil {
+		if err := s.waitForPauseToSettle(t); err != nil {
+			return t, err
+		}
+		err := t.Prompt(text)
+		if !errors.Is(err, ErrTaskEnded) {
+			return t, err
+		}
+		s.awaitExit(task, t)
+	}
+	return s.resume(task, text)
+}
+
+// stopIdle ends a task that has no process for good. It journals a
+// harness_exited, so that the server records the stop even when it still
+// shows the task running.
+func (s *service) stopIdle(task protocol.TaskID) error {
+	j, err := s.openTaskJournal(task)
+	if err != nil {
+		return err
+	}
+	_, err = j.appendControl(protocol.KindHarnessExited, protocol.HarnessExited{ExitCode: -1, Error: "stopped with no process running"})
+	j.close()
+	s.journalEnded(task, j)
+	return err
+}
+
+func isDone(t *Task) bool {
+	select {
+	case <-t.Done():
+		return true
+	default:
+		return false
 	}
 }
 

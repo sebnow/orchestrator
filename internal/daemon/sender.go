@@ -39,7 +39,8 @@ var errRejected = errors.New("rejected by the server")
 
 // sender sends every task's journal to the server, in seq order per task,
 // and records how far the server holds each. A task whose journal ends in
-// harness_exited and is held whole is forgotten and its journal deleted.
+// harness_exited and is held whole has its journal deleted, and is
+// forgotten unless it can be resumed (docs/adr/2026-10-08-task-lifetime.md).
 //
 // After any failure to reach the server it waits with backoff, and its
 // next attempt starts with GET /acks so that every task is replayed from
@@ -73,7 +74,9 @@ type outbox struct {
 	// line boundary.
 	offset int64
 	acked  uint64
-	// exited is set once the harness_exited event is held by the server.
+	// exited is set while the last event the server holds is
+	// harness_exited: the journal ends there unless a new process of the
+	// task appends to it.
 	exited bool
 	// rejected stops sending a task the server refused.
 	rejected bool
@@ -206,8 +209,8 @@ func (s *sender) setAcked(task protocol.TaskID, ob *outbox, held uint64) {
 	}
 }
 
-// sendTask sends task's unsent events in batches, then forgets the task
-// if it has ended and the server holds all of it.
+// sendTask sends task's unsent events in batches, then deletes its
+// journal if its process has ended and the server holds all of it.
 func (s *sender) sendTask(ctx context.Context, task protocol.TaskID, ob *outbox) error {
 	for !ob.rejected {
 		lines, err := s.readBatch(ob)
@@ -236,29 +239,29 @@ func (s *sender) sendTask(ctx context.Context, task protocol.TaskID, ob *outbox)
 		for _, line := range lines {
 			if line.seq <= h {
 				ob.offset = line.end
-				ob.exited = ob.exited || line.kind == protocol.KindHarnessExited
+				ob.exited = line.kind == protocol.KindHarnessExited
 			}
 		}
 		s.setAcked(task, ob, max(h, ob.acked))
 	}
 	if ob.exited && !ob.rejected {
-		s.forget(task)
+		s.dropJournal(task, ob)
 	}
 	return nil
 }
 
-// forget drops a task the server holds whole. The state forgets it before
-// the journal is deleted: a journal the state does not know is adopted on
-// restart and sent again, which the server ignores, while a known task
-// without a journal would be ended a second time.
-func (s *sender) forget(task protocol.TaskID) {
-	if err := s.state.forget(task); err != nil {
-		s.log.Error("forget task", "task", task, "error", err)
+// dropJournal deletes the journal of a task whose process has ended and
+// which the server holds whole. The state keeps the task when it can be
+// resumed; a later process starts a new journal after the held seq. The
+// state refuses while a new process holds the journal.
+func (s *sender) dropJournal(task protocol.TaskID, ob *outbox) {
+	dropped, err := s.state.dropJournal(task, ob.acked, ob.path)
+	if err != nil {
+		s.log.Error("delete journal", "task", task, "error", err)
 		return
 	}
-	delete(s.outboxes, task)
-	if err := os.Remove(JournalPath(s.stateDir, task)); err != nil {
-		s.log.Error("delete journal", "task", task, "error", err)
+	if dropped {
+		delete(s.outboxes, task)
 	}
 }
 
@@ -298,7 +301,7 @@ func (s *sender) readBatch(ob *outbox) ([]journalLine, error) {
 		offset += int64(len(raw))
 		if head.Seq <= ob.acked {
 			ob.offset = offset
-			ob.exited = ob.exited || head.Kind == protocol.KindHarnessExited
+			ob.exited = head.Kind == protocol.KindHarnessExited
 			continue
 		}
 		if len(lines) > 0 && size+len(raw) > s.batchBytes {

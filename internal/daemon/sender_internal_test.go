@@ -36,7 +36,9 @@ func newSenderFixture(t *testing.T) *senderFixture {
 	if err := f.state.recordStart(1, f.task); err != nil {
 		t.Fatal(err)
 	}
-	j, err := createJournal(f.stateDir, f.task, testHarness)
+	j, err := f.state.openJournal(f.task, func(taskRecord) (*journal, error) {
+		return createJournal(f.stateDir, f.task, testHarness)
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -57,9 +59,25 @@ func (f *senderFixture) appendOutputs(t *testing.T, count int) {
 	f.sender.notify(f.task)
 }
 
+// appendExit ends the journal and releases it as the service does when a
+// process ends, recording session as the session to resume; empty makes
+// the task one that cannot be resumed.
 func (f *senderFixture) appendExit(t *testing.T) {
 	t.Helper()
+	f.appendExitResumable(t, "")
+}
+
+func (f *senderFixture) appendExitResumable(t *testing.T, session string) {
+	t.Helper()
 	if _, err := f.journal.appendControl(protocol.KindHarnessExited, protocol.HarnessExited{}); err != nil {
+		t.Fatal(err)
+	}
+	f.journal.close()
+	err := f.state.closeJournal(f.task, func(rec *taskRecord) {
+		rec.Seq, rec.Session = f.journal.lastSeq(), session
+		rec.Settings = &taskSettings{Model: "fake-model"}
+	})
+	if err != nil {
 		t.Fatal(err)
 	}
 	f.sender.notify(f.task)
@@ -266,5 +284,38 @@ func TestGivenForgottenTaskWhenNamedAgainAndReconnectingThenItStaysForgotten(t *
 
 	if mustLoadState(t, f.stateDir).known(f.task) {
 		t.Error("forgotten task is known again")
+	}
+}
+
+func TestGivenResumableTaskWhenTheServerHoldsItsProcessWholeThenTheJournalGoesAndTheNextProcessContinuesItsSeqs(t *testing.T) {
+	f := newSenderFixture(t)
+	f.run(t)
+	f.appendOutputs(t, 2)
+	f.appendExitResumable(t, "session-1")
+	f.waitHeld(t, 3)
+	eventually(t, "the journal to be deleted", func() bool {
+		_, err := os.Stat(JournalPath(f.stateDir, f.task))
+		return errors.Is(err, fs.ErrNotExist)
+	})
+	if rec, ok := mustLoadState(t, f.stateDir).record(f.task); !ok || rec.Seq != 3 || rec.Session != "session-1" {
+		t.Fatalf("record = %+v, %v", rec, ok)
+	}
+
+	j, err := f.state.openJournal(f.task, func(rec taskRecord) (*journal, error) {
+		return createJournalAfter(f.stateDir, f.task, testHarness, rec.Seq)
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.journal = j
+	f.appendOutputs(t, 1)
+
+	events := f.waitHeld(t, 4)
+	assertContiguous(t, events)
+	if len(events) != 4 || events[3].Kind != protocol.KindHarnessOutput {
+		t.Errorf("events: %s", describe(events))
+	}
+	if _, err := os.Stat(JournalPath(f.stateDir, f.task)); err != nil {
+		t.Errorf("journal of the running process: %v", err)
 	}
 }

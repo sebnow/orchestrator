@@ -18,10 +18,13 @@ const restartError = "daemon restarted"
 // recoverTasks ends every task a previous daemon process left unfinished.
 // The harness exits when the daemon does, so none of those tasks can be
 // running; each journal that does not end in harness_exited gets one,
-// with ExitCode -1 and Error "daemon restarted". A task the state knows
-// but that has no journal was accepted and never started; it gets a
-// journal holding only that event. A journal the state does not know is
-// adopted, so that its events are sent.
+// with ExitCode -1 and Error "daemon restarted", and its task is not
+// resumed. So does a task whose record says a process was running or
+// starting, whatever its journal ends in. A task the state knows but that
+// has no journal and no event was accepted and never started; it gets a
+// journal holding only that event. A task with events but no journal and
+// no process is between processes, and stays as it is. A journal the state does not know is adopted, so that
+// its events are sent.
 //
 // A journal that cannot be read is logged and left alone.
 func (d *Daemon) recoverTasks(st *state, log *slog.Logger) error {
@@ -38,22 +41,40 @@ func (d *Daemon) recoverTasks(st *state, log *slog.Logger) error {
 	}
 	exit := protocol.HarnessExited{ExitCode: -1, Error: restartError}
 	for _, task := range st.tasks() {
-		j, end, err := reopenJournal(d.stateDir, task, d.harness.Info())
+		rec, _ := st.record(task)
+		j, end, err := reopenJournal(d.stateDir, task, d.harness.Info(), rec.Seq)
 		if errors.Is(err, fs.ErrNotExist) {
-			j, err = createJournal(d.stateDir, task, d.harness.Info())
+			if !rec.Running && (rec.Seq > 0 || rec.Acked > 0) {
+				continue
+			}
+			j, err = createJournalAfter(d.stateDir, task, d.harness.Info(), rec.Seq)
 		}
 		if err != nil {
 			log.Error("recover task", "task", task, "error", err)
 			continue
 		}
-		if !end.exited {
+		ended := false
+		// A journal that ends in harness_exited may end with the process
+		// before the one that was starting.
+		if !end.exited || rec.Running {
 			if _, err := j.appendControl(protocol.KindHarnessExited, exit); err != nil {
 				log.Error("recover task", "task", task, "error", err)
 			} else {
+				ended = true
 				log.Info("ended task left by the previous daemon", "task", task)
 			}
 		}
+		seq := j.lastSeq()
 		j.close()
+		// The previous daemon may have stopped before recording the end of
+		// the task's last process.
+		if err := st.updateTask(task, func(rec *taskRecord) {
+			rec.Seq = max(rec.Seq, seq)
+			rec.Ended = rec.Ended || ended
+			rec.Running = false
+		}); err != nil {
+			return err
+		}
 	}
 	return nil
 }

@@ -302,7 +302,6 @@ const (
 		"never in parallel and never in the background. After each call finishes, write the single " +
 		"word DONE-1, DONE-2 or DONE-3 before starting the next call. When all three are done, " +
 		"reply with exactly FINISHED."
-	resumePrompt = "Resume the task from where you stopped and finish it."
 )
 
 // allowPings allows ping and the gateway's own tools, denies anything
@@ -358,9 +357,10 @@ func interruptedBefore(t *testing.T, events []protocol.Event, seq uint64) bool {
 	return false
 }
 
-// Cost: one claude process; the three-step turn, cut short by the pause,
-// and a resume turn.
-func TestLiveGivenThreeStepTaskWhenPausedDuringTheFirstStepThenTheAgentAcknowledgesStopsAndResumes(t *testing.T) {
+// Cost: one claude process; the three-step turn, cut short by the pause.
+// The process exits once the pause has settled; cmd/daemon's live test
+// resumes such a task in a new process.
+func TestLiveGivenThreeStepTaskWhenPausedDuringTheFirstStepThenTheAgentAcknowledgesStopsAndTheProcessExits(t *testing.T) {
 	ctx, cancel := context.WithTimeout(t.Context(), 6*time.Minute)
 	defer cancel()
 	lt := startLiveTask(t, ctx, threeStepPrompt, daemon.PauseLimits{Acknowledge: 90 * time.Second, Cleanup: time.Minute})
@@ -376,61 +376,43 @@ func TestLiveGivenThreeStepTaskWhenPausedDuringTheFirstStepThenTheAgentAcknowled
 	if err := lt.task.Pause(); err != nil {
 		t.Fatal(err)
 	}
-	paused := waitFor(t, ctx, lt.task, "the pause to settle", func(s daemon.State) bool { return !s.Running || s.Pause == daemon.Paused })
-	pausedEvents := lt.journal(t)
-	pausedAt := pausedEvents[len(pausedEvents)-1].Seq
-
-	if err := lt.task.Prompt(resumePrompt); err != nil {
-		t.Fatal(err)
-	}
-	resumed := waitFor(t, ctx, lt.task, "the resume turn to end", func(s daemon.State) bool { return !s.Running || (s.Pause == daemon.NotPaused && !s.Busy) })
-	lt.task.Stop(ctx)
+	paused := waitFor(t, ctx, lt.task, "the process to exit", func(s daemon.State) bool { return !s.Running })
 
 	t.Logf("paused state %+v", paused)
-	if !paused.PausePickedUp {
-		t.Error("no turn echoed the pause request's uuid")
+	if paused.Pause != daemon.Paused || !paused.PausePickedUp || paused.StopNote == "" || paused.SessionID == "" {
+		t.Errorf("state after exit = %+v", paused)
 	}
-	if paused.StopNote == "" {
-		t.Error("no stop note")
+	if paused.Exit.ExitCode != 0 || paused.Exit.Error != "" {
+		t.Errorf("exit = %+v", paused.Exit)
 	}
 	events := lt.journal(t)
 	assertContiguous(t, events)
+	settledAt := uint64(0)
 	acknowledged := 0
 	for _, event := range events {
-		if event.Kind == protocol.KindPauseAcknowledged && event.Seq <= pausedAt {
+		switch event.Kind {
+		case protocol.KindPauseAcknowledged:
 			acknowledged++
+		case protocol.KindPauseSettled:
+			settledAt = event.Seq
 		}
 	}
-	if acknowledged == 0 {
-		t.Error("the agent did not call acknowledge_pause before the pause settled")
+	if acknowledged == 0 || settledAt == 0 {
+		t.Errorf("acknowledgements %d, settled at seq %d", acknowledged, settledAt)
 	}
-	if interruptedBefore(t, events, pausedAt+1) {
+	if interruptedBefore(t, events, settledAt+1) {
 		t.Error("the daemon had to interrupt")
 	}
-	for _, o := range outputs(t, events) {
-		if ids := o.msg.Answering(); ids != nil {
-			t.Logf("seq %d %s/%s answers %q", o.event.Seq, o.msg.Type, o.msg.Subtype, ids)
-		}
-	}
-	pings := pingsBefore(t, events, pausedAt+1)
+	pings := pingsBefore(t, events, settledAt+1)
 	t.Logf("pings before the pause settled: %d", pings)
 	if pings >= 3 {
 		t.Errorf("the agent ran all %d pings before stopping", pings)
 	}
-	res := results(outputs(t, events))
-	final, _ := res[len(res)-1].msg.Result()
-	t.Logf("results: %d; final %q; resumed state %+v", len(res), final.Result, resumed)
-	if !strings.Contains(final.Result, "FINISHED") {
-		t.Errorf("final reply = %q, want FINISHED", final.Result)
-	}
-	if total := pingsBefore(t, events, ^uint64(0)); total < 3 {
-		t.Errorf("only %d pings over both turns", total)
-	}
 }
 
-// Cost: one claude process; the three-step turn, interrupted, possibly a
-// turn for the queued pause request, and a one-word follow-up turn.
-func TestLiveGivenPauseTheAgentCannotMeetWhenTheLimitPassesThenItIsInterruptedAndTakesAFollowUp(t *testing.T) {
+// Cost: one claude process; the three-step turn, interrupted, and
+// possibly a turn for the queued pause request.
+func TestLiveGivenPauseTheAgentCannotMeetWhenTheLimitPassesThenItIsInterruptedAndTheProcessExits(t *testing.T) {
 	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Minute)
 	defer cancel()
 	lt := startLiveTask(t, ctx, threeStepPrompt, daemon.PauseLimits{Acknowledge: time.Millisecond, Cleanup: time.Millisecond})
@@ -446,35 +428,19 @@ func TestLiveGivenPauseTheAgentCannotMeetWhenTheLimitPassesThenItIsInterruptedAn
 	if err := lt.task.Pause(); err != nil {
 		t.Fatal(err)
 	}
-	paused := waitFor(t, ctx, lt.task, "the pause to settle", func(s daemon.State) bool { return !s.Running || s.Pause == daemon.Paused })
-	if !paused.Running {
-		t.Fatalf("harness exited during the pause: %+v", paused.Exit)
-	}
-	turnsAtPause := paused.TurnsEnded
-	pausedEvents := lt.journal(t)
-	pausedAt := pausedEvents[len(pausedEvents)-1].Seq
-	if err := lt.task.Prompt("Reply with exactly the word AFTER and nothing else."); err != nil {
-		t.Fatal(err)
-	}
-	after := waitFor(t, ctx, lt.task, "the follow-up to end", turnsSettled(turnsAtPause+1))
-	lt.task.Stop(ctx)
+	paused := waitFor(t, ctx, lt.task, "the process to exit", func(s daemon.State) bool { return !s.Running })
 
-	t.Logf("paused state %+v; after %+v", paused, after)
-	if !after.Running {
-		t.Fatalf("harness exited before the follow-up ended: %+v", after.Exit)
+	t.Logf("state after exit %+v", paused)
+	if paused.Pause != daemon.Paused || paused.Exit.ExitCode != 0 {
+		t.Errorf("state after exit = %+v", paused)
 	}
 	events := lt.journal(t)
 	assertContiguous(t, events)
-	if !interruptedBefore(t, events, pausedAt+1) {
-		t.Error("no control_response before the pause settled: the interrupt did not reach the harness")
+	if !interruptedBefore(t, events, ^uint64(0)) {
+		t.Error("no control_response: the interrupt did not reach the harness")
 	}
-	res := results(outputs(t, events))
-	for _, o := range res {
+	for _, o := range results(outputs(t, events)) {
 		r, _ := o.msg.Result()
 		t.Logf("result seq %d %s %s: %q", o.event.Seq, o.msg.Subtype, r.TerminalReason, r.Result)
-	}
-	final, _ := res[len(res)-1].msg.Result()
-	if strings.TrimSpace(final.Result) != "AFTER" {
-		t.Errorf("follow-up reply = %q", final.Result)
 	}
 }

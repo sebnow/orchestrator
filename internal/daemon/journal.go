@@ -49,6 +49,13 @@ type journal struct {
 // to disk: the journal protects against a dropped connection or a daemon
 // restart, which the page cache survives.
 func createJournal(stateDir string, task protocol.TaskID, harness protocol.Harness) (*journal, error) {
+	return createJournalAfter(stateDir, task, harness, 0)
+}
+
+// createJournalAfter creates a journal for task whose first event has seq
+// after+1: the task's earlier events were in a journal the server held
+// whole and the daemon deleted.
+func createJournalAfter(stateDir string, task protocol.TaskID, harness protocol.Harness, after uint64) (*journal, error) {
 	path := JournalPath(stateDir, task)
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return nil, fmt.Errorf("create journal directory: %w", err)
@@ -60,7 +67,7 @@ func createJournal(stateDir string, task protocol.TaskID, harness protocol.Harne
 	if err != nil {
 		return nil, fmt.Errorf("create journal: %w", err)
 	}
-	return &journal{task: task, harness: harness, file: file}, nil
+	return &journal{task: task, harness: harness, file: file, seq: after}, nil
 }
 
 // appendOutput journals one line of harness output. A line that is not
@@ -114,6 +121,13 @@ func (j *journal) append(kind protocol.Kind, payload json.RawMessage) (protocol.
 	return event, nil
 }
 
+// lastSeq returns the seq of the last event journaled.
+func (j *journal) lastSeq() uint64 {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	return j.seq
+}
+
 func (j *journal) close() error {
 	j.mu.Lock()
 	defer j.mu.Unlock()
@@ -136,8 +150,10 @@ type journalEnd struct {
 
 // scanJournal reads the complete lines of the journal at path. A last line
 // without its newline is a write the daemon did not finish; it is not
-// counted. A complete line that is not an event, or a seq out of order,
-// is an error.
+// counted. The first event may have any seq, because a journal created
+// after an earlier one was deleted continues the task's seqs; each later
+// event must follow the one before. A complete line that is not an event,
+// or a seq out of order, is an error.
 func scanJournal(path string) (journalEnd, error) {
 	file, err := os.Open(path)
 	if err != nil {
@@ -158,7 +174,7 @@ func scanJournal(path string) (journalEnd, error) {
 		if err := json.Unmarshal(line, &event); err != nil {
 			return journalEnd{}, fmt.Errorf("journal %s at byte %d: %w", path, end.size, err)
 		}
-		if event.Seq != end.seq+1 {
+		if end.size > 0 && event.Seq != end.seq+1 || event.Seq == 0 {
 			return journalEnd{}, fmt.Errorf("journal %s at byte %d: seq %d follows %d", path, end.size, event.Seq, end.seq)
 		}
 		end = journalEnd{seq: event.Seq, harness: event.Harness, exited: event.Kind == protocol.KindHarnessExited, size: end.size + int64(len(line))}
@@ -167,8 +183,10 @@ func scanJournal(path string) (journalEnd, error) {
 
 // reopenJournal opens task's existing journal to append after its last
 // complete event, cutting off a torn last line. Appended events carry the
-// harness of the last event, or fallback when the journal is empty.
-func reopenJournal(stateDir string, task protocol.TaskID, fallback protocol.Harness) (*journal, journalEnd, error) {
+// harness of the last event, or fallback when the journal is empty. An
+// empty journal continues after seq after, the task's last seq recorded
+// before the journal was created.
+func reopenJournal(stateDir string, task protocol.TaskID, fallback protocol.Harness, after uint64) (*journal, journalEnd, error) {
 	path := JournalPath(stateDir, task)
 	end, err := scanJournal(path)
 	if err != nil {
@@ -182,8 +200,9 @@ func reopenJournal(stateDir string, task protocol.TaskID, fallback protocol.Harn
 		return nil, journalEnd{}, fmt.Errorf("open journal: %w", err)
 	}
 	harness := end.harness
-	if end.seq == 0 {
+	if end.size == 0 {
 		harness = fallback
+		end.seq = after
 	}
 	return &journal{task: task, harness: harness, file: file, seq: end.seq}, end, nil
 }

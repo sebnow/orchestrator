@@ -54,12 +54,20 @@ type TaskSpec struct {
 	Model        string
 	SystemPrompt string
 	Pause        PauseLimits
+	// Session, when set, is the harness session the process resumes.
+	Session string
 }
 
 // State is a snapshot of a task.
 type State struct {
 	// Running is true until the harness process has exited.
 	Running bool
+	// Closing is true once the daemon has closed the harness's input
+	// because its turn ended; the process takes no more commands.
+	Closing bool
+	// SessionID is the harness session the process reported, or the one
+	// it resumed until it reports one.
+	SessionID string
 	// Busy is true while a prompt the daemon sent has not been answered by
 	// the end of a turn.
 	Busy bool
@@ -95,6 +103,8 @@ type Task struct {
 	outstanding map[string]bool
 	permissions map[string]*pendingPermission
 	turnsEnded  int
+	closing     bool
+	session     string
 	exit        *protocol.HarnessExited
 	limits      PauseLimits
 	pause       pause
@@ -132,6 +142,7 @@ func (d *Daemon) start(ctx context.Context, j *journal, spec TaskSpec) (*Task, e
 		outstanding: map[string]bool{},
 		permissions: map[string]*pendingPermission{},
 		limits:      spec.Pause,
+		session:     spec.Session,
 	}
 	url, unregister, err := d.gateway.register(spec.ID, gatewayTask{
 		permission:       t.askPermission,
@@ -146,6 +157,7 @@ func (d *Daemon) start(ctx context.Context, j *journal, spec TaskSpec) (*Task, e
 		Workdir:      spec.Workdir,
 		Model:        spec.Model,
 		SystemPrompt: spec.SystemPrompt,
+		Resume:       spec.Session,
 		Gateway: harness.Gateway{
 			URL:            url,
 			PermissionTool: PermissionTool,
@@ -162,11 +174,15 @@ func (d *Daemon) start(ctx context.Context, j *journal, spec TaskSpec) (*Task, e
 	if _, err := t.record(protocol.KindHarnessStarted, protocol.HarnessStarted{PID: proc.PID(), Model: spec.Model, Workdir: spec.Workdir}); err != nil {
 		proc.Kill()
 	}
-	go t.run(unregister)
+	// The prompt is outstanding before any output is read, so that no
+	// turn can end the process before it is answered.
+	var promptErr error
 	if spec.Prompt != "" {
-		if err := t.Prompt(spec.Prompt); err != nil {
-			return t, fmt.Errorf("send task prompt: %w", err)
-		}
+		promptErr = t.Prompt(spec.Prompt)
+	}
+	go t.run(unregister)
+	if promptErr != nil {
+		return t, fmt.Errorf("send task prompt: %w", promptErr)
 	}
 	return t, nil
 }
@@ -210,11 +226,17 @@ func (t *Task) run(unregister func()) {
 			}
 		}
 		// The settlement is journaled before the next line is read, so it
-		// precedes any output of a turn that resumes the task.
-		if settled := t.handleOutput(out); settled != nil {
+		// precedes the harness's exit.
+		settled, turnOver := t.handleOutput(out)
+		if settled != nil {
 			if _, err := t.record(protocol.KindPauseSettled, *settled); err != nil {
 				t.proc.Kill()
 			}
+		}
+		if turnOver {
+			// A failed close means the harness is gone; its exit ends the
+			// task.
+			t.proc.CloseInput()
 		}
 	}
 	if readErr != nil {
@@ -237,16 +259,23 @@ func (t *Task) run(unregister func()) {
 }
 
 // handleOutput updates the task's state from one line of output. It
-// returns the settlement to record when the line settles a pause.
-func (t *Task) handleOutput(out harness.Output) *protocol.PauseSettled {
+// returns the settlement to record when the line settles a pause, and
+// whether the line ends the process's last turn: a turn ended and nothing
+// the daemon sent waits for another (docs/adr/2026-10-08-task-lifetime.md).
+// From then on the task takes no more commands, so nothing can be written
+// to the harness after the daemon decides to close its input.
+func (t *Task) handleOutput(out harness.Output) (settled *protocol.PauseSettled, turnOver bool) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
+	if out.SessionID != "" {
+		t.session = out.SessionID
+	}
 	if t.pause.unsettled() && !t.pause.pickedUp && slices.Contains(out.Answering, t.pause.id) {
 		t.pause.pickedUp = true
 		t.notifyLocked()
 	}
 	if !out.TurnEnded {
-		return nil
+		return nil, false
 	}
 	t.turnsEnded++
 	for _, id := range out.Answering {
@@ -254,14 +283,28 @@ func (t *Task) handleOutput(out harness.Output) *protocol.PauseSettled {
 	}
 	// The pause has taken effect once the turn that answers it has ended,
 	// whether the agent stopped by itself or was interrupted.
-	var settled *protocol.PauseSettled
 	if t.pause.unsettled() && !t.outstanding[t.pause.id] {
 		settled = &protocol.PauseSettled{Interrupted: t.pause.state == PauseInterrupting}
 		t.pause.state = Paused
 		t.pause.stopTimer()
 	}
+	if len(t.outstanding) == 0 && !t.closing {
+		t.closing = true
+		turnOver = true
+	}
 	t.notifyLocked()
-	return settled
+	return settled, turnOver
+}
+
+// ended reports whether the process takes no more commands: its turn is
+// over or it has exited. t.mu must be held.
+func (t *Task) ended() bool {
+	return t.closing || t.exit != nil
+}
+
+// lastSeq returns the seq of the task's last journaled event.
+func (t *Task) lastSeq() uint64 {
+	return t.journal.lastSeq()
 }
 
 // notifyLocked wakes every WaitFor. t.mu must be held.
@@ -280,6 +323,8 @@ func (t *Task) State() State {
 func (t *Task) stateLocked() State {
 	s := State{
 		Running:       t.exit == nil,
+		Closing:       t.closing,
+		SessionID:     t.session,
 		Busy:          len(t.outstanding) > 0,
 		TurnsEnded:    t.turnsEnded,
 		Exit:          t.exit,
@@ -317,14 +362,16 @@ func (t *Task) Done() <-chan struct{} {
 	return t.done
 }
 
-// Prompt sends text to the harness as a user prompt: a follow-up, or the
-// resume of a paused task. While a pause is in progress it returns ErrBusy.
+// Prompt sends text to the harness as a user prompt while a turn runs or
+// before the first. While a pause is in progress it returns ErrBusy. Once
+// the process's turn is over it returns ErrTaskEnded: the prompt belongs
+// to the task's next process.
 func (t *Task) Prompt(text string) error {
 	t.commands.Lock()
 	defer t.commands.Unlock()
 	id := newID()
 	t.mu.Lock()
-	if t.exit != nil {
+	if t.ended() {
 		t.mu.Unlock()
 		return ErrTaskEnded
 	}
@@ -357,7 +404,10 @@ func (t *Task) Interrupt() error {
 
 // interrupt sends the interrupt. t.commands must be held.
 func (t *Task) interrupt() error {
-	if !t.State().Running {
+	t.mu.Lock()
+	ended := t.ended()
+	t.mu.Unlock()
+	if ended {
 		return ErrTaskEnded
 	}
 	if err := t.proc.Interrupt(); err != nil {
@@ -372,7 +422,14 @@ func (t *Task) interrupt() error {
 func (t *Task) Stop(ctx context.Context) protocol.HarnessExited {
 	t.commands.Lock()
 	t.interrupt()
-	t.proc.CloseInput()
+	t.mu.Lock()
+	closed := t.closing
+	t.closing = true
+	t.notifyLocked()
+	t.mu.Unlock()
+	if !closed {
+		t.proc.CloseInput()
+	}
 	t.commands.Unlock()
 	select {
 	case <-t.done:

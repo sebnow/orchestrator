@@ -50,24 +50,45 @@ func requireSettledAfter(t *testing.T, events []protocol.Event, after protocol.K
 	}
 }
 
-func TestGivenIdleTaskWhenPausingThenItIsPausedAtOnceAndTheHarnessIsNotTold(t *testing.T) {
+func TestGivenTaskWhoseTurnHasEndedWhenPausingThenErrTaskEndedBecauseItsProcessIsExiting(t *testing.T) {
 	gateway := startTestGateway(t)
 	synctest.Test(t, func(t *testing.T) {
 		f, promptID := startPauseTask(t, gateway, testLimits)
 		endTurn(f, promptID)
 		synctest.Wait()
 
-		if err := f.task.Pause(); err != nil {
-			t.Fatal(err)
-		}
+		err := f.task.Pause()
 
-		if s := f.task.State(); s.Pause != Paused {
-			t.Errorf("pause = %q, want paused", s.Pause)
+		if !errors.Is(err, ErrTaskEnded) {
+			t.Errorf("pause = %v, want ErrTaskEnded", err)
 		}
-		f.proc.noInput(t)
-		f.end(t, protocol.HarnessExited{})
-		requireSettledAfter(t, f.journal(t), protocol.KindHarnessOutput, `{"interrupted":false}`)
+		if in := f.proc.nextInput(t); in.kind != "close" {
+			t.Errorf("input = %+v, want the input closed", in)
+		}
+		<-f.task.Done()
+		if got := kinds(f.journal(t)); slices.Contains(got, protocol.KindPauseSettled) {
+			t.Errorf("journal kinds = %v, want no pause_settled", got)
+		}
 	})
+}
+
+func TestGivenProcessNotYetPromptedWhenPausingThenItIsPausedAtOnceAndItsInputClosed(t *testing.T) {
+	spec := testTaskSpec
+	spec.Prompt = ""
+	f := startTestTask(t, startTestGateway(t), spec)
+
+	if err := f.task.Pause(); err != nil {
+		t.Fatal(err)
+	}
+
+	if in := f.proc.nextInput(t); in.kind != "close" {
+		t.Errorf("input = %+v, want the input closed", in)
+	}
+	<-f.task.Done()
+	if s := f.task.State(); s.Pause != Paused || !s.Closing {
+		t.Errorf("state = %+v", s)
+	}
+	requireSettledAfter(t, f.journal(t), protocol.KindHarnessStarted, `{"interrupted":false}`)
 }
 
 func TestGivenBusyTaskWhenPausingThenTheHarnessGetsThePauseRequestWithItsOwnID(t *testing.T) {
@@ -132,6 +153,9 @@ func TestGivenAcknowledgedPauseWhenTheTurnEndsThenTheTaskIsPausedWithTheNoteAndN
 		s := f.task.State()
 		if s.Pause != Paused || s.StopNote != "Stopped after step 1; steps 2 and 3 remain." || s.Busy {
 			t.Errorf("state = %+v", s)
+		}
+		if in := f.proc.nextInput(t); in.kind != "close" {
+			t.Errorf("input = %+v, want the input closed once the pause settled", in)
 		}
 		f.proc.noInput(t)
 		f.end(t, protocol.HarnessExited{})
@@ -238,7 +262,7 @@ func TestGivenPauseInProgressWhenPromptingOrPausingAgainThenErrBusy(t *testing.T
 	})
 }
 
-func TestGivenPausedTaskWhenPromptingThenTheTaskResumesAndKeepsTheStopNote(t *testing.T) {
+func TestGivenSettledPauseWhenTheTurnEndsThenTheProcessExitsKeepingTheNoteAndAPromptWaitsForTheNextProcess(t *testing.T) {
 	gateway := startTestGateway(t)
 	synctest.Test(t, func(t *testing.T) {
 		f, promptID := startPauseTask(t, gateway, testLimits)
@@ -248,18 +272,24 @@ func TestGivenPausedTaskWhenPromptingThenTheTaskResumesAndKeepsTheStopNote(t *te
 		endTurn(f, promptID, pauseID)
 		synctest.Wait()
 
-		if err := f.task.Prompt("Resume the task from where you stopped and finish it."); err != nil {
-			t.Fatal(err)
-		}
+		err := f.task.Prompt("Resume the task from where you stopped and finish it.")
 
-		in := f.proc.nextInput(t)
-		if in.kind != "prompt" || in.text != "Resume the task from where you stopped and finish it." {
-			t.Errorf("input = %+v", in)
+		if !errors.Is(err, ErrTaskEnded) {
+			t.Errorf("prompt = %v, want ErrTaskEnded", err)
 		}
-		if s := f.task.State(); s.Pause != NotPaused || s.PausePickedUp || s.StopNote != "after step 1" || !s.Busy {
+		if in := f.proc.nextInput(t); in.kind != "close" {
+			t.Errorf("input = %+v, want the input closed", in)
+		}
+		f.proc.noInput(t)
+		<-f.task.Done()
+		s := f.task.State()
+		if s.Pause != Paused || s.StopNote != "after step 1" || s.Running || s.Exit.ExitCode != 0 {
 			t.Errorf("state = %+v", s)
 		}
-		f.end(t, protocol.HarnessExited{})
+		events := f.journal(t)
+		if got := kinds(events[len(events)-2:]); !slices.Equal(got, []protocol.Kind{protocol.KindPauseSettled, protocol.KindHarnessExited}) {
+			t.Errorf("journal ends %v, want pause_settled then harness_exited", got)
+		}
 	})
 }
 

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 
@@ -162,5 +163,62 @@ func TestGivenClosedJournalWhenAppendingThenEveryAppendFailsAndNoSeqIsSkipped(t 
 	}
 	if events := readJournalFile(t, path); len(events) != 1 {
 		t.Errorf("got %d events, want 1", len(events))
+	}
+}
+
+func TestGivenJournalThatContinuesAnEarlierOneWhenReopeningThenItAppendsAfterItsLastSeq(t *testing.T) {
+	stateDir := t.TempDir()
+	j, err := createJournalAfter(stateDir, "task-1", testHarness, 7)
+	if err != nil {
+		t.Fatal(err)
+	}
+	j.appendOutput([]byte(`{"n":8}`))
+	j.close()
+
+	reopened, end, err := reopenJournal(stateDir, "task-1", testHarness, 7)
+	if err != nil {
+		t.Fatal(err)
+	}
+	event, err := reopened.appendOutput([]byte(`{"n":9}`))
+	reopened.close()
+
+	if err != nil || end.seq != 8 || event.Seq != 9 {
+		t.Errorf("end %+v, appended seq %d, err %v", end, event.Seq, err)
+	}
+}
+
+func TestGivenEmptyContinuationJournalWhenReopeningThenItContinuesAfterTheRecordedSeq(t *testing.T) {
+	stateDir := t.TempDir()
+	j, err := createJournalAfter(stateDir, "task-1", testHarness, 5)
+	if err != nil {
+		t.Fatal(err)
+	}
+	j.close()
+
+	reopened, _, err := reopenJournal(stateDir, "task-1", testHarness, 5)
+	if err != nil {
+		t.Fatal(err)
+	}
+	event, err := reopened.appendOutput([]byte(`{}`))
+	reopened.close()
+
+	if err != nil || event.Seq != 6 {
+		t.Errorf("appended seq %d, err %v, want 6", event.Seq, err)
+	}
+}
+
+func TestGivenJournalWithAGapAfterItsFirstEventWhenScanningThenItIsAnError(t *testing.T) {
+	stateDir := t.TempDir()
+	j, err := createJournalAfter(stateDir, "task-1", testHarness, 3)
+	if err != nil {
+		t.Fatal(err)
+	}
+	j.appendOutput([]byte(`{}`))
+	j.seq++
+	j.appendOutput([]byte(`{}`))
+	j.close()
+
+	if _, err := scanJournal(JournalPath(stateDir, "task-1")); err == nil || !strings.Contains(err.Error(), "seq 6 follows 4") {
+		t.Errorf("err = %v", err)
 	}
 }

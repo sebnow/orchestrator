@@ -69,14 +69,15 @@ func (p *pause) stopTimer() {
 	}
 }
 
-// Pause asks the agent to finish its current step and stop. A task with no
-// turn running is paused at once and the harness is not told. The pause
-// settles in the Paused state; Prompt resumes the task.
+// Pause asks the agent to finish its current step and stop. A task whose
+// process has not been sent a prompt is paused at once: the harness is not
+// told, and its input is closed as at the end of a turn. The pause settles
+// in the Paused state, and the task's next process resumes it.
 func (t *Task) Pause() error {
 	t.commands.Lock()
 	defer t.commands.Unlock()
 	t.mu.Lock()
-	if t.exit != nil {
+	if t.ended() {
 		t.mu.Unlock()
 		return ErrTaskEnded
 	}
@@ -86,14 +87,16 @@ func (t *Task) Pause() error {
 	}
 	if len(t.outstanding) == 0 {
 		t.pause = pause{state: Paused}
+		t.closing = true
 		t.notifyLocked()
 		t.mu.Unlock()
-		// t.commands is still held, so no prompt can start a turn before
-		// the settlement is journaled.
+		// t.commands is still held, so nothing reaches the harness between
+		// the settlement and the end of its input.
 		if _, err := t.record(protocol.KindPauseSettled, protocol.PauseSettled{}); err != nil {
 			t.proc.Kill()
 			return fmt.Errorf("pause settlement not recorded: %w", err)
 		}
+		t.proc.CloseInput()
 		return nil
 	}
 	id := newID()
@@ -123,7 +126,7 @@ func (t *Task) pauseDeadline(id string) {
 	t.commands.Lock()
 	defer t.commands.Unlock()
 	t.mu.Lock()
-	if t.exit != nil || t.pause.id != id || (t.pause.state != PauseRequested && t.pause.state != PauseAcknowledged) {
+	if t.ended() || t.pause.id != id || (t.pause.state != PauseRequested && t.pause.state != PauseAcknowledged) {
 		t.mu.Unlock()
 		return
 	}
