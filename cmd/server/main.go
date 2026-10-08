@@ -39,6 +39,9 @@ import (
 // after a signal.
 const shutdownTimeout = 30 * time.Second
 
+// minDaemonTimeout is the shortest -daemon-timeout the server accepts.
+const minDaemonTimeout = time.Minute
+
 func main() {
 	os.Exit(run(os.Args[1:], os.Stdout, os.Stderr))
 }
@@ -89,6 +92,7 @@ func serve(args []string, stderr io.Writer) int {
 	slots := flags.Int("slots-per-daemon", server.DefaultSchedulePolicy.SlotsPerDaemon, "tasks each daemon runs at once")
 	fillerThreshold := flags.Float64("filler-threshold", server.DefaultSchedulePolicy.FillerThreshold, "five-hour window utilization, from 0 to 1, below which filler tasks run")
 	lowThreshold := flags.Float64("low-threshold", server.DefaultSchedulePolicy.LowThreshold, "five-hour window utilization, from 0 to 1, below which low-priority tasks run")
+	daemonTimeout := flags.Duration("daemon-timeout", server.DefaultDaemonTimeout, "how long a daemon may go unseen, with no command stream open, before it is lost and its tasks move to other daemons; at least 1m")
 	if err := flags.Parse(args); err != nil {
 		return exitCode(err)
 	}
@@ -98,6 +102,13 @@ func serve(args []string, stderr io.Writer) int {
 	}
 	if *slots < 1 {
 		fmt.Fprintln(stderr, "server: -slots-per-daemon must be at least 1")
+		return 2
+	}
+	// A daemon retries every 30 s at most and notices a dead command
+	// stream within 45 s, so a shorter timeout could declare a daemon lost
+	// while it reconnects.
+	if *daemonTimeout < minDaemonTimeout {
+		fmt.Fprintf(stderr, "server: -daemon-timeout must be at least %s\n", minDaemonTimeout)
 		return 2
 	}
 	for name, threshold := range map[string]float64{"-filler-threshold": *fillerThreshold, "-low-threshold": *lowThreshold} {
@@ -162,7 +173,8 @@ func serve(args []string, stderr io.Writer) int {
 	srv := server.New(store, log, server.Options{
 		DefaultModel: *defaultModel,
 		Insecure:     *insecure,
-		Schedule:     server.SchedulePolicy{SlotsPerDaemon: *slots, FillerThreshold: *fillerThreshold, LowThreshold: *lowThreshold},
+		Schedule: server.SchedulePolicy{SlotsPerDaemon: *slots, FillerThreshold: *fillerThreshold, LowThreshold: *lowThreshold,
+			DaemonTimeout: *daemonTimeout},
 	})
 	httpServer := &http.Server{
 		Handler:   srv,
