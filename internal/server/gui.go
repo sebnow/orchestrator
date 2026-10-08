@@ -211,7 +211,7 @@ func (s *Server) postTaskForm(w http.ResponseWriter, r *http.Request) {
 		Acknowledge: strings.TrimSpace(r.PostForm.Get("acknowledge")),
 		Cleanup:     strings.TrimSpace(r.PostForm.Get("cleanup")),
 	}
-	command, problem, err := s.startTaskFromForm(r.Context(), input)
+	task, problem, err := s.startTaskFromForm(r.Context(), input)
 	if err != nil {
 		s.internalError(w, err)
 		return
@@ -236,28 +236,29 @@ func (s *Server) postTaskForm(w http.ResponseWriter, r *http.Request) {
 		fresh := component.NewTask{Daemon: input.Daemon, Acknowledge: input.Acknowledge, Cleanup: input.Cleanup}
 		s.writeHTML(w, http.StatusOK, html.Fragment(
 			component.OutOfBand(component.RegionNewTask,
-				component.NewTaskForm(fresh, daemons, s.defaultModel, "", string(command.TaskID))),
+				component.NewTaskForm(fresh, daemons, s.defaultModel, "", string(task))),
 			component.OutOfBand(component.RegionDashboard, lists),
 		))
 	default:
-		redirect(w, r, "/tasks/"+string(command.TaskID))
+		redirect(w, r, "/tasks/"+string(task))
 	}
 }
 
-// startTaskFromForm starts the task input describes. A problem with the
-// input is returned as text for the owner, with no error.
-func (s *Server) startTaskFromForm(ctx context.Context, input component.NewTask) (protocol.Command, string, error) {
+// startTaskFromForm queues the start of the task input describes, and
+// returns its id. A problem with the input is returned as text for the
+// owner, with no error.
+func (s *Server) startTaskFromForm(ctx context.Context, input component.NewTask) (protocol.TaskID, string, error) {
 	daemon, err := protocol.ParseDaemonID(input.Daemon)
 	if err != nil {
-		return protocol.Command{}, "Choose a daemon to run the task on.", nil
+		return "", "Choose a daemon to run the task on.", nil
 	}
 	acknowledge, err := time.ParseDuration(input.Acknowledge)
 	if err != nil {
-		return protocol.Command{}, "The acknowledge limit is not a duration such as 1m or 90s.", nil
+		return "", "The acknowledge limit is not a duration such as 1m or 90s.", nil
 	}
 	cleanup, err := time.ParseDuration(input.Cleanup)
 	if err != nil {
-		return protocol.Command{}, "The cleanup limit is not a duration such as 5m.", nil
+		return "", "The cleanup limit is not a duration such as 5m.", nil
 	}
 	start := protocol.StartTask{
 		Prompt:      input.Prompt,
@@ -268,14 +269,14 @@ func (s *Server) startTaskFromForm(ctx context.Context, input component.NewTask)
 		start.Workspace = &protocol.Workspace{Repo: input.Repo, Ref: input.Ref}
 	}
 	if strings.TrimSpace(start.Prompt) == "" {
-		return protocol.Command{}, "Write a prompt for the task.", nil
+		return "", "Write a prompt for the task.", nil
 	}
 	if err := validateStart(start); err != nil {
-		return protocol.Command{}, "The task was not started: " + err.Error() + ".", nil
+		return "", "The task was not started: " + err.Error() + ".", nil
 	}
-	command, err := s.startTask(ctx, daemon, start)
+	turn, err := s.startTask(ctx, daemon, start)
 	if errors.Is(err, errUnknownDaemon) {
-		return protocol.Command{}, "Daemon " + input.Daemon + " has not connected yet.", nil
+		return "", "Daemon " + input.Daemon + " has not connected yet.", nil
 	}
-	return command, "", err
+	return turn.TaskID, "", err
 }

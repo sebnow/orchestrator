@@ -31,8 +31,8 @@ type commandRequest struct {
 	Payload json.RawMessage      `json:"payload"`
 }
 
-// postTask creates a task on the named daemon and issues its start_task
-// command, which it returns.
+// postTask creates a task on the named daemon and queues its start, and
+// returns the queued turn.
 func (s *Server) postTask(w http.ResponseWriter, r *http.Request) {
 	var request createTaskRequest
 	if err := decodeStrict(http.MaxBytesReader(w, r.Body, maxOwnerRequestBytes), &request); err != nil {
@@ -48,7 +48,7 @@ func (s *Server) postTask(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
-	command, err := s.startTask(r.Context(), daemon, request.StartTask)
+	turn, err := s.startTask(r.Context(), daemon, request.StartTask)
 	if errors.Is(err, errUnknownDaemon) {
 		http.Error(w, err.Error()+": it has not connected yet", http.StatusUnprocessableEntity)
 		return
@@ -57,19 +57,26 @@ func (s *Server) postTask(w http.ResponseWriter, r *http.Request) {
 		s.internalError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusCreated, command)
+	writeJSON(w, http.StatusCreated, turn)
 }
 
 // startTask creates a task on daemon under a new id, with the default
 // model when start names none and the composed system prompt, and returns
-// its start_task command.
-func (s *Server) startTask(ctx context.Context, daemon protocol.DaemonID, start protocol.StartTask) (protocol.Command, error) {
+// its queued start.
+func (s *Server) startTask(ctx context.Context, daemon protocol.DaemonID, start protocol.StartTask) (queuedTurn, error) {
 	if start.Model == "" {
 		start.Model = s.defaultModel
 	}
 	start.SystemPrompt = systemPrompt(nil, start.SystemPrompt)
-	// rand.Text uses only letters and digits, so the id is always valid.
-	return s.store.createTask(ctx, daemon, protocol.TaskID(rand.Text()), start)
+	return s.store.createTask(ctx, newTask{
+		// rand.Text uses only letters and digits, so the id is always valid.
+		ID:        protocol.TaskID(rand.Text()),
+		Daemon:    daemon,
+		Placement: placementBound,
+		Priority:  PriorityNormal,
+		Start:     start,
+		Origin:    originOwner,
+	})
 }
 
 func validateStart(start protocol.StartTask) error {
@@ -85,8 +92,11 @@ func validateStart(start protocol.StartTask) error {
 	return nil
 }
 
-// postCommand issues a command to a task that is not stopped or failed,
-// and returns it.
+// postCommand acts on a task that is not stopped or failed. A prompt or
+// a resume is queued as a turn, which it returns with 202. Any other
+// command is issued at once and returned with 201, except a stop of a
+// task that has not started, which ends it with nothing to send and gets
+// 204.
 func (s *Server) postCommand(w http.ResponseWriter, r *http.Request) {
 	task, err := protocol.ParseTaskID(r.PathValue("task"))
 	if err != nil {
@@ -103,20 +113,32 @@ func (s *Server) postCommand(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
-	command, err := s.store.issueCommand(r.Context(), task, request.Kind, payload)
-	if errors.Is(err, errUnknownTask) {
+	var status int
+	var result any
+	switch request.Kind {
+	case protocol.CommandPrompt, protocol.CommandResume:
+		status = http.StatusAccepted
+		result, err = s.store.queueCommand(r.Context(), task, turnKind(request.Kind), payload)
+	default:
+		var command protocol.Command
+		command, err = s.store.issueCommand(r.Context(), task, request.Kind, payload)
+		status, result = http.StatusCreated, command
+		if command.ID == 0 {
+			status = http.StatusNoContent
+		}
+	}
+	switch {
+	case errors.Is(err, errUnknownTask):
 		http.Error(w, err.Error(), http.StatusNotFound)
-		return
-	}
-	if errors.Is(err, errTaskEnded) {
+	case errors.Is(err, errTaskEnded), errors.Is(err, errNotStarted):
 		http.Error(w, err.Error(), http.StatusConflict)
-		return
-	}
-	if err != nil {
+	case err != nil:
 		s.internalError(w, err)
-		return
+	case status == http.StatusNoContent:
+		w.WriteHeader(status)
+	default:
+		writeJSON(w, status, result)
 	}
-	writeJSON(w, http.StatusCreated, command)
 }
 
 // commandPayload checks raw against what kind carries and returns it

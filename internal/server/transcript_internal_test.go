@@ -157,7 +157,7 @@ func TestGivenWatchedTaskWhenEventsAreStoredOrCommandsIssuedThenOnlyItsWatchersA
 	}
 
 	stop()
-	postForCommand(t, srv.url+"/v1/tasks/task-1/commands", `{"kind":"resume"}`)
+	postForTurn(t, srv.url+"/v1/tasks/task-1/commands", `{"kind":"resume"}`, http.StatusAccepted)
 	if signalled(changed) {
 		t.Error("signalled after the watch stopped")
 	}

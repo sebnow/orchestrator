@@ -155,6 +155,18 @@ func serve(args []string, stderr io.Writer) int {
 		ErrorLog:          slog.NewLogLogger(log.Handler(), slog.LevelError),
 	}
 	httpServer.RegisterOnShutdown(srv.EndStreams)
+	scheduleCtx, stopScheduling := context.WithCancel(context.Background())
+	scheduled := make(chan struct{})
+	go func() {
+		defer close(scheduled)
+		srv.Schedule(scheduleCtx)
+	}()
+	// The scheduler writes to the store, so it stops before the store
+	// closes.
+	defer func() {
+		stopScheduling()
+		<-scheduled
+	}()
 	listener, err := net.Listen("tcp", *listen)
 	if err != nil {
 		log.Error("listen", "error", err)

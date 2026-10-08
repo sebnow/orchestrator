@@ -40,7 +40,10 @@ func TestGivenEachStateWhenACommandIsIssuedThenTheStateFollowsTheTable(t *testin
 		{TaskPausing, protocol.CommandInterrupt, TaskPausing},
 		{TaskRunning, protocol.CommandStop, TaskRunning},
 		{TaskFinished, protocol.CommandPrompt, TaskRunning},
-		{TaskFinished, protocol.CommandResume, TaskFinished},
+		{TaskFinished, protocol.CommandResume, TaskRunning},
+		{TaskQueued, protocol.CommandStartTask, TaskPending},
+		{TaskQueued, protocol.CommandStop, TaskStopped},
+		{TaskQueued, protocol.CommandPause, TaskQueued},
 		{TaskFinished, protocol.CommandPause, TaskFinished},
 		{TaskFinished, protocol.CommandInterrupt, TaskFinished},
 		{TaskFinished, protocol.CommandStop, TaskStopped},
@@ -123,6 +126,8 @@ type lifecycle struct {
 	store *Store
 	task  protocol.TaskID
 	seq   uint64
+	// held keeps the scheduler from admitting turns after each step.
+	held bool
 }
 
 func (l *lifecycle) event(kind protocol.Kind, payload string, want TaskState) {
@@ -133,6 +138,9 @@ func (l *lifecycle) event(kind protocol.Kind, payload string, want TaskState) {
 	e.Time = time.Now()
 	if _, _, err := l.store.appendEvents(l.t.Context(), "laptop", []protocol.Event{e}); err != nil {
 		l.t.Fatal(err)
+	}
+	if !l.held {
+		admitTurns(l.t, l.store)
 	}
 	if got := readProgress(l.t, l.store, l.task).State; got != want {
 		l.t.Fatalf("after %s event: state = %s, want %s", kind, got, want)
@@ -147,6 +155,9 @@ func (l *lifecycle) command(kind protocol.CommandKind, payload string, want Task
 	}
 	if _, err := l.store.issueCommand(l.t.Context(), l.task, kind, raw); err != nil {
 		l.t.Fatal(err)
+	}
+	if !l.held {
+		admitTurns(l.t, l.store)
 	}
 	if got := readProgress(l.t, l.store, l.task).State; got != want {
 		l.t.Fatalf("after %s command: state = %s, want %s", kind, got, want)
@@ -408,6 +419,7 @@ func (l *lifecycle) yield(want TaskState) {
 func TestGivenRunningTaskWhenTheSchedulerPausesItThenItIsYieldedOnceThePauseSettlesAndAResumeRunsIt(t *testing.T) {
 	store, _ := openTestStore(t)
 	l := newLifecycle(t, store, "task-1")
+	l.held = true
 	l.event(protocol.KindHarnessStarted, `{"pid":1}`, TaskRunning)
 
 	l.yield(TaskPausing)
@@ -444,6 +456,7 @@ func TestGivenTheSchedulersPauseWhenTheOwnerPausesTooThenTheTaskEndsUpPausedForT
 			l := newLifecycle(t, store, "task-1")
 			l.event(protocol.KindHarnessStarted, `{"pid":1}`, TaskRunning)
 			l.yield(TaskPausing)
+			l.held = true
 
 			tc.drive(l)
 

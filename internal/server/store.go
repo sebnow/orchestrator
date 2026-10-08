@@ -114,18 +114,21 @@ type Store struct {
 	published func(effects)
 }
 
-// effects are what a write transaction did that open streams must hear
-// of once it commits. A message or a child changes the transcript of a
-// task other than the one the transaction was for, so changed lists such
-// tasks.
+// effects are what a write transaction did that open streams and the
+// scheduler must hear of once it commits. A message or a child changes
+// the transcript of a task other than the one the transaction was for,
+// so changed lists such tasks. reschedule is set when the transaction may
+// have changed what the scheduler can admit: it queued a turn, changed a
+// task's state, or stored a quota reading.
 type effects struct {
-	issued  []protocol.Command
-	changed []protocol.TaskID
+	issued     []protocol.Command
+	changed    []protocol.TaskID
+	reschedule bool
 }
 
 // publish tells the server of fx after its transaction committed.
 func (s *Store) publish(fx *effects) {
-	if s.published != nil && (len(fx.issued) > 0 || len(fx.changed) > 0) {
+	if s.published != nil && (len(fx.issued) > 0 || len(fx.changed) > 0 || fx.reschedule) {
 		s.published(*fx)
 	}
 }
@@ -257,8 +260,9 @@ const heldSeqColumn = `CASE WHEN EXISTS (SELECT 1 FROM events WHERE task_id = t.
 // A batch naming any task not assigned to daemon is refused whole with a
 // *foreignTaskError.
 //
-// A task the batch leaves finished is sent the messages waiting in its
-// inbox, and the parent of a task the batch ends is told.
+// A task the batch leaves finished has the messages waiting in its inbox
+// queued for delivery, a task the batch leaves yielded has its resume
+// queued, and the parent of a task the batch ends is told.
 func (s *Store) appendEvents(ctx context.Context, daemon protocol.DaemonID, events []protocol.Event) (held map[protocol.TaskID]uint64, conflicts []protocol.Event, err error) {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -286,6 +290,10 @@ func (s *Store) appendEvents(ctx context.Context, daemon protocol.DaemonID, even
 		p, err := loadProgress(ctx, tx, task)
 		if err != nil {
 			return nil, nil, err
+		}
+		// A task whose start has not been admitted is on no daemon yet.
+		if p.State == TaskQueued {
+			return nil, nil, &foreignTaskError{Task: task, Daemon: daemon}
 		}
 		progresses[task] = &p
 		before[task] = p.State
@@ -343,8 +351,8 @@ func (s *Store) appendEvents(ctx context.Context, daemon protocol.DaemonID, even
 		}
 	}
 	// Each step below reads the progress it needs afresh, because telling
-	// a parent can issue a command to a task of this batch.
-	var fx effects
+	// a parent can queue a turn for a task of this batch.
+	fx := effects{reschedule: len(events) > 0}
 	for _, task := range tasks {
 		state := progresses[task].State
 		if !before[task].Terminal() && state.Terminal() {
@@ -353,7 +361,12 @@ func (s *Store) appendEvents(ctx context.Context, daemon protocol.DaemonID, even
 			}
 		}
 		if state == TaskFinished {
-			if _, err := deliverWaiting(ctx, tx, task, &fx); err != nil {
+			if _, err := queueDelivery(ctx, tx, task, &fx); err != nil {
+				return nil, nil, err
+			}
+		}
+		if before[task] != TaskYielded && state == TaskYielded {
+			if err := queueYieldedResume(ctx, tx, task, &fx); err != nil {
 				return nil, nil, err
 			}
 		}
@@ -375,7 +388,7 @@ func (s *Store) appendEvents(ctx context.Context, daemon protocol.DaemonID, even
 }
 
 // heldSeqs records that daemon was seen and returns the held seq of every
-// task assigned to it.
+// task assigned to it whose start has been admitted.
 func (s *Store) heldSeqs(ctx context.Context, daemon protocol.DaemonID) (map[protocol.TaskID]uint64, error) {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -385,7 +398,7 @@ func (s *Store) heldSeqs(ctx context.Context, daemon protocol.DaemonID) (map[pro
 	if err := seeDaemon(ctx, tx, daemon, nil); err != nil {
 		return nil, err
 	}
-	rows, err := tx.QueryContext(ctx, `SELECT t.id, `+heldSeqColumn+` FROM tasks t WHERE t.daemon_id = ?`, string(daemon))
+	rows, err := tx.QueryContext(ctx, `SELECT t.id, `+heldSeqColumn+` FROM tasks t WHERE t.daemon_id = ? AND t.state <> ?`, string(daemon), string(TaskQueued))
 	if err != nil {
 		return nil, fmt.Errorf("read held seqs: %w", err)
 	}
@@ -408,56 +421,6 @@ func (s *Store) heldSeqs(ctx context.Context, daemon protocol.DaemonID) (map[pro
 	return held, nil
 }
 
-// createTask records a task assigned to daemon and issues its start_task
-// command in the same transaction. The daemon must have been seen.
-func (s *Store) createTask(ctx context.Context, daemon protocol.DaemonID, task protocol.TaskID, start protocol.StartTask) (protocol.Command, error) {
-	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil {
-		return protocol.Command{}, fmt.Errorf("create task: %w", err)
-	}
-	defer tx.Rollback()
-	var known bool
-	if err := tx.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 FROM daemons WHERE id = ?)`, string(daemon)).Scan(&known); err != nil {
-		return protocol.Command{}, fmt.Errorf("look up daemon %q: %w", daemon, err)
-	}
-	if !known {
-		return protocol.Command{}, fmt.Errorf("%w: %q", errUnknownDaemon, daemon)
-	}
-	var fx effects
-	command, err := insertTask(ctx, tx, daemon, task, nil, start, &fx)
-	if err != nil {
-		return protocol.Command{}, err
-	}
-	if err := tx.Commit(); err != nil {
-		return protocol.Command{}, fmt.Errorf("create task %q: %w", task, err)
-	}
-	s.publish(&fx)
-	return command, nil
-}
-
-// insertTask records a task assigned to daemon, a child of parent when
-// that is set, and issues its start_task command.
-func insertTask(ctx context.Context, tx *sql.Tx, daemon protocol.DaemonID, task protocol.TaskID, parent *protocol.TaskID, start protocol.StartTask, fx *effects) (protocol.Command, error) {
-	payload, err := json.Marshal(start)
-	if err != nil {
-		return protocol.Command{}, fmt.Errorf("encode start_task: %w", err)
-	}
-	var repo, ref any
-	if start.Workspace != nil {
-		repo, ref = start.Workspace.Repo, start.Workspace.Ref
-	}
-	created := formatTime(time.Now().UTC())
-	_, err = tx.ExecContext(ctx, `
-		INSERT INTO tasks (id, daemon_id, parent_id, state, created_at, last_activity_at, prompt, system_prompt, workspace_repo, workspace_ref, model, pause_acknowledge_ns, pause_cleanup_ns)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		string(task), string(daemon), nullableID(parent), string(TaskPending), created, created, start.Prompt, start.SystemPrompt, repo, ref,
-		start.Model, int64(start.PauseLimits.Acknowledge), int64(start.PauseLimits.Cleanup))
-	if err != nil {
-		return protocol.Command{}, fmt.Errorf("create task %q: %w", task, err)
-	}
-	return insertCommand(ctx, tx, daemon, task, protocol.CommandStartTask, payload, fx)
-}
-
 // nullableID is id as a query argument: NULL when id is nil.
 func nullableID(id *protocol.TaskID) any {
 	if id == nil {
@@ -467,7 +430,14 @@ func nullableID(id *protocol.TaskID) any {
 }
 
 // issueCommand appends a command for task to the log of the daemon the
-// task is assigned to. A nil payload stores none.
+// task is assigned to, at once, without queueing it as a turn. A nil
+// payload stores none.
+//
+// A task whose start has not been admitted is unknown to every daemon:
+// a stop ends it without sending anything, and returns a command with no
+// ID, and any other command is refused with errNotStarted. A pause to a
+// yielded task takes the scheduler's hold over for the owner, so the
+// scheduler's resume is dropped.
 func (s *Store) issueCommand(ctx context.Context, task protocol.TaskID, kind protocol.CommandKind, payload json.RawMessage) (protocol.Command, error) {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -482,10 +452,35 @@ func (s *Store) issueCommand(ctx context.Context, task protocol.TaskID, kind pro
 	if err != nil {
 		return protocol.Command{}, fmt.Errorf("look up task %q: %w", task, err)
 	}
-	var fx effects
-	command, err := insertCommand(ctx, tx, protocol.DaemonID(daemon), task, kind, payload, &fx)
+	p, err := loadProgress(ctx, tx, task)
 	if err != nil {
 		return protocol.Command{}, err
+	}
+	var fx effects
+	var command protocol.Command
+	switch {
+	case p.State == TaskQueued && kind == protocol.CommandStop:
+		command = protocol.Command{TaskID: task, Kind: kind, Time: time.Now().UTC()}
+		p.seeCommand(command)
+		if err := saveProgress(ctx, tx, task, p); err != nil {
+			return protocol.Command{}, err
+		}
+		fx.changed = append(fx.changed, task)
+		fx.reschedule = true
+		if err := notifyParent(ctx, tx, task, p.State, &fx); err != nil {
+			return protocol.Command{}, err
+		}
+	case p.State == TaskQueued:
+		return protocol.Command{}, fmt.Errorf("%w: %q waits for the scheduler to start it", errNotStarted, task)
+	default:
+		if kind == protocol.CommandPause && p.State == TaskYielded {
+			if err := dropSchedulersResume(ctx, tx, task, &fx); err != nil {
+				return protocol.Command{}, err
+			}
+		}
+		if command, err = insertCommand(ctx, tx, protocol.DaemonID(daemon), task, kind, payload, &fx); err != nil {
+			return protocol.Command{}, err
+		}
 	}
 	if err := tx.Commit(); err != nil {
 		return protocol.Command{}, fmt.Errorf("issue command: %w", err)
@@ -523,6 +518,7 @@ func insertCommand(ctx context.Context, tx *sql.Tx, daemon protocol.DaemonID, ta
 		return protocol.Command{}, err
 	}
 	fx.issued = append(fx.issued, command)
+	fx.reschedule = true
 	if p.State.Terminal() {
 		if err := notifyParent(ctx, tx, task, p.State, fx); err != nil {
 			return protocol.Command{}, err

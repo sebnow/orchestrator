@@ -19,6 +19,9 @@ import (
 type TaskState string
 
 const (
+	// TaskQueued: the task's start waits for the scheduler to admit it, so
+	// no daemon knows the task yet (docs/adr/2026-10-08-scheduling.md).
+	TaskQueued TaskState = "queued"
 	// TaskPending: the start was issued; the harness has not started.
 	TaskPending TaskState = "pending"
 	TaskRunning TaskState = "running"
@@ -50,9 +53,10 @@ func (s TaskState) Terminal() bool {
 	return s == TaskStopped || s == TaskFailed
 }
 
-// Idle reports whether the task is between processes and can be resumed.
+// Idle reports whether the task has no process: it has not started, or
+// it is between processes.
 func (s TaskState) Idle() bool {
-	return s == TaskFinished || s == TaskPaused || s == TaskYielded
+	return s == TaskQueued || s == TaskFinished || s == TaskPaused || s == TaskYielded
 }
 
 // pauseOrigin says who asked for the pause a task is under: the owner,
@@ -67,26 +71,26 @@ const (
 
 // afterCommand returns the state once a command of kind is issued.
 //
-// A prompt resumes a paused or yielded task as a resume does, because
-// the daemon treats both alike, and either one issued while a pause is
-// under way applies once the pause settles, so the task is running
-// thereafter. A prompt to a finished task starts its next process. A
-// pause to a yielded task makes the scheduler's hold the owner's. A stop
-// to a task between processes ends it at once, as no process is left to
-// report it.
+// Admitting a queued task's start makes it pending. A prompt or a
+// resume to a task between processes starts its next process: the daemon
+// treats both alike, and resumes a finished task too. Either one issued
+// while a pause is under way applies once the pause settles, so the task
+// is running thereafter. A pause to a yielded task makes the scheduler's
+// hold the owner's. A stop to a task with no process ends it at once, as
+// no process is left to report it.
 func (s TaskState) afterCommand(kind protocol.CommandKind) TaskState {
 	switch {
 	case s.Terminal():
 		return s
 	case kind == protocol.CommandStop && s.Idle():
 		return TaskStopped
+	case kind == protocol.CommandStartTask && s == TaskQueued:
+		return TaskPending
 	case kind == protocol.CommandPause && (s == TaskPending || s == TaskRunning || s == TaskAwaitingPermission):
 		return TaskPausing
 	case kind == protocol.CommandPause && s == TaskYielded:
 		return TaskPaused
-	case (kind == protocol.CommandResume || kind == protocol.CommandPrompt) && (s == TaskPausing || s == TaskPaused || s == TaskYielded):
-		return TaskRunning
-	case kind == protocol.CommandPrompt && s == TaskFinished:
+	case (kind == protocol.CommandResume || kind == protocol.CommandPrompt) && (s == TaskPausing || s.Idle() && s != TaskQueued):
 		return TaskRunning
 	case kind == protocol.CommandAnswerPermission && s == TaskAwaitingPermission:
 		return TaskRunning

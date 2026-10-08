@@ -194,9 +194,8 @@ func TestGivenConnectedDaemonWhenTheOwnerCreatesPromptsAndPausesATaskThenTheHarn
 func ownerCreatesPromptsAndPausesATask(t *testing.T, srv *serverFixture, d *daemonFixture) {
 	t.Helper()
 
-	start := srv.createTask(t, testDaemon, protocol.StartTask{Prompt: "Do the work.", Model: "fake-model", PauseLimits: testPauseLimits})
+	task := srv.createTask(t, testDaemon, protocol.StartTask{Prompt: "Do the work.", Model: "fake-model", PauseLimits: testPauseLimits})
 
-	task := start.TaskID
 	proc := d.nextProcess(t)
 	if want := workspacePath(d.stateDir, task); proc.spec.Workdir != want || proc.spec.Model != "fake-model" {
 		t.Errorf("spec = %+v, want workdir %s", proc.spec, want)
@@ -234,7 +233,7 @@ func TestGivenLostConnectionWhenItIsRestoredThenTheServerHasEveryEventOnceAndThe
 	srv := startServer(t)
 	proxy := startProxy(t, srv.url)
 	d := runDaemon(t, proxy.url(), t.TempDir())
-	task := srv.createTask(t, testDaemon, protocol.StartTask{Prompt: "Do the work.", PauseLimits: testPauseLimits}).TaskID
+	task := srv.createTask(t, testDaemon, protocol.StartTask{Prompt: "Do the work.", PauseLimits: testPauseLimits})
 	proc := d.nextProcess(t)
 	proc.nextInput(t)
 	proc.emit(harness.Output{Line: []byte(`{"n":1}`)})
@@ -284,7 +283,7 @@ func TestGivenDaemonThatDiedWithATaskRunningWhenANewOneStartsOnItsStateThenTheTa
 	srv := startServer(t)
 	proxy := startProxy(t, srv.url)
 	first := runDaemon(t, proxy.url(), t.TempDir())
-	task := srv.createTask(t, testDaemon, protocol.StartTask{Prompt: "Do the work.", PauseLimits: testPauseLimits}).TaskID
+	task := srv.createTask(t, testDaemon, protocol.StartTask{Prompt: "Do the work.", PauseLimits: testPauseLimits})
 	proc := first.nextProcess(t)
 	proc.nextInput(t)
 	proc.emit(harness.Output{Line: []byte(`{"n":1}`)})
@@ -309,7 +308,7 @@ func TestGivenDaemonThatDiedWithATaskRunningWhenANewOneStartsOnItsStateThenTheTa
 	if len(events) != 3 || exit.ExitCode != -1 || exit.Error != "daemon restarted" {
 		t.Errorf("events: %s", describe(events))
 	}
-	next := srv.createTask(t, testDaemon, protocol.StartTask{Prompt: "Next.", PauseLimits: testPauseLimits}).TaskID
+	next := srv.createTask(t, testDaemon, protocol.StartTask{Prompt: "Next.", PauseLimits: testPauseLimits})
 	if proc := second.nextProcess(t); !strings.HasSuffix(proc.spec.Workdir, string(next)) {
 		t.Errorf("first harness the new daemon started is in %s, want the new task's workspace", proc.spec.Workdir)
 	}
@@ -343,7 +342,7 @@ func TestGivenWorkspaceThatCannotBeClonedWhenTheTaskStartsThenItEndsWithGitsErro
 
 	task := srv.createTask(t, testDaemon, protocol.StartTask{
 		Prompt: "Do the work.", Workspace: &protocol.Workspace{Repo: missing, Ref: "main"}, PauseLimits: testPauseLimits,
-	}).TaskID
+	})
 
 	events := srv.waitForEvent(t, task, "harness_exited", isKind(protocol.KindHarnessExited))
 	var exit protocol.HarnessExited
@@ -362,7 +361,7 @@ func TestGivenRepositoryThatIsNotAnHTTPSURLWhenTheTaskStartsThenItEndsSayingSoAn
 
 	task := srv.createTask(t, testDaemon, protocol.StartTask{
 		Prompt: "Do the work.", Workspace: &protocol.Workspace{Repo: "git@github.com:octocat/Hello-World.git", Ref: "master"}, PauseLimits: testPauseLimits,
-	}).TaskID
+	})
 
 	events := srv.waitForEvent(t, task, "harness_exited", isKind(protocol.KindHarnessExited))
 	var exit protocol.HarnessExited

@@ -2,12 +2,15 @@ package server
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
+	"maps"
 	"math"
 	"net/http"
+	"slices"
 	"strconv"
 	"sync"
 	"time"
@@ -45,6 +48,8 @@ type Server struct {
 	endOnce sync.Once
 
 	watchers watchers
+
+	sched *scheduler
 }
 
 // commandStream is the one open SSE stream of a daemon.
@@ -68,6 +73,11 @@ type Options struct {
 	// but the login form and the static files needs the owner's token or
 	// session (docs/adr/2026-10-08-owner-authentication.md).
 	Insecure bool
+	// Schedule is what the scheduler admits turns by; the zero value is
+	// DefaultSchedulePolicy.
+	Schedule SchedulePolicy
+	// Now is the scheduler's clock; nil is time.Now.
+	Now func() time.Time
 }
 
 // New returns a server over store. The server hears of store's changes
@@ -83,6 +93,15 @@ func New(store *Store, log *slog.Logger, options Options) *Server {
 		ended:        make(chan struct{}),
 		watchers:     watchers{byTask: make(map[protocol.TaskID]map[chan struct{}]struct{})},
 	}
+	policy := options.Schedule
+	if policy == (SchedulePolicy{}) {
+		policy = DefaultSchedulePolicy
+	}
+	now := options.Now
+	if now == nil {
+		now = time.Now
+	}
+	s.sched = &scheduler{store: store, log: log, policy: policy, now: now, connected: s.connectedDaemons, wake: make(chan struct{}, 1)}
 	store.published = s.storeChanged
 	s.mux.Handle("POST /v1/daemons/{daemon}/events", s.daemonOnly(s.postEvents))
 	s.mux.Handle("GET /v1/daemons/{daemon}/acks", s.daemonOnly(s.getAcks))
@@ -298,24 +317,40 @@ func (s *Server) streamCommands(w http.ResponseWriter, r *http.Request) {
 }
 
 // openStream makes stream the daemon's one command stream, ending the
-// one it replaces.
+// one it replaces. The daemon is connected while it has one.
 func (s *Server) openStream(daemon protocol.DaemonID) *commandStream {
 	stream := &commandStream{issued: make(chan struct{}, 1), replaced: make(chan struct{})}
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	if previous, ok := s.streams[daemon]; ok {
 		close(previous.replaced)
 	}
 	s.streams[daemon] = stream
+	s.mu.Unlock()
+	s.sched.poke()
 	return stream
 }
 
 func (s *Server) closeStream(daemon protocol.DaemonID, stream *commandStream) {
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	if s.streams[daemon] == stream {
 		delete(s.streams, daemon)
 	}
+	s.mu.Unlock()
+	s.sched.poke()
+}
+
+// connectedDaemons returns the daemons with an open command stream.
+func (s *Server) connectedDaemons() []protocol.DaemonID {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return slices.Collect(maps.Keys(s.streams))
+}
+
+// Schedule admits queued turns as the scheduling rules allow
+// (docs/adr/2026-10-08-scheduling.md) until ctx ends. Turns wait while
+// it is not running.
+func (s *Server) Schedule(ctx context.Context) {
+	s.sched.run(ctx)
 }
 
 // signalIssued wakes the daemon's command stream, if one is open, to read
@@ -332,8 +367,11 @@ func (s *Server) signalIssued(daemon protocol.DaemonID) {
 }
 
 // storeChanged wakes the command streams of the daemons that fx issued
-// commands to, and the pages of the tasks it changed.
+// commands to, the pages of the tasks it changed, and the scheduler.
 func (s *Server) storeChanged(fx effects) {
+	if fx.reschedule {
+		s.sched.poke()
+	}
 	for _, command := range fx.issued {
 		s.signalIssued(command.DaemonID)
 		s.taskChanged(command.TaskID)

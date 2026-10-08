@@ -31,7 +31,8 @@ func newSenderFixture(t *testing.T) *senderFixture {
 	t.Helper()
 	f := &senderFixture{server: startServer(t), stateDir: t.TempDir()}
 	f.server.registerDaemon(t, testDaemon)
-	f.task = f.server.createTask(t, testDaemon, protocol.StartTask{Prompt: "p", PauseLimits: testPauseLimits}).TaskID
+	f.task = f.server.createTask(t, testDaemon, protocol.StartTask{Prompt: "p", PauseLimits: testPauseLimits})
+	f.server.receiveStart(t, testDaemon, f.task)
 	f.state = mustLoadState(t, f.stateDir)
 	if err := f.state.recordStart(1, f.task); err != nil {
 		t.Fatal(err)

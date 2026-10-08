@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"bytes"
+	"context"
 	"crypto/tls"
 	"encoding/json"
 	"fmt"
@@ -143,9 +144,17 @@ func newServerFixture(t *testing.T, insecure bool) (*serverFixture, *httptest.Se
 		}
 		srv.ServeHTTP(w, r)
 	}))
+	scheduleCtx, stopScheduling := context.WithCancel(context.Background())
+	scheduled := make(chan struct{})
+	go func() {
+		defer close(scheduled)
+		srv.Schedule(scheduleCtx)
+	}()
 	t.Cleanup(func() {
 		srv.EndStreams()
 		httpServer.Close()
+		stopScheduling()
+		<-scheduled
 		store.Close()
 	})
 	return f, httpServer
@@ -203,14 +212,17 @@ func (f *serverFixture) try(t *testing.T, method, path string, body any) (int, [
 var testPauseLimits = protocol.PauseLimits{Acknowledge: 2 * time.Minute, Cleanup: 5 * time.Minute}
 
 // createTask creates a task on daemon through the owner API, once the
-// server has seen the daemon, and returns its start_task command.
-func (f *serverFixture) createTask(t *testing.T, daemon protocol.DaemonID, start protocol.StartTask) protocol.Command {
+// server has seen the daemon, and returns its id. The server's scheduler
+// issues its start once the daemon is connected.
+func (f *serverFixture) createTask(t *testing.T, daemon protocol.DaemonID, start protocol.StartTask) protocol.TaskID {
 	t.Helper()
 	request := struct {
 		DaemonID protocol.DaemonID `json:"daemon_id"`
 		protocol.StartTask
 	}{daemon, start}
-	var command protocol.Command
+	var created struct {
+		TaskID protocol.TaskID `json:"task_id"`
+	}
 	eventually(t, "the server to know the daemon", func() bool {
 		status, data := f.try(t, http.MethodPost, "/v1/tasks", request)
 		if status == http.StatusUnprocessableEntity {
@@ -219,12 +231,12 @@ func (f *serverFixture) createTask(t *testing.T, daemon protocol.DaemonID, start
 		if status != http.StatusCreated {
 			t.Fatalf("create task: %d %s", status, data)
 		}
-		if err := json.Unmarshal(data, &command); err != nil {
+		if err := json.Unmarshal(data, &created); err != nil {
 			t.Fatal(err)
 		}
 		return true
 	})
-	return command
+	return created.TaskID
 }
 
 // registerDaemon makes the server know daemon, as its first request would.
@@ -233,6 +245,9 @@ func (f *serverFixture) registerDaemon(t *testing.T, daemon protocol.DaemonID) {
 	f.call(t, http.MethodGet, "/v1/daemons/"+string(daemon)+"/acks", nil, nil)
 }
 
+// command issues a command of kind to task through the owner API. A
+// prompt or a resume is queued, and the command returned for it carries
+// only its kind and task.
 func (f *serverFixture) command(t *testing.T, task protocol.TaskID, kind protocol.CommandKind, payload any) protocol.Command {
 	t.Helper()
 	var raw json.RawMessage
@@ -341,4 +356,40 @@ func (f *serverFixture) streamedCommands(t *testing.T) []protocol.Command {
 		commands = append(commands, command)
 	}
 	return commands
+}
+
+// receiveStart connects as daemon to its command stream until the
+// server's scheduler has issued task's start, as a running daemon would,
+// so that the server takes events for task from daemon.
+func (f *serverFixture) receiveStart(t *testing.T, daemon protocol.DaemonID, task protocol.TaskID) {
+	t.Helper()
+	ctx, cancel := context.WithCancel(t.Context())
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, f.url.JoinPath("v1", "daemons", string(daemon), "commands").String(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	client := f.daemon
+	if client == nil {
+		client = http.DefaultClient
+	}
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		if resp, err := client.Do(req); err == nil {
+			io.Copy(io.Discard, resp.Body)
+			resp.Body.Close()
+		}
+	}()
+	defer func() {
+		cancel()
+		<-done
+	}()
+	eventually(t, "the start of "+string(task), func() bool {
+		for _, command := range f.streamedCommands(t) {
+			if command.TaskID == task && command.Kind == protocol.CommandStartTask {
+				return true
+			}
+		}
+		return false
+	})
 }

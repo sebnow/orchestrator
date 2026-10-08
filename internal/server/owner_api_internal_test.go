@@ -18,6 +18,21 @@ const startTaskBody = `{
 	"pause_limits": {"acknowledge": "1m", "cleanup": "5m"}
 }`
 
+// postForTurn POSTs body to url and decodes the turn the server queued,
+// which it answered with status.
+func postForTurn(t *testing.T, url, body string, status int) queuedTurn {
+	t.Helper()
+	got, response := doRequest(t, http.MethodPost, url, body)
+	if got != status {
+		t.Fatalf("status = %d (%s), want %d", got, response, status)
+	}
+	var turn queuedTurn
+	if err := json.Unmarshal([]byte(response), &turn); err != nil {
+		t.Fatalf("decode %q: %v", response, err)
+	}
+	return turn
+}
+
 // postForCommand POSTs body to url and decodes the command the server issued.
 func postForCommand(t *testing.T, url, body string) protocol.Command {
 	t.Helper()
@@ -58,10 +73,12 @@ func TestGivenStreamingDaemonWhenOwnerCreatesTaskThenTheDaemonGetsTheStartAndIts
 	srv := startTestServer(t)
 	commands := openCommandStream(t, srv, "laptop", "")
 
-	created := postForCommand(t, srv.url+"/v1/tasks", startTaskBody)
+	created := postForTurn(t, srv.url+"/v1/tasks", startTaskBody, http.StatusCreated)
 
 	delivered := receiveCommand(t, commands)
-	requireJSONEqual(t, delivered, created)
+	if created.Kind != turnStart || delivered.TaskID != created.TaskID {
+		t.Fatalf("created %+v, delivered %+v; want the start of one task", created, delivered)
+	}
 	if delivered.Kind != protocol.CommandStartTask || delivered.DaemonID != "laptop" {
 		t.Fatalf("delivered %+v, want a start_task for laptop", delivered)
 	}
@@ -86,9 +103,11 @@ func TestGivenStreamingDaemonWhenOwnerCreatesTaskThenTheDaemonGetsTheStartAndIts
 	requireJSONEqual(t, getEvents(t, srv, task, "?after=1"), []protocol.Event{second})
 	requireJSONEqual(t, getEvents(t, srv, task, "?after=2"), []protocol.Event{})
 
-	prompt := postForCommand(t, srv.url+"/v1/tasks/"+string(task)+"/commands",
-		`{"kind":"prompt","payload":{"text":"now to four"}}`)
-	requireJSONEqual(t, receiveCommand(t, commands), prompt)
+	prompt := postForTurn(t, srv.url+"/v1/tasks/"+string(task)+"/commands",
+		`{"kind":"prompt","payload":{"text":"now to four"}}`, http.StatusAccepted)
+	if delivered := receiveCommand(t, commands); delivered.Kind != protocol.CommandPrompt || delivered.TaskID != prompt.TaskID || string(delivered.Payload) != `{"text":"now to four"}` {
+		t.Errorf("delivered %+v (payload %s), want the prompt queued as %+v", delivered, delivered.Payload, prompt)
+	}
 }
 
 func TestGivenUnseenDaemonWhenCreatingTaskThenUnprocessable(t *testing.T) {
@@ -133,7 +152,26 @@ func TestGivenInvalidTaskWhenCreatingThenBadRequestAndNoCommandIsIssued(t *testi
 	}
 }
 
-func TestGivenEachCommandKindWhenIssuedThenItsPayloadIsCarried(t *testing.T) {
+func TestGivenPromptOrResumeWhenPostedThenItIsQueuedAsATurn(t *testing.T) {
+	srv := startTestServer(t)
+	seedTask(t, srv.store, "laptop", "task-1")
+	for _, tc := range []struct {
+		body string
+		want turnKind
+	}{
+		{`{"kind":"prompt","payload":{"text":"go on"}}`, turnPrompt},
+		{`{"kind":"resume","payload":null}`, turnResume},
+	} {
+		t.Run(string(tc.want), func(t *testing.T) {
+			turn := postForTurn(t, srv.url+"/v1/tasks/task-1/commands", tc.body, http.StatusAccepted)
+			if turn.Kind != tc.want || turn.TaskID != "task-1" || turn.ID == 0 {
+				t.Errorf("turn = %+v, want a %s for task-1", turn, tc.want)
+			}
+		})
+	}
+}
+
+func TestGivenEachImmediateCommandKindWhenIssuedThenItsPayloadIsCarried(t *testing.T) {
 	srv := startTestServer(t)
 	seedTask(t, srv.store, "laptop", "task-1")
 	for _, tc := range []struct {
@@ -141,9 +179,7 @@ func TestGivenEachCommandKindWhenIssuedThenItsPayloadIsCarried(t *testing.T) {
 		wantKind    protocol.CommandKind
 		wantPayload string
 	}{
-		{`{"kind":"prompt","payload":{"text":"go on"}}`, protocol.CommandPrompt, `{"text":"go on"}`},
 		{`{"kind":"pause"}`, protocol.CommandPause, ``},
-		{`{"kind":"resume","payload":null}`, protocol.CommandResume, ``},
 		{`{"kind":"interrupt"}`, protocol.CommandInterrupt, ``},
 		{`{"kind":"stop"}`, protocol.CommandStop, ``},
 		{`{"kind":"answer_permission","payload":{"request_id":"req-1","allow":true}}`, protocol.CommandAnswerPermission, `{"request_id":"req-1","allow":true}`},
@@ -221,11 +257,11 @@ func TestGivenTaskWithoutModelWhenCreatingThenTheDefaultModelIsSent(t *testing.T
 		`{"daemon_id":"laptop","prompt":"p","model":"","pause_limits":{"acknowledge":"1m","cleanup":"5m"}}`:     testDefaultModel,
 		`{"daemon_id":"laptop","prompt":"p","model":"opus","pause_limits":{"acknowledge":"1m","cleanup":"5m"}}`: "opus",
 	} {
-		command := postForCommand(t, srv.url+"/v1/tasks", body)
-		var start protocol.StartTask
-		if err := json.Unmarshal(command.Payload, &start); err != nil {
-			t.Fatal(err)
+		turn := postForTurn(t, srv.url+"/v1/tasks", body, http.StatusCreated)
+		var start struct {
+			Model string `json:"model"`
 		}
+		getJSON(t, srv.url+"/v1/tasks/"+string(turn.TaskID), &start)
 		if start.Model != want {
 			t.Errorf("%s: model = %q, want %q", body, start.Model, want)
 		}
@@ -256,8 +292,9 @@ func TestGivenNoTasksWhenListingThenTheListIsEmpty(t *testing.T) {
 func TestGivenRunningTaskWhenListingAndGettingItThenItsStateActivityAndCostAreShown(t *testing.T) {
 	srv := startTestServer(t)
 	doRequest(t, http.MethodGet, srv.url+"/v1/daemons/laptop/acks", "")
-	first := postForCommand(t, srv.url+"/v1/tasks", startTaskBody)
-	second := postForCommand(t, srv.url+"/v1/tasks", `{"daemon_id":"laptop","prompt":"p","pause_limits":{"acknowledge":"1m","cleanup":"5m"}}`)
+	first := postForTurn(t, srv.url+"/v1/tasks", startTaskBody, http.StatusCreated)
+	second := postForTurn(t, srv.url+"/v1/tasks", `{"daemon_id":"laptop","prompt":"p","pause_limits":{"acknowledge":"1m","cleanup":"5m"}}`, http.StatusCreated)
+	admitTurns(t, srv.store)
 	active := time.Now().Add(time.Hour).UTC().Truncate(time.Second)
 	started := event(first.TaskID, 1, `{"pid":1,"model":"haiku","workdir":"/w"}`)
 	started.Kind = protocol.KindHarnessStarted
@@ -275,13 +312,13 @@ func TestGivenRunningTaskWhenListingAndGettingItThenItsStateActivityAndCostAreSh
 	if len(list) != 2 || list[0]["id"] != string(first.TaskID) || list[1]["id"] != string(second.TaskID) {
 		t.Fatalf("list = %v, want both tasks, oldest first", list)
 	}
-	created := first.Time.Format(time.RFC3339Nano)
+	created := first.CreatedAt.Format(time.RFC3339Nano)
 	requireJSONEqual(t, list[0], map[string]any{
 		"id": string(first.TaskID), "daemon_id": "laptop", "state": "running", "model": "haiku",
 		"created_at": list[0]["created_at"], "last_activity_at": active.Format(time.RFC3339Nano), "cost_usd": 0.25,
 	})
-	if got, _ := time.Parse(time.RFC3339Nano, list[0]["created_at"].(string)); got.After(first.Time) || first.Time.Sub(got) > time.Second {
-		t.Errorf("created_at = %v, want just before the start_task at %s", list[0]["created_at"], created)
+	if got, _ := time.Parse(time.RFC3339Nano, list[0]["created_at"].(string)); got.After(first.CreatedAt) || first.CreatedAt.Sub(got) > time.Second {
+		t.Errorf("created_at = %v, want just before the start was queued at %s", list[0]["created_at"], created)
 	}
 	if list[1]["state"] != "pending" || list[1]["model"] != testDefaultModel || list[1]["cost_usd"] != 0.0 {
 		t.Errorf("second task = %v", list[1])
@@ -305,5 +342,48 @@ func TestGivenUnknownTaskWhenGettingItThenNotFound(t *testing.T) {
 
 	if status != http.StatusNotFound {
 		t.Errorf("status = %d (%s), want 404", status, body)
+	}
+}
+
+func TestGivenTaskWhoseDaemonIsNotConnectedWhenTheDaemonConnectsThenItGetsTheStart(t *testing.T) {
+	srv := startTestServer(t)
+	doRequest(t, http.MethodGet, srv.url+"/v1/daemons/laptop/acks", "")
+	created := postForTurn(t, srv.url+"/v1/tasks", startTaskBody, http.StatusCreated)
+	if state := readProgress(t, srv.store, created.TaskID).State; state != TaskQueued {
+		t.Fatalf("state before the daemon connects = %s, want queued", state)
+	}
+
+	commands := openCommandStream(t, srv, "laptop", "")
+
+	if delivered := receiveCommand(t, commands); delivered.Kind != protocol.CommandStartTask || delivered.TaskID != created.TaskID {
+		t.Errorf("delivered %+v, want the start of %s", delivered, created.TaskID)
+	}
+}
+
+func TestGivenTaskThatHasNotStartedWhenStoppedThenItEndsWithNothingSentAndOtherCommandsAreRefused(t *testing.T) {
+	srv := startTestServer(t)
+	doRequest(t, http.MethodGet, srv.url+"/v1/daemons/laptop/acks", "")
+	created := postForTurn(t, srv.url+"/v1/tasks", startTaskBody, http.StatusCreated)
+	commandsURL := srv.url + "/v1/tasks/" + string(created.TaskID) + "/commands"
+
+	pause, pauseBody := doRequest(t, http.MethodPost, commandsURL, `{"kind":"pause"}`)
+	stop, stopBody := doRequest(t, http.MethodPost, commandsURL, `{"kind":"stop"}`)
+
+	if pause != http.StatusConflict {
+		t.Errorf("pause: status = %d (%s), want 409", pause, pauseBody)
+	}
+	if stop != http.StatusNoContent {
+		t.Errorf("stop: status = %d (%s), want 204", stop, stopBody)
+	}
+	if state := readProgress(t, srv.store, created.TaskID).State; state != TaskStopped {
+		t.Errorf("state = %s, want stopped", state)
+	}
+	admitTurns(t, srv.store)
+	commands, err := srv.store.commandsAfter(t.Context(), "laptop", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(commands) != 0 {
+		t.Errorf("issued %+v, want nothing", commands)
 	}
 }

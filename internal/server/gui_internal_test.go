@@ -94,7 +94,7 @@ func startForm(daemon, prompt string) url.Values {
 }
 
 // startTaskViaForm has daemon seen, starts a task on it through the
-// new-task form, and returns the task's id.
+// new-task form, admits its start, and returns the task's id.
 func startTaskViaForm(t *testing.T, srv testServer, daemon protocol.DaemonID, prompt string) protocol.TaskID {
 	t.Helper()
 	doRequest(t, http.MethodGet, srv.url+"/v1/daemons/"+string(daemon)+"/acks", "")
@@ -106,6 +106,7 @@ func startTaskViaForm(t *testing.T, srv testServer, daemon protocol.DaemonID, pr
 	if !found {
 		t.Fatalf("redirected to %q, want a task page", got.header.Get("Location"))
 	}
+	admitTurns(t, srv.store)
 	return protocol.TaskID(task)
 }
 

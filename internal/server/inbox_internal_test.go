@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"reflect"
+	"slices"
 	"testing"
 	"time"
 
@@ -93,6 +94,7 @@ func sendFrom(t *testing.T, store *Store, from, to protocol.TaskID, text string)
 	if err != nil {
 		t.Fatalf("send %q from %s to %s: %v", text, from, to, err)
 	}
+	admitTurns(t, store)
 	return delivered
 }
 
@@ -263,21 +265,30 @@ func TestGivenRunningParentWhenItSpawnsThenTheChildStartsOnItsDaemonWithItsSetti
 		Model:       "opus",
 		PauseLimits: protocol.PauseLimits{Acknowledge: 2 * time.Minute, Cleanup: 7 * time.Minute},
 	}
-	if _, err := store.createTask(t.Context(), "laptop", "parent", parentStart); err != nil {
-		t.Fatal(err)
-	}
+	parent := ownersTask("parent", "laptop")
+	parent.Start = parentStart
+	queueTask(t, store, parent)
+	admitTurns(t, store)
 	(&lifecycle{t: t, store: store, task: "parent"}).drive(TaskRunning)
 
-	command, err := store.spawnTask(t.Context(), "laptop", "parent", "child", protocol.Spawn{Prompt: "Say PEAR."})
+	turn, err := store.spawnTask(t.Context(), "laptop", "parent", "child", protocol.Spawn{Prompt: "Say PEAR."})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if _, err := store.spawnTask(t.Context(), "laptop", "parent", "other", protocol.Spawn{Prompt: "Say PLUM.", Model: "haiku"}); err != nil {
 		t.Fatal(err)
 	}
+	admitTurns(t, store)
 
-	if command.Kind != protocol.CommandStartTask || command.TaskID != "child" || command.DaemonID != "laptop" {
-		t.Errorf("command = %+v, want start_task of child on laptop", command)
+	if turn.Kind != turnStart || turn.TaskID != "child" {
+		t.Errorf("turn = %+v, want the start of child", turn)
+	}
+	commands, err := store.commandsAfter(t.Context(), "laptop", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.ContainsFunc(commands, func(c protocol.Command) bool { return c.TaskID == "child" && c.Kind == protocol.CommandStartTask }) {
+		t.Errorf("commands = %+v, want the start of child on laptop", commands)
 	}
 	child, err := store.task(t.Context(), "child")
 	if err != nil {
@@ -304,6 +315,7 @@ func spawned(t *testing.T, store *Store, parent, child protocol.TaskID) *lifecyc
 	if _, err := store.spawnTask(t.Context(), "laptop", parent, child, protocol.Spawn{Prompt: "Say PEAR."}); err != nil {
 		t.Fatal(err)
 	}
+	admitTurns(t, store)
 	return &lifecycle{t: t, store: store, task: child}
 }
 
@@ -375,6 +387,7 @@ func TestGivenOwnersTaskAndChildWhenStartedThenEachSystemPromptExplainsMessaging
 	if err != nil {
 		t.Fatal(err)
 	}
+	admitTurns(t, srv.store)
 	parent := &lifecycle{t: t, store: srv.store, task: command.TaskID}
 	parent.drive(TaskRunning)
 	child := spawned(t, srv.store, command.TaskID, "child")

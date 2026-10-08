@@ -45,11 +45,15 @@ func TestGivenFinishedTaskWhenItsPageIsShownThenItOffersAFollowUpAndStopButNothi
 	requireLacks(t, page, pauseButton, resumeButton, interruptButton, closedSend)
 }
 
-func TestGivenFinishedTaskWhenAFollowUpIsPostedThenItIsIssuedAndTheTaskRuns(t *testing.T) {
+func TestGivenFinishedTaskWhenAFollowUpIsPostedThenItIsQueuedAndOnceAdmittedTheTaskRuns(t *testing.T) {
 	srv := startTestServer(t)
 	task := taskThatExited(t, srv, false)
 
 	postForm(t, srv, task, url.Values{"kind": {"prompt"}, "text": {"What is the codeword?"}})
+	if got := readProgress(t, srv.store, task).State; got != TaskFinished {
+		t.Errorf("state before admission = %s, want finished", got)
+	}
+	admitTurns(t, srv.store)
 
 	if got := readProgress(t, srv.store, task).State; got != TaskRunning {
 		t.Errorf("state = %s, want running", got)

@@ -77,7 +77,7 @@ func (v taskView) header() html.Node {
 	live := !state.Terminal() && !state.Idle()
 	return component.TaskHeader(v.task(), component.Controls(v.id(), component.ControlSet{
 		Pause:     state == TaskRunning || state == TaskAwaitingPermission,
-		Resume:    state == TaskPaused,
+		Resume:    state == TaskPaused || state == TaskYielded,
 		Interrupt: live,
 		Stop:      !state.Terminal(),
 	}))
@@ -198,13 +198,19 @@ func (s *Server) postCommandForm(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if refused.problem == "" {
-		_, err = s.store.issueCommand(r.Context(), task, refused.kind, checked)
+		if refused.kind == protocol.CommandPrompt || refused.kind == protocol.CommandResume {
+			_, err = s.store.queueCommand(r.Context(), task, turnKind(refused.kind), checked)
+		} else {
+			_, err = s.store.issueCommand(r.Context(), task, refused.kind, checked)
+		}
 		if errors.Is(err, errUnknownTask) {
 			http.Error(w, err.Error(), http.StatusNotFound)
 			return
 		}
 		if errors.Is(err, errTaskEnded) {
 			refused.problem = "The task has ended; it takes no more commands."
+		} else if errors.Is(err, errNotStarted) {
+			refused.problem = "The task has not started yet; it can only be stopped."
 		} else if err != nil {
 			s.internalError(w, err)
 			return

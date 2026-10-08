@@ -71,7 +71,7 @@ func journalGone(t *testing.T, stateDir string, task protocol.TaskID) func() boo
 func TestGivenTurnThatEndsWithNothingOutstandingWhenItEndsThenTheHarnessExitsAndTheServerHearsItCleanly(t *testing.T) {
 	srv := startServer(t)
 	d := runDaemon(t, srv.url, t.TempDir())
-	task := srv.createTask(t, testDaemon, protocol.StartTask{Prompt: "Do the work.", PauseLimits: testPauseLimits}).TaskID
+	task := srv.createTask(t, testDaemon, protocol.StartTask{Prompt: "Do the work.", PauseLimits: testPauseLimits})
 	proc := d.nextProcess(t)
 
 	finishTurn(t, proc, "session-1")
@@ -92,7 +92,7 @@ func TestGivenTurnThatEndsWithNothingOutstandingWhenItEndsThenTheHarnessExitsAnd
 func TestGivenFollowUpWhileATurnRunsWhenTheFirstTurnEndsThenTheProcessStaysForTheFollowUpsTurn(t *testing.T) {
 	srv := startServer(t)
 	d := runDaemon(t, srv.url, t.TempDir())
-	task := srv.createTask(t, testDaemon, protocol.StartTask{Prompt: "Do the work.", PauseLimits: testPauseLimits}).TaskID
+	task := srv.createTask(t, testDaemon, protocol.StartTask{Prompt: "Do the work.", PauseLimits: testPauseLimits})
 	proc := d.nextProcess(t)
 	first := proc.nextInput(t)
 	srv.command(t, task, protocol.CommandPrompt, protocol.Prompt{Text: "Also this."})
@@ -111,7 +111,7 @@ func TestGivenFinishedTaskWhenTheOwnerPromptsThenANewProcessResumesItsSessionInT
 	d := runDaemon(t, srv.url, t.TempDir())
 	task := srv.createTask(t, testDaemon, protocol.StartTask{
 		Prompt: "The codeword is MARMALADE.", Model: "fake-model", SystemPrompt: "Be brief.", PauseLimits: testPauseLimits,
-	}).TaskID
+	})
 	first := d.nextProcess(t)
 	finishTurn(t, first, "session-1")
 	expectExit(t, first)
@@ -155,7 +155,7 @@ func kindStrings(kinds []protocol.Kind) []string {
 func TestGivenPromptRightAfterATurnEndsWhenTheProcessIsStillExitingThenTheNextProcessGetsIt(t *testing.T) {
 	srv := startServer(t)
 	d := runDaemon(t, srv.url, t.TempDir())
-	task := srv.createTask(t, testDaemon, protocol.StartTask{Prompt: "Do the work.", PauseLimits: testPauseLimits}).TaskID
+	task := srv.createTask(t, testDaemon, protocol.StartTask{Prompt: "Do the work.", PauseLimits: testPauseLimits})
 	first := d.nextProcess(t)
 	first.endOnClose = false
 	finishTurn(t, first, "session-1")
@@ -174,7 +174,7 @@ func TestGivenPromptRightAfterATurnEndsWhenTheProcessIsStillExitingThenTheNextPr
 func TestGivenPauseThatSettlesWhenTheOwnerResumesThenANewProcessResumesWithTheStopNote(t *testing.T) {
 	srv := startServer(t)
 	d := runDaemon(t, srv.url, t.TempDir())
-	task := srv.createTask(t, testDaemon, protocol.StartTask{Prompt: "Do three steps.", PauseLimits: testPauseLimits}).TaskID
+	task := srv.createTask(t, testDaemon, protocol.StartTask{Prompt: "Do three steps.", PauseLimits: testPauseLimits})
 	first := d.nextProcess(t)
 	prompt := first.nextInput(t)
 	srv.command(t, task, protocol.CommandPause, nil)
@@ -206,7 +206,7 @@ func TestGivenPauseThatSettlesWhenTheOwnerResumesThenANewProcessResumesWithTheSt
 func TestGivenTaskBetweenProcessesWhenTheOwnerStopsItThenItIsForgottenAndAPromptStartsNothing(t *testing.T) {
 	srv := startServer(t)
 	d := runDaemon(t, srv.url, t.TempDir())
-	task := srv.createTask(t, testDaemon, protocol.StartTask{Prompt: "Do the work.", PauseLimits: testPauseLimits}).TaskID
+	task := srv.createTask(t, testDaemon, protocol.StartTask{Prompt: "Do the work.", PauseLimits: testPauseLimits})
 	proc := d.nextProcess(t)
 	finishTurn(t, proc, "session-1")
 	expectExit(t, proc)
@@ -221,7 +221,7 @@ func TestGivenTaskBetweenProcessesWhenTheOwnerStopsItThenItIsForgottenAndAPrompt
 		t.Errorf("events: %s", describe(events))
 	}
 	eventually(t, "the task to be forgotten", func() bool { return !mustLoadState(t, d.stateDir).known(task) })
-	next := srv.createTask(t, testDaemon, protocol.StartTask{Prompt: "Next.", PauseLimits: testPauseLimits}).TaskID
+	next := srv.createTask(t, testDaemon, protocol.StartTask{Prompt: "Next.", PauseLimits: testPauseLimits})
 	if proc := d.nextProcess(t); !strings.HasSuffix(proc.spec.Workdir, string(next)) {
 		t.Errorf("a harness started in %s, want only the next task's", proc.spec.Workdir)
 	}
@@ -230,7 +230,7 @@ func TestGivenTaskBetweenProcessesWhenTheOwnerStopsItThenItIsForgottenAndAPrompt
 func TestGivenRunningTaskWhenTheOwnerStopsItThenItIsForgottenOnceTheServerHoldsItsExit(t *testing.T) {
 	srv := startServer(t)
 	d := runDaemon(t, srv.url, t.TempDir())
-	task := srv.createTask(t, testDaemon, protocol.StartTask{Prompt: "Do the work.", PauseLimits: testPauseLimits}).TaskID
+	task := srv.createTask(t, testDaemon, protocol.StartTask{Prompt: "Do the work.", PauseLimits: testPauseLimits})
 	proc := d.nextProcess(t)
 	proc.nextInput(t)
 	proc.emit(harness.Output{Line: []byte(`{"type":"system","subtype":"init"}`), SessionID: "session-1"})
@@ -245,7 +245,7 @@ func TestGivenRunningTaskWhenTheOwnerStopsItThenItIsForgottenOnceTheServerHoldsI
 func TestGivenTaskWhoseHarnessFailedWhenTheOwnerPromptsThenNoProcessStarts(t *testing.T) {
 	srv := startServer(t)
 	d := runDaemon(t, srv.url, t.TempDir())
-	task := srv.createTask(t, testDaemon, protocol.StartTask{Prompt: "Do the work.", PauseLimits: testPauseLimits}).TaskID
+	task := srv.createTask(t, testDaemon, protocol.StartTask{Prompt: "Do the work.", PauseLimits: testPauseLimits})
 	proc := d.nextProcess(t)
 	proc.nextInput(t)
 	proc.emit(harness.Output{Line: []byte(`{"type":"system","subtype":"init"}`), SessionID: "session-1"})
@@ -255,7 +255,7 @@ func TestGivenTaskWhoseHarnessFailedWhenTheOwnerPromptsThenNoProcessStarts(t *te
 
 	srv.tryCommand(t, task, protocol.CommandPrompt, protocol.Prompt{Text: "Try again."})
 
-	next := srv.createTask(t, testDaemon, protocol.StartTask{Prompt: "Next.", PauseLimits: testPauseLimits}).TaskID
+	next := srv.createTask(t, testDaemon, protocol.StartTask{Prompt: "Next.", PauseLimits: testPauseLimits})
 	if proc := d.nextProcess(t); !strings.HasSuffix(proc.spec.Workdir, string(next)) {
 		t.Errorf("a harness started in %s, want only the next task's", proc.spec.Workdir)
 	}
@@ -265,7 +265,7 @@ func TestGivenFinishedTaskWhenTheDaemonRestartsAndTheOwnerPromptsThenItResumesWi
 	srv := startServer(t)
 	stateDir := t.TempDir()
 	first := runDaemon(t, srv.url, stateDir)
-	task := srv.createTask(t, testDaemon, protocol.StartTask{Prompt: "Do the work.", PauseLimits: testPauseLimits}).TaskID
+	task := srv.createTask(t, testDaemon, protocol.StartTask{Prompt: "Do the work.", PauseLimits: testPauseLimits})
 	proc := first.nextProcess(t)
 	finishTurn(t, proc, "session-1")
 	expectExit(t, proc)
@@ -304,7 +304,7 @@ func (f *serverFixture) tryCommand(t *testing.T, task protocol.TaskID, kind prot
 func TestGivenResumedTaskWhoseJournalTheServerDoesNotHoldYetWhenPromptedAgainThenItsThirdProcessContinuesTheJournal(t *testing.T) {
 	srv := startServer(t)
 	d := runDaemon(t, srv.url, t.TempDir())
-	task := srv.createTask(t, testDaemon, protocol.StartTask{Prompt: "One.", PauseLimits: testPauseLimits}).TaskID
+	task := srv.createTask(t, testDaemon, protocol.StartTask{Prompt: "One.", PauseLimits: testPauseLimits})
 	first := d.nextProcess(t)
 	finishTurn(t, first, "session-1")
 	expectExit(t, first)
@@ -337,7 +337,7 @@ func TestGivenContinuationJournalLeftByACrashWhenTheDaemonRestartsThenTheTaskEnd
 	proxy := startProxy(t, srv.url)
 	stateDir := t.TempDir()
 	first := runDaemon(t, proxy.url(), stateDir)
-	task := srv.createTask(t, testDaemon, protocol.StartTask{Prompt: "One.", PauseLimits: testPauseLimits}).TaskID
+	task := srv.createTask(t, testDaemon, protocol.StartTask{Prompt: "One.", PauseLimits: testPauseLimits})
 	proc := first.nextProcess(t)
 	finishTurn(t, proc, "session-1")
 	expectExit(t, proc)
@@ -368,7 +368,7 @@ func TestGivenContinuationJournalLeftByACrashWhenTheDaemonRestartsThenTheTaskEnd
 func TestGivenProcessThatDoesNotExitAfterItsTurnWhenAPromptWaitsForItThenItIsKilledAndTheServerHearsWhy(t *testing.T) {
 	srv := startServer(t)
 	d := runDaemon(t, srv.url, t.TempDir())
-	task := srv.createTask(t, testDaemon, protocol.StartTask{Prompt: "Do the work.", PauseLimits: testPauseLimits}).TaskID
+	task := srv.createTask(t, testDaemon, protocol.StartTask{Prompt: "Do the work.", PauseLimits: testPauseLimits})
 	proc := d.nextProcess(t)
 	proc.endOnClose = false
 	finishTurn(t, proc, "session-1")

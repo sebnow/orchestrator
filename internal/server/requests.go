@@ -49,9 +49,9 @@ func (s *Server) postAgentRequest(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		// rand.Text uses only letters and digits, so the id is always valid.
-		var command protocol.Command
-		command, err = s.store.spawnTask(r.Context(), daemon, task, protocol.TaskID(rand.Text()), spawn)
-		reply = protocol.Spawned{TaskID: command.TaskID}
+		var turn queuedTurn
+		turn, err = s.store.spawnTask(r.Context(), daemon, task, protocol.TaskID(rand.Text()), spawn)
+		reply = protocol.Spawned{TaskID: turn.TaskID}
 	case protocol.AgentSend:
 		var send protocol.Send
 		if err := decodeStrict(bytes.NewReader(request.Payload), &send); err != nil {

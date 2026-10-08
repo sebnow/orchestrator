@@ -3,6 +3,7 @@ package server
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"encoding/json"
 	"io"
 	"log/slog"
@@ -47,9 +48,17 @@ func startTestServer(t *testing.T) testServer {
 	logs := &syncBuffer{}
 	srv := New(store, slog.New(slog.NewTextHandler(logs, nil)), Options{DefaultModel: testDefaultModel, Insecure: true})
 	httpServer := httptest.NewServer(srv)
+	ctx, stopScheduling := context.WithCancel(context.Background())
+	scheduled := make(chan struct{})
+	go func() {
+		defer close(scheduled)
+		srv.Schedule(ctx)
+	}()
 	t.Cleanup(func() {
 		srv.EndStreams()
 		httpServer.Close()
+		stopScheduling()
+		<-scheduled
 	})
 	return testServer{Server: srv, url: httpServer.URL, logs: logs}
 }
@@ -239,7 +248,7 @@ func TestGivenNewDaemonWhenGettingAcksThenItIsSeenWithNoTasks(t *testing.T) {
 	status, body := doRequest(t, http.MethodGet, srv.url+"/v1/daemons/fresh/acks", "")
 
 	requireAcks(t, status, body, map[protocol.TaskID]uint64{})
-	if _, err := srv.store.createTask(t.Context(), "fresh", "task-1", testStart); err != nil {
+	if _, err := srv.store.createTask(t.Context(), ownersTask("task-1", "fresh")); err != nil {
 		t.Errorf("createTask on the seen daemon: %v", err)
 	}
 }
@@ -376,7 +385,7 @@ func TestGivenSecondStreamForADaemonWhenItConnectsThenTheFirstEnds(t *testing.T)
 	case <-time.After(5 * time.Second):
 		t.Fatal("first stream still open after 5s")
 	}
-	if _, err := srv.store.createTask(t.Context(), "laptop", "task-1", testStart); err != nil {
+	if _, err := srv.store.createTask(t.Context(), ownersTask("task-1", "laptop")); err != nil {
 		t.Fatal(err)
 	}
 	if command := receiveCommand(t, second); command.Kind != protocol.CommandStartTask {

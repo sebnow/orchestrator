@@ -45,27 +45,30 @@ func requireRunning(ctx context.Context, tx *sql.Tx, daemon protocol.DaemonID, t
 	return nil
 }
 
-// spawnTask creates child, a child of parent, on parent's daemon and
-// issues its start, for an agent of parent running on daemon. The child
-// works in a fresh copy of parent's workspace, with parent's pause limits,
-// and with parent's model unless spawn names one.
-func (s *Store) spawnTask(ctx context.Context, daemon protocol.DaemonID, parent, child protocol.TaskID, spawn protocol.Spawn) (protocol.Command, error) {
+// spawnTask creates child, a child of parent, and queues its start, for
+// an agent of parent running on daemon. The start goes to parent's
+// daemon unless that has no free slot when it is admitted
+// (docs/adr/2026-10-08-scheduling.md). The child works in a fresh copy of
+// parent's workspace, with parent's pause limits, priority and filler
+// flag, and with parent's model unless spawn names one.
+func (s *Store) spawnTask(ctx context.Context, daemon protocol.DaemonID, parent, child protocol.TaskID, spawn protocol.Spawn) (queuedTurn, error) {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
-		return protocol.Command{}, fmt.Errorf("spawn task: %w", err)
+		return queuedTurn{}, fmt.Errorf("spawn task: %w", err)
 	}
 	defer tx.Rollback()
 	if err := requireRunning(ctx, tx, daemon, parent); err != nil {
-		return protocol.Command{}, err
+		return queuedTurn{}, err
 	}
-	var model string
+	var model, priority string
 	var repo, ref sql.NullString
 	var acknowledge, cleanup int64
+	var filler bool
 	err = tx.QueryRowContext(ctx, `
-		SELECT model, workspace_repo, workspace_ref, pause_acknowledge_ns, pause_cleanup_ns FROM tasks WHERE id = ?`,
-		string(parent)).Scan(&model, &repo, &ref, &acknowledge, &cleanup)
+		SELECT model, workspace_repo, workspace_ref, pause_acknowledge_ns, pause_cleanup_ns, priority, filler FROM tasks WHERE id = ?`,
+		string(parent)).Scan(&model, &repo, &ref, &acknowledge, &cleanup, &priority, &filler)
 	if err != nil {
-		return protocol.Command{}, fmt.Errorf("read task %q: %w", parent, err)
+		return queuedTurn{}, fmt.Errorf("read task %q: %w", parent, err)
 	}
 	start := protocol.StartTask{
 		Prompt:       spawn.Prompt,
@@ -80,22 +83,25 @@ func (s *Store) spawnTask(ctx context.Context, daemon protocol.DaemonID, parent,
 		start.Workspace = &protocol.Workspace{Repo: repo.String, Ref: ref.String}
 	}
 	fx := effects{changed: []protocol.TaskID{parent}}
-	command, err := insertTask(ctx, tx, daemon, child, &parent, start, &fx)
+	turn, err := insertTask(ctx, tx, newTask{
+		ID: child, Parent: &parent, Daemon: daemon, Placement: placementParent,
+		Priority: Priority(priority), Filler: filler, Start: start, Origin: originServer,
+	}, &fx)
 	if err != nil {
-		return protocol.Command{}, err
+		return queuedTurn{}, err
 	}
 	if err := tx.Commit(); err != nil {
-		return protocol.Command{}, fmt.Errorf("spawn task: %w", err)
+		return queuedTurn{}, fmt.Errorf("spawn task: %w", err)
 	}
 	s.publish(&fx)
-	return command, nil
+	return turn, nil
 }
 
 // sendMessage puts a message from the task from, whose agent runs on
-// daemon, in the recipient's inbox, and delivers the inbox at once if
-// the recipient is finished. It reports whether it delivered. A message
-// to a task that does not exist, has ended, or is the sender is refused
-// with errRefused.
+// daemon, in the recipient's inbox, and queues the inbox's delivery if
+// the recipient is finished. It reports whether the message is to be the
+// recipient's next turn. A message to a task that does not exist, has
+// ended, or is the sender is refused with errRefused.
 func (s *Store) sendMessage(ctx context.Context, daemon protocol.DaemonID, from protocol.TaskID, send protocol.Send) (delivered bool, err error) {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -122,7 +128,7 @@ func (s *Store) sendMessage(ctx context.Context, daemon protocol.DaemonID, from 
 		return false, err
 	}
 	fx := effects{changed: []protocol.TaskID{from}}
-	if delivered, err = deliverWaiting(ctx, tx, send.To, &fx); err != nil {
+	if delivered, err = queueDelivery(ctx, tx, send.To, &fx); err != nil {
 		return false, err
 	}
 	if err := tx.Commit(); err != nil {
@@ -167,16 +173,17 @@ func notifyParent(ctx context.Context, tx *sql.Tx, child protocol.TaskID, state 
 		return err
 	}
 	fx.changed = append(fx.changed, recipient)
-	_, err = deliverWaiting(ctx, tx, recipient, fx)
+	_, err = queueDelivery(ctx, tx, recipient, fx)
 	return err
 }
 
-// deliverWaiting issues every message waiting in task's inbox as one
-// prompt, if task is finished and any wait. It reports whether it issued
-// one. A task in any other state keeps its messages until it is finished:
-// a running task's turn would otherwise be cut into, and a paused task is
-// held by the owner.
-func deliverWaiting(ctx context.Context, tx *sql.Tx, task protocol.TaskID, fx *effects) (bool, error) {
+// queueDelivery queues the delivery of the messages waiting in task's
+// inbox as a turn, if task is finished and any wait, unless a delivery
+// is queued already; that one carries every message waiting when it is
+// admitted. It reports whether a delivery is queued. A task in any other
+// state keeps its messages until it is finished: a running task's turn
+// would otherwise be cut into, and a paused task is held by the owner.
+func queueDelivery(ctx context.Context, tx *sql.Tx, task protocol.TaskID, fx *effects) (bool, error) {
 	p, err := loadProgress(ctx, tx, task)
 	if err != nil {
 		return false, err
@@ -184,11 +191,35 @@ func deliverWaiting(ctx context.Context, tx *sql.Tx, task protocol.TaskID, fx *e
 	if p.State != TaskFinished {
 		return false, nil
 	}
+	var waiting, queued, filler bool
+	err = tx.QueryRowContext(ctx, `
+		SELECT EXISTS (SELECT 1 FROM messages WHERE to_task = ?1 AND delivered_command_id IS NULL),
+			EXISTS (SELECT 1 FROM turns WHERE task_id = ?1 AND kind = ?2 AND admitted_command_id IS NULL),
+			filler
+		FROM tasks WHERE id = ?1`, string(task), string(turnDeliver)).Scan(&waiting, &queued, &filler)
+	if err != nil {
+		return false, fmt.Errorf("read inbox of task %q: %w", task, err)
+	}
+	if !waiting {
+		return false, nil
+	}
+	if !queued {
+		if _, err := insertTurn(ctx, tx, task, turnDeliver, nil, originServer, filler, fx); err != nil {
+			return false, err
+		}
+	}
+	return true, nil
+}
+
+// deliverWaiting issues every message waiting in task's inbox, assigned
+// to daemon, as one prompt, and returns it; it returns a command with no
+// ID when none waits.
+func deliverWaiting(ctx context.Context, tx *sql.Tx, daemon protocol.DaemonID, task protocol.TaskID, fx *effects) (protocol.Command, error) {
 	rows, err := tx.QueryContext(ctx, `
 		SELECT id, from_task, about_task, text FROM messages
 		WHERE to_task = ? AND delivered_command_id IS NULL ORDER BY id`, string(task))
 	if err != nil {
-		return false, fmt.Errorf("read inbox of task %q: %w", task, err)
+		return protocol.Command{}, fmt.Errorf("read inbox of task %q: %w", task, err)
 	}
 	var waiting []inboxMessage
 	var last int64
@@ -196,36 +227,32 @@ func deliverWaiting(ctx context.Context, tx *sql.Tx, task protocol.TaskID, fx *e
 		var message inboxMessage
 		if err := rows.Scan(&last, &message.from, &message.about, &message.text); err != nil {
 			rows.Close()
-			return false, fmt.Errorf("read inbox of task %q: %w", task, err)
+			return protocol.Command{}, fmt.Errorf("read inbox of task %q: %w", task, err)
 		}
 		waiting = append(waiting, message)
 	}
 	rows.Close()
 	if err := rows.Err(); err != nil {
-		return false, fmt.Errorf("read inbox of task %q: %w", task, err)
+		return protocol.Command{}, fmt.Errorf("read inbox of task %q: %w", task, err)
 	}
 	if len(waiting) == 0 {
-		return false, nil
+		return protocol.Command{}, nil
 	}
 	payload, err := json.Marshal(deliveryPrompt(waiting))
 	if err != nil {
-		return false, fmt.Errorf("encode prompt: %w", err)
+		return protocol.Command{}, fmt.Errorf("encode prompt: %w", err)
 	}
-	var daemon string
-	if err := tx.QueryRowContext(ctx, `SELECT daemon_id FROM tasks WHERE id = ?`, string(task)).Scan(&daemon); err != nil {
-		return false, fmt.Errorf("look up task %q: %w", task, err)
-	}
-	command, err := insertCommand(ctx, tx, protocol.DaemonID(daemon), task, protocol.CommandPrompt, payload, fx)
+	command, err := insertCommand(ctx, tx, daemon, task, protocol.CommandPrompt, payload, fx)
 	if err != nil {
-		return false, err
+		return protocol.Command{}, err
 	}
 	_, err = tx.ExecContext(ctx, `
 		UPDATE messages SET delivered_command_id = ? WHERE to_task = ? AND delivered_command_id IS NULL AND id <= ?`,
 		int64(command.ID), string(task), last)
 	if err != nil {
-		return false, fmt.Errorf("record delivery to task %q: %w", task, err)
+		return protocol.Command{}, fmt.Errorf("record delivery to task %q: %w", task, err)
 	}
-	return true, nil
+	return command, nil
 }
 
 // inboxMessage is a message waiting to be delivered. Exactly one of from

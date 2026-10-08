@@ -52,7 +52,7 @@ func (f *serverFixture) waitForState(t *testing.T, task protocol.TaskID, state s
 func TestGivenParentWhoseAgentSpawnsAChildWhenTheChildSendsToTheFinishedParentThenTheParentResumesWithAPromptFromTheChild(t *testing.T) {
 	srv := startServer(t)
 	d := runDaemon(t, srv.url, t.TempDir())
-	parent := srv.createTask(t, testDaemon, protocol.StartTask{Prompt: "Spawn a child, then end your turn.", PauseLimits: testPauseLimits}).TaskID
+	parent := srv.createTask(t, testDaemon, protocol.StartTask{Prompt: "Spawn a child, then end your turn.", PauseLimits: testPauseLimits})
 	parentProc := d.nextProcess(t)
 	first := parentProc.nextInput(t)
 	if tools := parentProc.spec.Gateway.Tools; !slices.Contains(tools, SpawnTaskTool) || !slices.Contains(tools, SendMessageTool) {

@@ -27,13 +27,53 @@ func openTestStore(t *testing.T) (*Store, string) {
 	return store, path
 }
 
-// seedTask records daemon as seen and assigns a new task to it.
+// seedTask records daemon as seen, assigns a new task to it, and admits
+// the task's start.
 func seedTask(t *testing.T, store *Store, daemon protocol.DaemonID, task protocol.TaskID) {
 	t.Helper()
-	if _, err := store.heldSeqs(t.Context(), daemon); err != nil {
+	queueTask(t, store, ownersTask(task, daemon))
+	admitTurns(t, store)
+}
+
+// ownersTask is task, as the owner starts it on daemon.
+func ownersTask(task protocol.TaskID, daemon protocol.DaemonID) newTask {
+	return newTask{ID: task, Daemon: daemon, Placement: placementBound, Priority: PriorityNormal, Start: testStart, Origin: originOwner}
+}
+
+// queueTask records task's daemon as seen and queues the task.
+func queueTask(t *testing.T, store *Store, task newTask) {
+	t.Helper()
+	if task.Daemon != "" {
+		if _, err := store.heldSeqs(t.Context(), task.Daemon); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := store.createTask(t.Context(), task); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.createTask(t.Context(), daemon, task, testStart); err != nil {
+}
+
+// roomyPolicy has room for every turn the store tests queue.
+var roomyPolicy = SchedulePolicy{SlotsPerDaemon: 100, FillerThreshold: 1, LowThreshold: 1}
+
+// admitTurns runs a scheduler pass with every daemon seen connected and
+// room for every turn.
+func admitTurns(t *testing.T, store *Store) {
+	t.Helper()
+	var connected []protocol.DaemonID
+	rows, err := store.db.QueryContext(t.Context(), `SELECT id FROM daemons`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			t.Fatal(err)
+		}
+		connected = append(connected, protocol.DaemonID(id))
+	}
+	rows.Close()
+	if _, err := store.schedule(t.Context(), roomyPolicy, time.Now(), connected); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -172,7 +212,7 @@ func TestGivenStoredEventWhenReadBackThenItEqualsTheOneAppended(t *testing.T) {
 func TestGivenUnseenDaemonWhenCreatingTaskThenErrUnknownDaemon(t *testing.T) {
 	store, _ := openTestStore(t)
 
-	_, err := store.createTask(t.Context(), "nobody", "task-1", testStart)
+	_, err := store.createTask(t.Context(), ownersTask("task-1", "nobody"))
 
 	if !errors.Is(err, errUnknownDaemon) {
 		t.Errorf("err = %v, want errUnknownDaemon", err)

@@ -41,9 +41,10 @@ type Send struct {
 	Text string `json:"text"`
 }
 
-// Sent says what became of a Send: Delivered is true when the message was
-// issued to its recipient at once as a prompt, and false when it waits in
-// the recipient's inbox.
+// Sent says what became of a Send: Delivered is true when the message is
+// to be its recipient's next turn, which the server admits as its
+// scheduling allows (docs/adr/2026-10-08-scheduling.md), and false when
+// it waits in the recipient's inbox for the recipient's turn to end.
 type Sent struct {
 	Delivered bool `json:"delivered"`
 }
