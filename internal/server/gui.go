@@ -82,6 +82,10 @@ func guiTask(summary taskSummary, prompt string) component.Task {
 	if summary.DismissedAt != nil {
 		task.DismissedAt = *summary.DismissedAt
 	}
+	if summary.Branch != nil {
+		pushed := transcript.BranchPushed(*summary.Branch)
+		task.Branch = &pushed
+	}
 	return task
 }
 

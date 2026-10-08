@@ -139,6 +139,8 @@ func eventBodies(event protocol.Event) []transcript.Body {
 		body, ok = decodeBody(event.Payload, func(p protocol.PauseSettled) transcript.Body { return transcript.PauseSettled(p) })
 	case protocol.KindQuotaObserved:
 		body, ok = decodeBody(event.Payload, func(p protocol.QuotaObserved) transcript.Body { return transcript.QuotaObserved(p) })
+	case protocol.KindBranchPushed:
+		body, ok = decodeBody(event.Payload, func(p protocol.BranchPushed) transcript.Body { return transcript.BranchPushed(p) })
 	}
 	if !ok {
 		return []transcript.Body{unknownRecord(string(event.Kind), event.Payload)}

@@ -320,6 +320,10 @@ type taskSummary struct {
 	// DismissedAt is when the owner dismissed the ended task from the
 	// dashboard's lists; nil while it is not dismissed.
 	DismissedAt *time.Time `json:"dismissed_at,omitempty"`
+	// Branch is the latest branch_pushed the task's daemon reported: where
+	// the task's work was delivered (docs/adr/2026-10-08-work-delivery.md).
+	// nil until a daemon reports one.
+	Branch *protocol.BranchPushed `json:"branch,omitempty"`
 }
 
 // taskDetail is one task: its summary and what it was started with.
@@ -378,6 +382,10 @@ func (s *Store) tasks(ctx context.Context) ([]taskSummary, error) {
 		return nil, fmt.Errorf("read tasks: %w", err)
 	}
 	defer tx.Rollback()
+	branches, err := latestBranches(ctx, tx, "")
+	if err != nil {
+		return nil, err
+	}
 	places, err := queuePlaces(ctx, tx)
 	if err != nil {
 		return nil, err
@@ -394,6 +402,7 @@ func (s *Store) tasks(ctx context.Context) ([]taskSummary, error) {
 			return nil, fmt.Errorf("read tasks: %w", err)
 		}
 		summary.placeInQueue(places)
+		summary.Branch = branches[summary.ID]
 		summaries = append(summaries, summary)
 	}
 	if err := rows.Err(); err != nil {
@@ -430,6 +439,11 @@ func (s *Store) task(ctx context.Context, task protocol.TaskID) (taskDetail, err
 	if err != nil {
 		return taskDetail{}, err
 	}
+	branches, err := latestBranches(ctx, tx, task)
+	if err != nil {
+		return taskDetail{}, err
+	}
+	summary.Branch = branches[task]
 	summary.placeInQueue(places)
 	detail.taskSummary = summary
 	detail.Start.Model = summary.Model
@@ -515,4 +529,34 @@ func (s *Store) dismissTask(ctx context.Context, task protocol.TaskID) (taskDeta
 	}
 	s.publish(&effects{changed: []protocol.TaskID{task}})
 	return s.task(ctx, task)
+}
+
+// latestBranches returns the latest branch_pushed of task, or of every
+// task when task is empty, by task. An event whose payload does not
+// decode is passed over.
+func latestBranches(ctx context.Context, tx *sql.Tx, task protocol.TaskID) (map[protocol.TaskID]*protocol.BranchPushed, error) {
+	rows, err := tx.QueryContext(ctx, `
+		SELECT e.task_id, e.payload FROM events e
+		WHERE e.kind = ?1 AND (?2 = '' OR e.task_id = ?2)
+			AND e.seq = (SELECT max(seq) FROM events WHERE task_id = e.task_id AND kind = ?1)`,
+		string(protocol.KindBranchPushed), string(task))
+	if err != nil {
+		return nil, fmt.Errorf("read pushed branches: %w", err)
+	}
+	defer rows.Close()
+	branches := make(map[protocol.TaskID]*protocol.BranchPushed)
+	for rows.Next() {
+		var id, payload string
+		if err := rows.Scan(&id, &payload); err != nil {
+			return nil, fmt.Errorf("read pushed branches: %w", err)
+		}
+		var pushed protocol.BranchPushed
+		if json.Unmarshal([]byte(payload), &pushed) == nil {
+			branches[protocol.TaskID(id)] = &pushed
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("read pushed branches: %w", err)
+	}
+	return branches, nil
 }

@@ -134,6 +134,12 @@ func TranscriptEntry(entry transcript.Entry) html.Node {
 		label = "Task "
 		subject = html.Fragment(link(taskURL(string(b.To)), string(b.To)),
 			html.Text(" ended as "+b.State+" before the agent's messages reached it; they were not delivered"))
+	case transcript.BranchPushed:
+		label = "Pushed branch " + b.Branch + " at " + shortCommit(b.Commit)
+		if b.Error != "" {
+			label = "Could not push branch " + b.Branch + " at " + shortCommit(b.Commit)
+		}
+		body = html.Fragment(paragraph(branchCounts(b.Ahead, b.Uncommitted)), errorText(b.Error))
 	case transcript.TaskMoved:
 		label = "Daemon " + string(b.From) + " was lost with the task's work; the task started afresh on daemon " + string(b.To)
 		body = preformatted(b.Prompt)
@@ -179,4 +185,30 @@ func prettyJSON(raw json.RawMessage) string {
 		return string(raw)
 	}
 	return out.String()
+}
+
+// shortCommit abbreviates a commit id as git does by default, or more
+// when the id is short already.
+func shortCommit(commit string) string {
+	if len(commit) > 12 {
+		return commit[:12]
+	}
+	return commit
+}
+
+// branchCounts says how far a pushed branch is beyond the task's start
+// and how many files the workspace left uncommitted.
+func branchCounts(ahead, uncommitted int) string {
+	text := plural(ahead, "commit") + " beyond the start"
+	if uncommitted > 0 {
+		text += "; " + plural(uncommitted, "file") + " left uncommitted in the workspace"
+	}
+	return text
+}
+
+func errorText(text string) html.Node {
+	if text == "" {
+		return nil
+	}
+	return html.El("p", attrs("class", "problem"), html.Text(text))
 }

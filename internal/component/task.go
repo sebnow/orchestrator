@@ -34,6 +34,9 @@ type Task struct {
 	// DismissedAt is when the owner dismissed the ended task from the
 	// dashboard's lists; zero while it is not dismissed.
 	DismissedAt time.Time
+	// Branch is what the daemon last pushed of the task's branch; nil
+	// until it pushes.
+	Branch *transcript.BranchPushed
 }
 
 // QueuePlace is where a task's waiting turn stands in the scheduler's
@@ -101,7 +104,7 @@ func priorityLabel(task Task) string {
 }
 
 // TaskColumns head a Table of TaskRows.
-var TaskColumns = []string{"State", "Prompt", "Priority", "Daemon", "Model", "Cost", "Last activity"}
+var TaskColumns = []string{"State", "Prompt", "Priority", "Daemon", "Model", "Cost", "Last activity", "Branch"}
 
 // TaskRow is a task in the task list, linking to its page.
 func TaskRow(task Task) html.Node {
@@ -113,6 +116,7 @@ func TaskRow(task Task) html.Node {
 		cell(html.Text(task.Model)),
 		cell(html.Text(cost(task.CostUSD))),
 		cell(timestamp(task.LastActivityAt)),
+		cell(branchCell(task.Branch)),
 	)
 }
 
@@ -163,6 +167,10 @@ func TaskHeader(task Task, controls html.Node) html.Node {
 		return html.Fragment(html.El("dt", nil, html.Text(name)), html.El("dd", nil, value))
 	}
 	var parent, children, queue, dismissed html.Node
+	var branch html.Node
+	if task.Branch != nil {
+		branch = term("Branch", branchDetail(*task.Branch))
+	}
 	if !task.DismissedAt.IsZero() {
 		dismissed = term("Dismissed", timestamp(task.DismissedAt))
 	}
@@ -192,6 +200,7 @@ func TaskHeader(task Task, controls html.Node) html.Node {
 			term("Daemon", html.Text(task.Daemon)),
 			term("Model", html.Text(task.Model)),
 			term("Cost", html.Text(cost(task.CostUSD))),
+			branch,
 			term("Created", timestamp(task.CreatedAt)),
 			term("Last activity", timestamp(task.LastActivityAt)),
 			parent,
@@ -573,4 +582,30 @@ const EventTaskChanged = "task-changed"
 func Polling(taskID, cursor string, showUnknown bool) html.Node {
 	return html.El("div", attrs("hx-get", updatesURL(taskID, cursor, showUnknown), "hx-trigger", "every 5s, "+EventTaskChanged+" from:body",
 		"hx-target", "#transcript", "hx-swap", "beforeend"))
+}
+
+// branchCell is a task's branch in the task list, marked when its last
+// push failed.
+func branchCell(pushed *transcript.BranchPushed) html.Node {
+	if pushed == nil {
+		return nil
+	}
+	var failed html.Node
+	if pushed.Error != "" {
+		failed = html.Fragment(html.Text(" "), badge("push failed", "state-failed"))
+	}
+	return html.Fragment(html.El("code", nil, html.Text(pushed.Branch)), failed)
+}
+
+// branchDetail is what a task page says of the task's branch: its name,
+// the commit last pushed or tried, and why the push failed if it did.
+func branchDetail(pushed transcript.BranchPushed) html.Node {
+	verb := " at "
+	if pushed.Error != "" {
+		verb = ", push failed at "
+	}
+	return html.Fragment(
+		html.El("code", nil, html.Text(pushed.Branch)), html.Text(verb), html.El("code", nil, html.Text(shortCommit(pushed.Commit))),
+		html.Text(", "+branchCounts(pushed.Ahead, pushed.Uncommitted)),
+		errorText(pushed.Error))
 }
