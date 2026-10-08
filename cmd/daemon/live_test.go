@@ -111,13 +111,14 @@ func daemonCredentials(t *testing.T) []string {
 
 var serving = regexp.MustCompile(`msg=serving address=(\S+)`)
 
-// startServer runs cmd/server on a free loopback port and returns its
-// base URL, read from its log.
-func startServer(t *testing.T, bin string) string {
+// startServer runs cmd/server on a free loopback port, with extra flags,
+// and returns its base URL, read from its log.
+func startServer(t *testing.T, bin string, extra ...string) string {
 	t.Helper()
 	reader, writer := io.Pipe()
 	logs := &syncBuffer{}
-	startProcess(t, filepath.Join(bin, "server"), writer, "-insecure-loopback", "-listen", "127.0.0.1:0", "-db", filepath.Join(t.TempDir(), "server.db"))
+	startProcess(t, filepath.Join(bin, "server"), writer,
+		append([]string{"-insecure-loopback", "-listen", "127.0.0.1:0", "-db", filepath.Join(t.TempDir(), "server.db")}, extra...)...)
 	t.Cleanup(func() {
 		if t.Failed() {
 			t.Logf("server log:\n%s", logs)
@@ -303,10 +304,11 @@ type liveSystem struct {
 	answered map[string]bool
 }
 
-func startLiveSystem(t *testing.T) liveSystem {
+// startLiveSystem starts the server, with serverFlags, and the daemon.
+func startLiveSystem(t *testing.T, serverFlags ...string) liveSystem {
 	t.Helper()
 	bin := buildBinaries(t)
-	sys := liveSystem{server: startServer(t, bin), invocations: filepath.Join(t.TempDir(), "invocations.log"), answered: map[string]bool{}}
+	sys := liveSystem{server: startServer(t, bin, serverFlags...), invocations: filepath.Join(t.TempDir(), "invocations.log"), answered: map[string]bool{}}
 	wrapper := filepath.Join(bin, "claude-counting")
 	// Only the first argument is logged: the others include the system
 	// prompt, whose line breaks would count as further invocations.
@@ -361,11 +363,14 @@ func postForm(t *testing.T, target string, form url.Values) (int, string) {
 }
 
 // startTaskViaGUI starts a task through the new-task form once the daemon
-// has connected.
-func (sys liveSystem) startTaskViaGUI(t *testing.T, ctx context.Context, prompt string) protocol.TaskID {
+// has connected, with the form's other fields set from extra.
+func (sys liveSystem) startTaskViaGUI(t *testing.T, ctx context.Context, prompt string, extra ...string) protocol.TaskID {
 	t.Helper()
 	form := url.Values{"prompt": {prompt}, "repo": {""}, "ref": {""}, "model": {"haiku"}, "daemon": {"live-daemon"},
 		"acknowledge": {"90s"}, "cleanup": {"1m"}}
+	for idx := 0; idx+1 < len(extra); idx += 2 {
+		form.Set(extra[idx], extra[idx+1])
+	}
 	for {
 		status, location := postForm(t, sys.server+"/tasks", form)
 		if task, ok := strings.CutPrefix(location, "/tasks/"); status == http.StatusSeeOther && ok {
@@ -512,20 +517,15 @@ func TestLiveGivenPauseThroughTheGUIWhenTheOwnerResumesThenANewProcessFinishesTh
 	ctx, cancel := context.WithTimeout(t.Context(), 8*time.Minute)
 	defer cancel()
 	sys := startLiveSystem(t)
-	const threeSteps = "Use the Bash tool to run `ping -c 5 127.0.0.1` three times, one call after another, " +
-		"never in parallel and never in the background. After each call finishes, write the single " +
-		"word DONE-1, DONE-2 or DONE-3 before starting the next call. When all three are done, " +
-		"reply with exactly FINISHED."
 	task := sys.startTaskViaGUI(t, ctx, threeSteps)
 	pings, pauseSent := 0, false
 	allowPings := func(tool, command string) bool {
-		if strings.HasPrefix(tool, "mcp__orchestrator__") {
-			return true
-		}
-		if tool != "Bash" || !strings.HasPrefix(command, "ping") {
+		if !allowOnlyPings(tool, command) {
 			return false
 		}
-		pings++
+		if tool == "Bash" {
+			pings++
+		}
 		return true
 	}
 
@@ -568,6 +568,102 @@ func TestLiveGivenPauseThroughTheGUIWhenTheOwnerResumesThenANewProcessFinishesTh
 	if len(workdirs) != 2 || workdirs[0] != workdirs[1] {
 		t.Errorf("harness workdirs = %q, want two, the same", workdirs)
 	}
+}
+
+// threeSteps asks for three ping calls, about four seconds each, so that
+// a pause can arrive during the turn.
+const threeSteps = "Use the Bash tool to run `ping -c 5 127.0.0.1` three times, one call after another, " +
+	"never in parallel and never in the background. After each call finishes, write the single " +
+	"word DONE-1, DONE-2 or DONE-3 before starting the next call. When all three are done, " +
+	"reply with exactly FINISHED."
+
+// allowOnlyPings allows the orchestrator's own tools and Bash running
+// ping.
+func allowOnlyPings(tool, command string) bool {
+	return strings.HasPrefix(tool, "mcp__orchestrator__") || tool == "Bash" && strings.HasPrefix(command, "ping")
+}
+
+// Cost: `claude --version` and four claude sessions: a one-turn task that
+// brings the first quota reading, the filler's three-step turn cut short
+// by the yield, the normal one-turn task, and the filler's resumed turn.
+func TestLiveGivenRunningFillerOnTheOnlySlotWhenANormalTaskArrivesThenTheFillerYieldsTheNormalTaskRunsAndTheFillerFinishes(t *testing.T) {
+	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Minute)
+	defer cancel()
+	// A threshold of 1 lets filler run at any utilization short of the
+	// whole window, so the test does not depend on the account's usage.
+	sys := startLiveSystem(t, "-slots-per-daemon", "1", "-filler-threshold", "1")
+	primer := sys.startTaskViaGUI(t, ctx, "Reply with exactly READY.")
+	primed := sys.waitForState(t, ctx, primer, "finished", 1, nil)
+	if !slices.ContainsFunc(primed, func(event protocol.Event) bool {
+		return event.Kind == protocol.KindQuotaObserved && strings.Contains(string(event.Payload), `"name":"five_hour"`)
+	}) {
+		t.Fatalf("the first task brought no five-hour quota reading, so filler cannot run: %s", describeQuota(primed))
+	}
+
+	filler := sys.startTaskViaGUI(t, ctx, threeSteps, "filler", "on")
+	var normal protocol.TaskID
+	var firstPing time.Time
+	startNormalAfterFirstPing := func() {
+		if normal != "" || pingRequests(sys.events(t, filler)) == 0 {
+			return
+		}
+		if firstPing.IsZero() {
+			firstPing = time.Now()
+		}
+		if time.Since(firstPing) >= time.Second {
+			normal = sys.startTaskViaGUI(t, ctx, "Reply with exactly NORMAL.")
+		}
+	}
+	yielded := sys.waitForStateEach(t, ctx, filler, "yielded", 1, allowOnlyPings, startNormalAfterFirstPing)
+	normalEvents := sys.waitForState(t, ctx, normal, "finished", 1, nil)
+	fillerEvents := sys.waitForState(t, ctx, filler, "finished", 2, allowOnlyPings)
+
+	if countKind(yielded, protocol.KindPauseSettled) != 1 {
+		t.Errorf("filler settled %d pauses before it yielded, want 1", countKind(yielded, protocol.KindPauseSettled))
+	}
+	var note protocol.PauseAcknowledged
+	for _, event := range yielded {
+		if event.Kind == protocol.KindPauseAcknowledged {
+			json.Unmarshal(event.Payload, &note)
+		}
+	}
+	if note.Note == "" {
+		t.Error("the filler recorded no stop note")
+	} else {
+		t.Logf("stop note: %q", note.Note)
+	}
+	var settledAt, normalStartedAt time.Time
+	for _, event := range yielded {
+		if event.Kind == protocol.KindPauseSettled {
+			settledAt = event.Time
+		}
+	}
+	for _, event := range normalEvents {
+		if event.Kind == protocol.KindHarnessStarted {
+			normalStartedAt = event.Time
+		}
+	}
+	if normalStartedAt.Before(settledAt) {
+		t.Errorf("the normal task started at %s, before the filler's pause settled at %s", normalStartedAt, settledAt)
+	}
+	_, results := sessionsAndResults(t, fillerEvents)
+	if len(results) < 2 || !strings.Contains(results[len(results)-1], "FINISHED") {
+		t.Errorf("filler results = %q, want the last to be FINISHED", results)
+	}
+	if before, all := pingRequests(yielded), pingRequests(fillerEvents); before >= 3 || all != 3 {
+		t.Errorf("filler pings: %d before it yielded, %d in all; want fewer than 3, then 3", before, all)
+	}
+}
+
+// describeQuota lists the payloads of the quota readings among events.
+func describeQuota(events []protocol.Event) string {
+	var readings []string
+	for _, event := range events {
+		if event.Kind == protocol.KindQuotaObserved {
+			readings = append(readings, string(event.Payload))
+		}
+	}
+	return fmt.Sprintf("%d readings %v", len(readings), readings)
 }
 
 // pingRequests counts the permission requests to run ping.
