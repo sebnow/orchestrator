@@ -1,12 +1,19 @@
 // Command server runs the orchestrator's server: it keeps the record of
 // daemons, tasks, events and commands in a SQLite database and serves the
 // daemon-facing and owner-facing HTTP APIs under /v1/ and the owner's GUI
-// at /. It has no authentication, so it listens on loopback unless told
-// otherwise.
+// at /. It serves TLS, authenticates daemons by their client certificates
+// and the owner by a token (docs/adr/2026-10-08-daemon-authentication.md,
+// docs/adr/2026-10-08-owner-authentication.md), and refuses to start
+// without them unless told to serve plain HTTP on loopback with
+// -insecure-loopback.
+//
+// Its subcommands create the certificate authority, issue certificates
+// and issue the owner token.
 package main
 
 import (
 	"context"
+	"crypto/tls"
 	"errors"
 	"flag"
 	"fmt"
@@ -15,6 +22,7 @@ import (
 	"maps"
 	"net"
 	"net/http"
+	"net/netip"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -23,6 +31,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/sebnow/orchestrator/internal/pki"
 	"github.com/sebnow/orchestrator/internal/server"
 )
 
@@ -70,15 +79,46 @@ func serve(args []string, stderr io.Writer) int {
 		flags.PrintDefaults()
 		printSubcommands(stderr)
 	}
-	listen := flags.String("listen", "127.0.0.1:8080", "address to serve HTTP on")
+	listen := flags.String("listen", "127.0.0.1:8080", "address to serve on")
 	dbPath := flags.String("db", "", "SQLite database file, created with its directory when missing (required)")
 	defaultModel := flags.String("default-model", "haiku", "model of a task created without one")
+	tlsCert := flags.String("tls-cert", "", "the server's certificate, from issue-server-cert (required unless -insecure-loopback)")
+	tlsKey := flags.String("tls-key", "", "the server certificate's key (required unless -insecure-loopback)")
+	clientCA := flags.String("client-ca", "", "the CA certificate that daemons' certificates are verified against, from init-ca (required unless -insecure-loopback)")
+	insecure := flags.Bool("insecure-loopback", false, "serve plain HTTP without authentication, for development; -listen must be a loopback IP address")
 	if err := flags.Parse(args); err != nil {
 		return exitCode(err)
 	}
-	if *dbPath == "" || *defaultModel == "" {
+	if *dbPath == "" || *defaultModel == "" || flags.NArg() > 0 {
 		flags.Usage()
 		return 2
+	}
+	var tlsConfig *tls.Config
+	if *insecure {
+		if *tlsCert != "" || *tlsKey != "" || *clientCA != "" {
+			fmt.Fprintln(stderr, "server: -insecure-loopback serves plain HTTP; drop -tls-cert, -tls-key and -client-ca")
+			return 2
+		}
+		if err := requireLoopback(*listen); err != nil {
+			fmt.Fprintln(stderr, "server: -insecure-loopback:", err)
+			return 2
+		}
+	} else {
+		if *tlsCert == "" || *tlsKey == "" || *clientCA == "" {
+			fmt.Fprintln(stderr, "server: -tls-cert, -tls-key and -client-ca are required unless -insecure-loopback is given")
+			return 2
+		}
+		cert, err := tls.LoadX509KeyPair(*tlsCert, *tlsKey)
+		if err != nil {
+			fmt.Fprintln(stderr, "server: load the server certificate:", err)
+			return 1
+		}
+		clientCAs, err := pki.LoadPool(*clientCA)
+		if err != nil {
+			fmt.Fprintln(stderr, "server: -client-ca:", err)
+			return 1
+		}
+		tlsConfig = pki.ServerConfig(cert, clientCAs)
 	}
 	log := slog.New(slog.NewTextHandler(stderr, nil))
 
@@ -94,10 +134,22 @@ func serve(args []string, stderr io.Writer) int {
 		return 1
 	}
 	defer store.Close()
+	if !*insecure {
+		issued, err := store.HasOwnerToken(ctx)
+		if err != nil {
+			log.Error("read owner token", "error", err)
+			return 1
+		}
+		if !issued {
+			log.Error("no owner token; issue one with: server issue-owner-token -db " + *dbPath)
+			return 1
+		}
+	}
 
-	srv := server.New(store, log, server.Options{DefaultModel: *defaultModel, Insecure: true})
+	srv := server.New(store, log, server.Options{DefaultModel: *defaultModel, Insecure: *insecure})
 	httpServer := &http.Server{
-		Handler: srv,
+		Handler:   srv,
+		TLSConfig: tlsConfig,
 		// No write timeout: command streams stay open indefinitely.
 		ReadHeaderTimeout: 10 * time.Second,
 		ErrorLog:          slog.NewLogLogger(log.Handler(), slog.LevelError),
@@ -109,8 +161,14 @@ func serve(args []string, stderr io.Writer) int {
 		return 1
 	}
 	served := make(chan error, 1)
-	go func() { served <- httpServer.Serve(listener) }()
-	log.Info("serving", "address", listener.Addr().String(), "db", *dbPath)
+	go func() {
+		if *insecure {
+			served <- httpServer.Serve(listener)
+			return
+		}
+		served <- httpServer.ServeTLS(listener, "", "")
+	}()
+	log.Info("serving", "address", listener.Addr().String(), "tls", !*insecure, "db", *dbPath)
 
 	select {
 	case err := <-served:
@@ -141,4 +199,19 @@ func exitCode(err error) int {
 		return 0
 	}
 	return 2
+}
+
+// requireLoopback refuses a listen address whose host is not a loopback
+// IP address. A host name is refused too, since what it resolves to can
+// change.
+func requireLoopback(listen string) error {
+	host, _, err := net.SplitHostPort(listen)
+	if err != nil {
+		return err
+	}
+	addr, err := netip.ParseAddr(host)
+	if err != nil || !addr.IsLoopback() {
+		return fmt.Errorf("-listen %s is not on a loopback IP address such as 127.0.0.1 or [::1]", listen)
+	}
+	return nil
 }

@@ -96,7 +96,7 @@ func startServer(t *testing.T, bin string) string {
 	t.Helper()
 	reader, writer := io.Pipe()
 	logs := &syncBuffer{}
-	startProcess(t, filepath.Join(bin, "server"), writer, "-listen", "127.0.0.1:0", "-db", filepath.Join(t.TempDir(), "server.db"))
+	startProcess(t, filepath.Join(bin, "server"), writer, "-insecure-loopback", "-listen", "127.0.0.1:0", "-db", filepath.Join(t.TempDir(), "server.db"))
 	t.Cleanup(func() {
 		if t.Failed() {
 			t.Logf("server log:\n%s", logs)
