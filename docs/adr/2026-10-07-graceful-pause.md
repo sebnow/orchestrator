@@ -77,18 +77,25 @@ The implementation for Claude Code 2.1.289:
 
 ## Consequences
 
-- The pause depends on the model complying. **UNVERIFIED:** compliance
-  beyond one Haiku run per route, and whether the model acknowledges
-  through the gateway tool reliably; the spike sent no acknowledgement
-  request.
+- The pause depends on the model complying. In the daemon's live runs,
+  with Haiku and one three-step task, the agent called the
+  acknowledgement tool in all 6 pause runs and stopped after the first
+  step in all 3 runs whose limits let it
+  ([daemon live findings](../design/2026-10-07-daemon-live-findings.md),
+  "Acknowledgement through the gateway tool" and "Pause compliance").
 - The daemon's MCP gateway gains a pause-acknowledgement tool.
 - Claude Code echoes the message's `uuid` as `user_message_uuid`, which
-  the daemon uses to confirm that the turn picked up the pause.
-  **UNVERIFIED:** the Agent SDK TypeScript reference documents the echo,
-  but the spike sent no `uuid`.
-- **UNVERIFIED:** pause behaviour with `priority: 'now'`, during a long
-  command, or while a subagent runs, and resuming with `--resume` in a new
-  process. None was tested.
+  the daemon uses to confirm that the turn picked up the pause. The
+  Agent SDK TypeScript reference documents the echo, and Claude Code
+  2.1.289 sent it in the daemon's live runs; the pause request's uuid
+  appeared only on the result of the turn that read it
+  ([daemon live findings](../design/2026-10-07-daemon-live-findings.md),
+  "The `user_message_uuid` echo").
+- Resuming with `--resume` in a new process worked in the
+  [resume spike](../design/2026-10-08-resume-spike.md), which finished
+  in a second process a task paused in the first.
+  [Task lifetime](2026-10-08-task-lifetime.md) makes it the way every
+  pause resumes.
 - A stop at a tool boundary that does not depend on the model needs a mod
   calling `$.turn.abort` from `tool.call`. The
   [harness adapter](2026-10-07-harness-adapter.md) decision defers adding
