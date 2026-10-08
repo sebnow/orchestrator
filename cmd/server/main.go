@@ -14,6 +14,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"syscall"
 	"time"
 
@@ -30,7 +31,7 @@ func main() {
 
 func run() int {
 	listen := flag.String("listen", "127.0.0.1:8080", "address to serve HTTP on")
-	dbPath := flag.String("db", "", "SQLite database file, created when missing (required)")
+	dbPath := flag.String("db", "", "SQLite database file, created with its directory when missing (required)")
 	defaultModel := flag.String("default-model", "haiku", "model of a task created without one")
 	flag.Parse()
 	if *dbPath == "" || *defaultModel == "" {
@@ -39,6 +40,10 @@ func run() int {
 	}
 	log := slog.New(slog.NewTextHandler(os.Stderr, nil))
 
+	if err := os.MkdirAll(filepath.Dir(*dbPath), 0o700); err != nil {
+		log.Error("create database directory", "error", err)
+		return 1
+	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	store, err := server.OpenStore(ctx, *dbPath)

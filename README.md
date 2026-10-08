@@ -31,7 +31,6 @@ then start the daemon in a second terminal.
 
     nix develop -c go build ./cmd/server
     nix develop -c go build ./cmd/daemon
-    mkdir -p ~/.local/state/orchestrator
     ./server -db ~/.local/state/orchestrator/server.db
     ./daemon -server http://127.0.0.1:8080 -id laptop \
         -state-dir ~/.local/state/orchestrator/daemon
@@ -48,8 +47,8 @@ to pause, resume, interrupt or stop the task.
 
 Server flags:
 
-- `-db` (required): the SQLite database file, created when missing; its
-  directory must exist. It holds every daemon, task, event and command.
+- `-db` (required): the SQLite database file, created with its directory
+  when missing. It holds every daemon, task, event and command.
 - `-listen`: the address to serve on, `127.0.0.1:8080` by default.
 - `-default-model`: the model of a task started without one, `haiku`
   by default.
