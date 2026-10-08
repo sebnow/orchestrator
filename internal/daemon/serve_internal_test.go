@@ -307,7 +307,7 @@ func TestGivenTaskWithAWorkspaceWhenItStartsThenTheHarnessWorksInTheClone(t *tes
 	d := runDaemon(t, srv.url, t.TempDir())
 
 	srv.createTask(t, testDaemon, protocol.StartTask{
-		Prompt: "Do the work.", Workspace: &protocol.Workspace{Repo: repo.bare, Ref: "feature"}, PauseLimits: testPauseLimits,
+		Prompt: "Do the work.", Workspace: &protocol.Workspace{Repo: repo.url, Ref: "feature"}, PauseLimits: testPauseLimits,
 	})
 
 	proc := d.nextProcess(t)
@@ -319,7 +319,7 @@ func TestGivenTaskWithAWorkspaceWhenItStartsThenTheHarnessWorksInTheClone(t *tes
 func TestGivenWorkspaceThatCannotBeClonedWhenTheTaskStartsThenItEndsWithGitsErrorAndNoHarness(t *testing.T) {
 	srv := startServer(t)
 	d := runDaemon(t, srv.url, t.TempDir())
-	missing := filepath.Join(t.TempDir(), "missing.git")
+	missing := httpsAlias(t, filepath.Join(t.TempDir(), "missing.git"))
 
 	task := srv.createTask(t, testDaemon, protocol.StartTask{
 		Prompt: "Do the work.", Workspace: &protocol.Workspace{Repo: missing, Ref: "main"}, PauseLimits: testPauseLimits,
@@ -329,6 +329,26 @@ func TestGivenWorkspaceThatCannotBeClonedWhenTheTaskStartsThenItEndsWithGitsErro
 	var exit protocol.HarnessExited
 	json.Unmarshal(events[0].Payload, &exit)
 	if len(events) != 1 || exit.ExitCode != -1 || !strings.Contains(exit.Error, "git clone") || !strings.Contains(exit.Error, "missing.git") {
+		t.Errorf("events: %s", describe(events))
+	}
+	if len(d.harness.started) != 0 {
+		t.Error("a harness started")
+	}
+}
+
+func TestGivenRepositoryThatIsNotAnHTTPSURLWhenTheTaskStartsThenItEndsSayingSoAndNoHarnessStarts(t *testing.T) {
+	srv := startServer(t)
+	d := runDaemon(t, srv.url, t.TempDir())
+
+	task := srv.createTask(t, testDaemon, protocol.StartTask{
+		Prompt: "Do the work.", Workspace: &protocol.Workspace{Repo: "git@github.com:octocat/Hello-World.git", Ref: "master"}, PauseLimits: testPauseLimits,
+	}).TaskID
+
+	events := srv.waitForEvent(t, task, "harness_exited", isKind(protocol.KindHarnessExited))
+	var exit protocol.HarnessExited
+	json.Unmarshal(events[0].Payload, &exit)
+	want := `prepare workspace: repository "git@github.com:octocat/Hello-World.git" is not an https:// URL`
+	if len(events) != 1 || exit.ExitCode != -1 || !strings.HasPrefix(exit.Error, want) {
 		t.Errorf("events: %s", describe(events))
 	}
 	if len(d.harness.started) != 0 {

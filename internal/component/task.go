@@ -202,7 +202,7 @@ func NewTaskForm(input NewTask, daemons []string, defaultModel, problem, created
 	}
 	return html.Fragment(notice, Form("/tasks", problem,
 		Field(FieldSpec{Kind: FieldTextarea, Name: "prompt", Label: "Prompt", Value: input.Prompt, Required: true}),
-		Field(FieldSpec{Name: "repo", Label: "Repository", Value: input.Repo, Placeholder: "none: an empty directory"}),
+		Field(FieldSpec{Name: "repo", Label: "Repository (https:// only)", Value: input.Repo, Placeholder: "none: an empty directory"}),
 		Field(FieldSpec{Name: "ref", Label: "Ref", Value: input.Ref}),
 		Field(FieldSpec{Name: "model", Label: "Model", Value: input.Model, Placeholder: "default: " + defaultModel}),
 		Field(FieldSpec{Kind: FieldSelect, Name: "daemon", Label: "Daemon", Value: input.Daemon, Options: daemons, Required: true}),

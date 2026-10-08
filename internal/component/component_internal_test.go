@@ -109,3 +109,11 @@ func TestGivenNoControlsOfferedWhenRenderedThenThereIsNoForm(t *testing.T) {
 		t.Errorf("got %s, want nothing", got)
 	}
 }
+
+func TestGivenNewTaskFormWhenRenderedThenTheRepositoryFieldSaysOnlyHTTPSIsAccepted(t *testing.T) {
+	got := render(t, NewTaskForm(NewTask{}, []string{"laptop"}, "haiku", "", ""))
+
+	if !strings.Contains(got, "Repository (https:// only)") {
+		t.Errorf("form lacks the https note: %s", got)
+	}
+}
