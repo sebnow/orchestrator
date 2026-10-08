@@ -1,6 +1,7 @@
 ---
-status: accepted
+status: superseded
 date: 2026-10-08
+superseded-by: docs/adr/2026-10-08-shutdown-recovery.md
 source: >-
   coordinator decision, unattended;
   [task lifetime](2026-10-08-task-lifetime.md), Decision and
