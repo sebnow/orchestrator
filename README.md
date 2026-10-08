@@ -185,6 +185,20 @@ a new process that continues the same Claude Code session in the same
 working directory. A task ends for good as `stopped` when stopped from
 its page, or as `failed`; the task page then takes no more prompts.
 
+An agent can start child tasks and message other tasks with two tools
+the daemon gives it, `spawn_task` and `send_message`
+([inbox delivery](docs/adr/2026-10-08-inbox-delivery.md)). The server
+explains them in a system prompt it gives every task, ahead of any
+system prompt given through the owner API. A child runs on its parent's
+daemon, in a fresh clone of the parent's repository if it has one,
+with the parent's model unless the agent names another, and is told to
+send its result to its parent. A message to a `finished` task becomes
+its next prompt at once; one to a running task waits until its turn
+ends, and one to a `paused` task until the owner resumes it and that
+turn ends. Messages to `stopped` or `failed` tasks are refused, and a
+parent is told when its child stops or fails. The task page links a
+task's parent and children and shows the messages it sent and received.
+
 SIGINT or SIGTERM shuts either program down. The daemon stops its
 running turns first; a second signal makes it exit at once. A daemon
 started again with the same `-state-dir` marks as `failed` every task
