@@ -88,7 +88,11 @@ Alternatives rejected:
 - With `SameSite=Strict`, a link to the web interface followed from
   another site, such as a chat message, arrives without the cookie
   (draft-ietf-httpbis-rfc6265bis-22, section 5.6.7.1), so it lands on
-  the login form even when the owner is logged in. **UNVERIFIED:**
-  opening the page again from the address bar sends the cookie.
+  the login form even when the owner is logged in. Opening the page
+  again from the address bar sends the cookie: in the browser test
+  `TestGivenOwnerSignedInWhenTheDashboardURLIsTypedIntoTheAddressBarThenTheSessionCookieIsSentAndTheDashboardShown`,
+  Chrome sent it on a navigation of type `typed` and the server showed
+  the dashboard
+  ([browser check](../design/2026-10-08-browser-check.md), finding 5).
 
 Revisit if anyone besides the owner needs access.
