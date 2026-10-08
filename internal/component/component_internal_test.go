@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/sebnow/orchestrator/internal/html"
+	"github.com/sebnow/orchestrator/internal/protocol"
 	"github.com/sebnow/orchestrator/internal/transcript"
 )
 
@@ -72,6 +73,9 @@ func TestGivenEntriesCarryingScriptWhenRenderedThenNoScriptElementReachesThePage
 		transcript.HarnessStarted{Model: hostile, Workdir: hostile},
 		transcript.HarnessExited{ExitCode: 1, Error: hostile, Stderr: hostile},
 		transcript.Unknown{RecordKind: hostile, Type: hostile, Raw: json.RawMessage(hostile)},
+		transcript.MessageSent{To: "task-2", Text: hostile},
+		transcript.MessageReceived{Text: hostile},
+		transcript.ChildSpawned{Child: "task-2", Prompt: hostile},
 	}
 	for _, body := range bodies {
 		t.Run(string(body.Kind()), func(t *testing.T) {
@@ -115,5 +119,50 @@ func TestGivenNewTaskFormWhenRenderedThenTheRepositoryFieldSaysOnlyHTTPSIsAccept
 
 	if !strings.Contains(got, "Repository (https:// only)") {
 		t.Errorf("form lacks the https note: %s", got)
+	}
+}
+
+func TestGivenMessagesAndChildrenWhenRenderedThenEachSaysWhatHappenedAndLinksTheOtherTask(t *testing.T) {
+	child := protocol.TaskID("child-1")
+	for _, tc := range []struct {
+		body transcript.Body
+		want string
+	}{
+		{transcript.MessageSent{To: child, Text: "PEAR"},
+			`<li class="entry from-agent"><header>never Agent sent a message to task <a href="/tasks/child-1">child-1</a></header><pre>`+"\n"+`PEAR</pre></li>`},
+		{transcript.MessageReceived{From: &child, Text: "PEAR"},
+			`<li class="entry from-task"><header>never Message from task <a href="/tasks/child-1">child-1</a></header><pre>`+"\n"+`PEAR</pre></li>`},
+		{transcript.MessageReceived{Text: "Your child task child-1 has ended as failed."},
+			`<li class="entry from-task"><header>never Notice from the orchestrator</header><pre>`+"\n"+`Your child task child-1 has ended as failed.</pre></li>`},
+		{transcript.ChildSpawned{Child: child, Prompt: "Say PEAR."},
+			`<li class="entry from-agent"><header>never Agent started child task <a href="/tasks/child-1">child-1</a></header><pre>`+"\n"+`Say PEAR.</pre></li>`},
+		{transcript.ChildEnded{Child: child, State: "failed"},
+			`<li class="entry from-daemon"><header>never Child task <a href="/tasks/child-1">child-1</a> ended as failed</header></li>`},
+	} {
+		if got := render(t, TranscriptEntry(transcript.Entry{Body: tc.body})); got != tc.want {
+			t.Errorf("%s:\ngot  %s\nwant %s", tc.body.Kind(), got, tc.want)
+		}
+	}
+}
+
+func TestGivenSpawnedTaskWhenShownThenItsRowMarksItsParentAndItsHeaderLinksParentAndChildren(t *testing.T) {
+	task := Task{ID: "child-1", State: "running", Prompt: "Say PEAR.", Parent: "parent-1", Children: []string{"grandchild-1", "grandchild-2"}}
+
+	row := render(t, TaskRow(task))
+	header := render(t, TaskHeader(task, nil))
+
+	if want := `<a href="/tasks/child-1">Say PEAR.</a><span class="reason"> ↳ child of <a href="/tasks/parent-1">parent-1</a></span>`; !strings.Contains(row, want) {
+		t.Errorf("row %s\nlacks %s", row, want)
+	}
+	for _, want := range []string{
+		`<dt>Parent</dt><dd><a href="/tasks/parent-1">parent-1</a></dd>`,
+		`<dt>Children</dt><dd><a href="/tasks/grandchild-1">grandchild-1</a>, <a href="/tasks/grandchild-2">grandchild-2</a></dd>`,
+	} {
+		if !strings.Contains(header, want) {
+			t.Errorf("header %s\nlacks %s", header, want)
+		}
+	}
+	if owners := render(t, TaskHeader(Task{ID: "task-1"}, nil)); strings.Contains(owners, "Parent") || strings.Contains(owners, "Children") {
+		t.Errorf("an owner's task without children shows family: %s", owners)
 	}
 }

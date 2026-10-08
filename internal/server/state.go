@@ -301,3 +301,26 @@ func (s *Store) taskPrompts(ctx context.Context) (map[protocol.TaskID]string, er
 	}
 	return prompts, nil
 }
+
+// children returns the ids of the tasks task spawned, oldest first.
+// Stored times do not sort as text; julianday compares the instants, to
+// the millisecond, and the row id, which follows insertion, breaks ties.
+func (s *Store) children(ctx context.Context, task protocol.TaskID) ([]protocol.TaskID, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT id FROM tasks WHERE parent_id = ? ORDER BY julianday(created_at), rowid`, string(task))
+	if err != nil {
+		return nil, fmt.Errorf("read children of task %q: %w", task, err)
+	}
+	defer rows.Close()
+	var children []protocol.TaskID
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, fmt.Errorf("read children of task %q: %w", task, err)
+		}
+		children = append(children, protocol.TaskID(id))
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("read children of task %q: %w", task, err)
+	}
+	return children, nil
+}

@@ -31,7 +31,9 @@ func TranscriptEntries(entries []transcript.Entry) html.Node {
 // whitespace and is not interpreted, as markdown or otherwise; tool
 // inputs and results are folded away.
 func TranscriptEntry(entry transcript.Entry) html.Node {
-	from, label, body := "daemon", "", html.Node(nil)
+	// subject follows label in the entry's header, for links to other
+	// tasks.
+	from, label, subject, body := "daemon", "", html.Node(nil), html.Node(nil)
 	switch b := entry.Body.(type) {
 	case transcript.OwnerPrompt:
 		from, label = "owner", "Owner prompted"
@@ -93,6 +95,20 @@ func TranscriptEntry(entry transcript.Entry) html.Node {
 	case transcript.HarnessExited:
 		label = "Harness exited with code " + strconv.Itoa(b.ExitCode)
 		body = html.Fragment(paragraph(b.Error), stderr(b.Stderr))
+	case transcript.MessageSent:
+		from, label = "agent", "Agent sent a message to task "
+		subject, body = link(taskURL(string(b.To)), string(b.To)), preformatted(b.Text)
+	case transcript.MessageReceived:
+		from, label, body = "task", "Notice from the orchestrator", preformatted(b.Text)
+		if b.From != nil {
+			label, subject = "Message from task ", link(taskURL(string(*b.From)), string(*b.From))
+		}
+	case transcript.ChildSpawned:
+		from, label = "agent", "Agent started child task "
+		subject, body = link(taskURL(string(b.Child)), string(b.Child)), preformatted(b.Prompt)
+	case transcript.ChildEnded:
+		label = "Child task "
+		subject = html.Fragment(link(taskURL(string(b.Child)), string(b.Child)), html.Text(" ended as "+b.State))
 	case transcript.Unknown:
 		label = "Unrecognised " + b.RecordKind
 		if b.Type != "" {
@@ -103,7 +119,7 @@ func TranscriptEntry(entry transcript.Entry) html.Node {
 		label = "Unrecognised entry " + string(entry.Body.Kind())
 	}
 	return html.El("li", attrs("class", "entry from-"+from),
-		html.El("header", nil, timestamp(entry.Time), html.Text(" "+label)),
+		html.El("header", nil, timestamp(entry.Time), html.Text(" "+label), subject),
 		body)
 }
 

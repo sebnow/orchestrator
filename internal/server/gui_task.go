@@ -18,6 +18,7 @@ import (
 // Unrecognised entries are hidden unless showUnknown is set.
 type taskView struct {
 	detail      taskDetail
+	children    []protocol.TaskID
 	entries     []transcript.Entry
 	showUnknown bool
 }
@@ -31,7 +32,11 @@ func (s *Server) readTaskView(ctx context.Context, task protocol.TaskID) (taskVi
 	if err != nil {
 		return taskView{}, err
 	}
-	return taskView{detail: detail, entries: entries}, nil
+	children, err := s.store.children(ctx, task)
+	if err != nil {
+		return taskView{}, err
+	}
+	return taskView{detail: detail, children: children, entries: entries}, nil
 }
 
 // taskViewFromPath reads the task the request's path names, or writes the
@@ -56,7 +61,13 @@ func (s *Server) taskViewFromPath(w http.ResponseWriter, r *http.Request) (taskV
 
 func (v taskView) id() string { return string(v.detail.ID) }
 
-func (v taskView) task() component.Task { return guiTask(v.detail.taskSummary, v.detail.Start.Prompt) }
+func (v taskView) task() component.Task {
+	task := guiTask(v.detail.taskSummary, v.detail.Start.Prompt)
+	for _, child := range v.children {
+		task.Children = append(task.Children, string(child))
+	}
+	return task
+}
 
 // header is the task's header with the controls its state offers. A task
 // between processes can be resumed or stopped, but has nothing running to

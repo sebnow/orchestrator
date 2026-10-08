@@ -17,30 +17,41 @@ import (
 )
 
 // cursor is how far into a task's transcript a page has got: the highest
-// event seq and command id among the entries it shows. On the wire it is
-// "<seq>-<command id>".
+// event seq, command id and message id among the entries it shows. On the
+// wire it is "<seq>-<command id>-<message id>"; a page loaded before
+// messages were shown sends "<seq>-<command id>", which stands for message
+// id 0.
 //
 // An event stored late with a seq below the cursor's, after a gap was
 // filled, is not sent; the page shows it once reloaded.
 type cursor struct {
-	seq, command uint64
+	seq, command, message uint64
 }
 
 func (c cursor) String() string {
-	return strconv.FormatUint(c.seq, 10) + "-" + strconv.FormatUint(c.command, 10)
+	return strconv.FormatUint(c.seq, 10) + "-" + strconv.FormatUint(c.command, 10) + "-" + strconv.FormatUint(c.message, 10)
 }
 
 func parseCursor(raw string) (cursor, error) {
 	if raw == "" {
 		return cursor{}, nil
 	}
-	rawSeq, rawCommand, found := strings.Cut(raw, "-")
-	seq, seqErr := strconv.ParseUint(rawSeq, 10, 63)
-	command, commandErr := strconv.ParseUint(rawCommand, 10, 63)
-	if !found || seqErr != nil || commandErr != nil {
+	parts := strings.Split(raw, "-")
+	if len(parts) == 2 {
+		parts = append(parts, "0")
+	}
+	if len(parts) != 3 {
 		return cursor{}, fmt.Errorf("%q is not a transcript position", raw)
 	}
-	return cursor{seq: seq, command: command}, nil
+	var positions [3]uint64
+	for idx, part := range parts {
+		position, err := strconv.ParseUint(part, 10, 63)
+		if err != nil {
+			return cursor{}, fmt.Errorf("%q is not a transcript position", raw)
+		}
+		positions[idx] = position
+	}
+	return cursor{seq: positions[0], command: positions[1], message: positions[2]}, nil
 }
 
 // after returns the entries past c, in transcript order, and the cursor
@@ -51,9 +62,11 @@ func (c cursor) after(entries []transcript.Entry) ([]transcript.Entry, cursor) {
 	for _, entry := range entries {
 		source := entry.Source
 		switch {
+		case source.MessageID != 0 && source.MessageID > c.message:
+			next.message = max(next.message, source.MessageID)
 		case source.CommandID != 0 && source.CommandID > c.command:
 			next.command = max(next.command, source.CommandID)
-		case source.CommandID == 0 && source.Seq > c.seq:
+		case source.Seq != 0 && source.Seq > c.seq:
 			next.seq = max(next.seq, source.Seq)
 		default:
 			continue

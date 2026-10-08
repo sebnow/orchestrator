@@ -23,6 +23,10 @@ type Task struct {
 	CreatedAt      time.Time
 	LastActivityAt time.Time
 	CostUSD        float64
+	// Parent is the id of the task that spawned this one; empty for the
+	// owner's. Children are the ids of the tasks this one spawned.
+	Parent   string
+	Children []string
 }
 
 func taskURL(id string) string { return "/tasks/" + url.PathEscape(id) }
@@ -59,12 +63,20 @@ var TaskColumns = []string{"State", "Prompt", "Daemon", "Model", "Cost", "Last a
 func TaskRow(task Task) html.Node {
 	return html.El("tr", nil,
 		cell(StateBadge(task.State)),
-		cell(link(taskURL(task.ID), excerpt(task.Prompt))),
+		cell(link(taskURL(task.ID), excerpt(task.Prompt)), lineage(task.Parent)),
 		cell(html.Text(task.Daemon)),
 		cell(html.Text(task.Model)),
 		cell(html.Text(cost(task.CostUSD))),
 		cell(timestamp(task.LastActivityAt)),
 	)
+}
+
+// lineage marks a task spawned by parent, or is empty for the owner's.
+func lineage(parent string) html.Node {
+	if parent == "" {
+		return nil
+	}
+	return html.El("span", attrs("class", "reason"), html.Text(" ↳ child of "), link(taskURL(parent), parent))
 }
 
 // Attention is a task waiting for the owner, and why.
@@ -93,6 +105,20 @@ func TaskHeader(task Task, controls html.Node) html.Node {
 	term := func(name string, value html.Node) html.Node {
 		return html.Fragment(html.El("dt", nil, html.Text(name)), html.El("dd", nil, value))
 	}
+	var parent, children html.Node
+	if task.Parent != "" {
+		parent = term("Parent", link(taskURL(task.Parent), task.Parent))
+	}
+	if len(task.Children) > 0 {
+		links := make([]html.Node, 0, 2*len(task.Children))
+		for idx, child := range task.Children {
+			if idx > 0 {
+				links = append(links, html.Text(", "))
+			}
+			links = append(links, link(taskURL(child), child))
+		}
+		children = term("Children", html.Fragment(links...))
+	}
 	return html.El("header", attrs("class", "task-header"),
 		html.El("h1", nil, link(taskURL(task.ID), excerpt(task.Prompt))),
 		html.El("dl", nil,
@@ -102,6 +128,8 @@ func TaskHeader(task Task, controls html.Node) html.Node {
 			term("Cost", html.Text(cost(task.CostUSD))),
 			term("Created", timestamp(task.CreatedAt)),
 			term("Last activity", timestamp(task.LastActivityAt)),
+			parent,
+			children,
 		),
 		controls,
 		html.El("p", nil, link(taskURL(task.ID)+"/raw", "Stored events")),

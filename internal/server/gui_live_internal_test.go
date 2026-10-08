@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/sebnow/orchestrator/internal/protocol"
+	"github.com/sebnow/orchestrator/internal/transcript"
 )
 
 func receiveUpdate(t *testing.T, events <-chan sseEvent) sseEvent {
@@ -43,7 +44,7 @@ func TestGivenTaskPageWhenANewEventIsIngestedThenItsStreamPushesTheNewEntryAndTh
 	srv := startTestServer(t)
 	task, events := runningTask(t, srv)
 	page := getPage(t, srv.url+"/tasks/"+string(task))
-	shown := strconv.FormatUint(events.seq, 10) + "-1"
+	shown := strconv.FormatUint(events.seq, 10) + "-1-0"
 	match := sseConnect.FindStringSubmatch(page)
 	if match == nil || match[1] != "/tasks/"+string(task)+"/stream?after="+shown {
 		t.Fatalf("sse-connect = %v, want the stream after %s", match, shown)
@@ -54,7 +55,7 @@ func TestGivenTaskPageWhenANewEventIsIngestedThenItsStreamPushesTheNewEntryAndTh
 	events.ingest(t, srv, "laptop")
 	update := receiveUpdate(t, stream)
 
-	next := strconv.FormatUint(events.seq, 10) + "-1"
+	next := strconv.FormatUint(events.seq, 10) + "-1-0"
 	if update.id != next {
 		t.Errorf("id = %q, want %q", update.id, next)
 	}
@@ -85,7 +86,7 @@ func TestGivenReconnectingBrowserWhenStreamOpensThenItGetsWhatItMissedSinceItsLa
 	stream := openEventStream(t, srv.url+"/tasks/"+string(task)+"/stream?after=0-0", strconv.FormatUint(events.seq, 10)+"-1")
 	update := receiveUpdate(t, stream)
 
-	if want := strconv.FormatUint(events.seq, 10) + "-2"; update.id != want {
+	if want := strconv.FormatUint(events.seq, 10) + "-2-0"; update.id != want {
 		t.Errorf("id = %q, want %q", update.id, want)
 	}
 	requireContains(t, update.data, "Owner asked the agent to pause", `<span class="badge state-pausing">pausing</span>`,
@@ -103,14 +104,14 @@ func TestGivenPollingPageWhenItAsksForUpdatesThenItGetsTheEntriesAfterItsCursorA
 		t.Fatalf("status = %d (%s), want 200", got.status, got.body)
 	}
 	requireContains(t, got.body, "DONE-1", "DONE-3",
-		`<div hx-swap-oob="innerHTML:#task-live"><div hx-get="/tasks/`+string(task)+`/updates?after=`+strconv.FormatUint(events.seq, 10)+`-1" hx-trigger="every 5s"`)
+		`<div hx-swap-oob="innerHTML:#task-live"><div hx-get="/tasks/`+string(task)+`/updates?after=`+strconv.FormatUint(events.seq, 10)+`-1-0" hx-trigger="every 5s"`)
 	requireLacks(t, got.body, "Harness started", "Owner prompted", "sse-connect")
 }
 
 func TestGivenMalformedCursorWhenStreamingOrPollingThenBadRequest(t *testing.T) {
 	srv := startTestServer(t)
 	task, _ := runningTask(t, srv)
-	for _, target := range []string{"/stream?after=3", "/stream?after=a-1", "/updates?after=1-", "/updates?after=-1-2"} {
+	for _, target := range []string{"/stream?after=3", "/stream?after=a-1", "/updates?after=1-", "/updates?after=-1-2", "/updates?after=1-2-3-4"} {
 		if got := send(t, http.MethodGet, srv.url+"/tasks/"+string(task)+target, nil, false); got.status != http.StatusBadRequest {
 			t.Errorf("%s: status = %d, want 400", target, got.status)
 		}
@@ -134,5 +135,32 @@ func TestGivenOpenTaskStreamWhenStreamsAreEndedThenItEnds(t *testing.T) {
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("stream still open after 5s")
+	}
+}
+
+func TestGivenEntriesFromEventsCommandsAndMessagesWhenTakingThoseAfterACursorThenEachKindIsCountedOnItsOwn(t *testing.T) {
+	entry := func(source transcript.Source) transcript.Entry {
+		return transcript.Entry{Source: source, Body: transcript.AgentText{}}
+	}
+	entries := []transcript.Entry{
+		entry(transcript.Source{TaskID: "task-1", Seq: 4}),
+		entry(transcript.Source{TaskID: "task-1", CommandID: 9}),
+		entry(transcript.Source{TaskID: "child", CommandID: 12}),
+		entry(transcript.Source{TaskID: "task-1", MessageID: 3}),
+		entry(transcript.Source{TaskID: "task-1", MessageID: 5}),
+		entry(transcript.Source{TaskID: "task-1", Seq: 6}),
+	}
+	at, err := parseCursor("4-9-3")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	fresh, next := at.after(entries)
+
+	if len(fresh) != 3 || fresh[0].Source.CommandID != 12 || fresh[1].Source.MessageID != 5 || fresh[2].Source.Seq != 6 {
+		t.Errorf("fresh = %+v", fresh)
+	}
+	if next.String() != "6-12-5" {
+		t.Errorf("next = %s, want 6-12-5", next)
 	}
 }

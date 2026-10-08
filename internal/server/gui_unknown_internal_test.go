@@ -39,7 +39,7 @@ func TestGivenShowUnknownWhenTheTaskPageIsShownThenTheEntryIsShownAndTheLiveUpda
 
 	page := getPage(t, srv.url+"/tasks/"+string(task)+"?unknown=show")
 
-	shown := strconv.FormatUint(events.seq, 10) + "-1"
+	shown := strconv.FormatUint(events.seq, 10) + "-1-0"
 	requireContains(t, page, "HELLO", "Unrecognised harness_output of type command_lifecycle", "Showing 1 unrecognised entry.",
 		`<a href="/tasks/`+string(task)+`">Hide them</a>`,
 		`sse-connect="/tasks/`+string(task)+`/stream?after=`+shown+`&amp;unknown=show"`)
@@ -63,7 +63,7 @@ func TestGivenHiddenUnknownEntriesWhenAnotherArrivesThenTheStreamSkipsItButMoves
 	events.ingest(t, srv, "laptop")
 	update := receiveUpdate(t, stream)
 
-	if want := strconv.FormatUint(events.seq, 10) + "-1"; update.id != want {
+	if want := strconv.FormatUint(events.seq, 10) + "-1-0"; update.id != want {
 		t.Errorf("id = %q, want %q", update.id, want)
 	}
 	requireContains(t, update.data, `<div hx-swap-oob="innerHTML:#task-unknown"><p class="notice">2 unrecognised entries hidden.`)
@@ -79,7 +79,7 @@ func TestGivenShownUnknownEntriesWhenPollingThenTheUpdateCarriesThemAndKeepsShow
 
 	got := send(t, http.MethodGet, srv.url+"/tasks/"+string(task)+"/updates?after="+at+"&unknown=show", nil, false)
 
-	next := strconv.FormatUint(events.seq, 10) + "-1"
+	next := strconv.FormatUint(events.seq, 10) + "-1-0"
 	requireContains(t, got.body, "Unrecognised harness_output of type command_lifecycle",
 		`hx-get="/tasks/`+string(task)+`/updates?after=`+next+`&amp;unknown=show"`)
 }

@@ -59,7 +59,7 @@ func redirect(w http.ResponseWriter, r *http.Request, url string) {
 }
 
 func guiTask(summary taskSummary, prompt string) component.Task {
-	return component.Task{
+	task := component.Task{
 		ID:             string(summary.ID),
 		State:          string(summary.State),
 		Daemon:         string(summary.DaemonID),
@@ -69,6 +69,10 @@ func guiTask(summary taskSummary, prompt string) component.Task {
 		LastActivityAt: summary.LastActivityAt,
 		CostUSD:        summary.CostUSD,
 	}
+	if summary.ParentID != nil {
+		task.Parent = string(*summary.ParentID)
+	}
+	return task
 }
 
 func (s *Server) getDashboard(w http.ResponseWriter, r *http.Request) {
