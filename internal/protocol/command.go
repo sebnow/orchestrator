@@ -94,9 +94,14 @@ func (l *PauseLimits) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
-// Prompt is a follow-up prompt to a running task.
+// Prompt is a follow-up prompt to a task. From is nil for the owner's
+// prompt; it is set when the prompt delivers messages from the inbox
+// (docs/adr/2026-10-08-inbox-delivery.md), and names the task the oldest
+// of them came from or, for the server's notice that a child ended, that
+// child. The server words Text, which names every sender.
 type Prompt struct {
-	Text string `json:"text"`
+	Text string  `json:"text"`
+	From *TaskID `json:"from,omitempty"`
 }
 
 // AnswerPermission answers the PermissionRequested event that carried

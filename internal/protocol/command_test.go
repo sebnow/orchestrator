@@ -107,3 +107,19 @@ func TestGivenUnsafeNameWhenParsingDaemonIDThenErrInvalidDaemonID(t *testing.T) 
 		}
 	}
 }
+
+func TestGivenPromptWhenMarshallingThenFromAppearsOnlyWhenSet(t *testing.T) {
+	child := protocol.TaskID("child-1")
+	for want, prompt := range map[string]protocol.Prompt{
+		`{"text":"more"}`: {Text: "more"},
+		`{"text":"Message from task child-1: PEAR","from":"child-1"}`: {Text: "Message from task child-1: PEAR", From: &child},
+	} {
+		got, err := json.Marshal(prompt)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if string(got) != want {
+			t.Errorf("got  %s\nwant %s", got, want)
+		}
+	}
+}
