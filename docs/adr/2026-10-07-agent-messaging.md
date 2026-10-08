@@ -3,7 +3,8 @@
 - Status: Accepted
 - Decided: 2026-10-06
 - Source: [initial brainstorm](../design/2026-10-06-brainstorm.md), decision 7
-- Amended by: [harness independence](2026-10-07-harness-independence.md), which settles how the inbox is exposed as an implementation choice
+- Amended by: [harness independence](2026-10-07-harness-independence.md), which settles how the inbox is exposed as an implementation choice;
+  [inbox delivery](2026-10-08-inbox-delivery.md), which exposes it as gateway tools and decides delivery
 
 ## Context
 
