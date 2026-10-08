@@ -45,20 +45,32 @@ The Claude Agent SDK is ruled out because its documentation directs
 developers to API key authentication. The daemon drives the CLI directly
 instead ([harness integration](2026-10-07-harness-integration.md)). The
 SDK prohibitions are worded around offering claude.ai login to other
-users; **UNVERIFIED:** whether personal SDK use on one's own plan is
-tolerated.
+users. Anthropic's support article on using the Agent SDK with a Claude
+plan says, in its update of October 7, 2026, "You can still use the
+Claude Agent SDK, `claude -p`, and third-party apps with your
+subscription limits."
+(https://support.claude.com/en/articles/15036540-use-the-claude-agent-sdk-with-your-claude-plan).
 
 ## Consequences
 
 - The harness does not run in `--bare` mode.
 - The consumer terms forbid sharing account credentials with other people
   and forbid third parties from intermediating claude.ai credentials for
-  their users (https://www.anthropic.com/legal/consumer-terms).
-  **UNVERIFIED:** a single-owner setup appears to be within these terms;
-  collaborators would each need their own token.
+  their users (https://www.anthropic.com/legal/consumer-terms). They
+  also forbid automated access "Except when you are accessing our
+  Services via an Anthropic API Key or where we otherwise explicitly
+  permit it". Anthropic's own pages provide for each part of a
+  single-owner setup: the authentication page offers
+  `claude setup-token` "For CI pipelines, scripts, or other environments
+  where interactive browser login isn't available"; the legal and
+  compliance page does not "prevent an end user from signing in to the
+  unmodified Claude Code binary with their own Claude subscription"; and
+  the support article cited under Decision allows `claude -p` with
+  subscription limits
+  ([marker verification](../design/2026-10-08-marker-verification.md),
+  "Subscription use"). Collaborators would each need their own token.
 - Usage is limited by token quotas per five-hour and weekly window on the
   Pro and Max plans. No cap on concurrent sessions per account is
-  documented. **UNVERIFIED:** that no such cap exists; the
-  documentation's silence is the only evidence. Whether running many
-  agents in parallel fits in one subscription's quota is unknown
+  documented. Whether running many agents in parallel fits in one
+  subscription's quota is unknown
   (https://support.claude.com/en/articles/11647753-how-do-usage-and-length-limits-work).
