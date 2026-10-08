@@ -81,8 +81,8 @@ func TestGivenParentWhoseAgentSpawnsAChildWhenTheChildSendsToTheFinishedParentTh
 
 	sendReply := callTool(t, childProc, SendMessageTool, map[string]any{"to": string(parent), "text": "PEAR"})
 
-	if !strings.Contains(sendReply, "next prompt now") {
-		t.Errorf("send reply = %q, want it delivered at once", sendReply)
+	if !strings.Contains(sendReply, "queued for delivery to task "+string(parent)+" as its next prompt") {
+		t.Errorf("send reply = %q, want it queued as the next prompt", sendReply)
 	}
 	resumed := d.nextProcess(t)
 	if resumed.spec.Resume != "parent-session" {

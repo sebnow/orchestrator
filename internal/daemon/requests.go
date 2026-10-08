@@ -93,7 +93,7 @@ func (d *Daemon) sendMessage(task protocol.TaskID) func(context.Context, sendMes
 			return "", err
 		}
 		if sent.Delivered {
-			return fmt.Sprintf("Sent. Task %s has it as its next prompt now.", in.To), nil
+			return fmt.Sprintf("Sent. The message is queued for delivery to task %s as its next prompt, which may wait for a free slot or for budget.", in.To), nil
 		}
 		return fmt.Sprintf("Sent. The message waits in task %s's inbox and reaches it as a prompt once its current turn has ended.", in.To), nil
 	}
