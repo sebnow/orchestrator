@@ -158,7 +158,15 @@ func (s *sender) run(ctx context.Context, drain <-chan struct{}) {
 		s.backoff.reset()
 		select {
 		case <-drain:
-			return
+			// An event journaled while the pass ran may not have been
+			// read by it; its notice is still waiting, so one more pass
+			// sends it.
+			select {
+			case <-s.wake:
+				continue
+			default:
+				return
+			}
 		default:
 		}
 		select {
