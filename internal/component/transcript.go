@@ -125,6 +125,9 @@ func TranscriptEntry(entry transcript.Entry) html.Node {
 		label = "Task "
 		subject = html.Fragment(link(taskURL(string(b.To)), string(b.To)),
 			html.Text(" ended as "+b.State+" before the agent's messages reached it; they were not delivered"))
+	case transcript.TaskMoved:
+		label = "Daemon " + string(b.From) + " was lost with the task's work; the task started afresh on daemon " + string(b.To)
+		body = preformatted(b.Prompt)
 	case transcript.Unknown:
 		label = "Unrecognised " + b.RecordKind
 		if b.Type != "" {

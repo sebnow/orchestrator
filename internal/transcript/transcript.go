@@ -60,6 +60,7 @@ const (
 	KindChildSpawned         Kind = "child_spawned"
 	KindChildEnded           Kind = "child_ended"
 	KindMessageUndeliverable Kind = "message_undeliverable"
+	KindTaskMoved            Kind = "task_moved"
 	KindUnknown              Kind = "unknown"
 )
 
@@ -229,6 +230,16 @@ type MessageUndeliverable struct {
 	State string
 }
 
+// TaskMoved is the task starting afresh on the daemon To, its earlier
+// work having been lost with the daemon From, which the server declared
+// lost (docs/adr/2026-10-08-daemon-loss.md). Prompt is what the new
+// session starts with: the task's first prompt and a note saying so.
+type TaskMoved struct {
+	From   protocol.DaemonID
+	To     protocol.DaemonID
+	Prompt string
+}
+
 // Unknown is a record no other Body describes, kept so that nothing is
 // silently dropped. RecordKind is the event or command kind; Type is the
 // harness's own type for a harness line, empty otherwise. Raw is the
@@ -260,6 +271,7 @@ func (MessageReceived) Kind() Kind      { return KindMessageReceived }
 func (ChildSpawned) Kind() Kind         { return KindChildSpawned }
 func (ChildEnded) Kind() Kind           { return KindChildEnded }
 func (MessageUndeliverable) Kind() Kind { return KindMessageUndeliverable }
+func (TaskMoved) Kind() Kind            { return KindTaskMoved }
 func (Unknown) Kind() Kind              { return KindUnknown }
 
 func (OwnerPrompt) body()          {}
@@ -283,4 +295,5 @@ func (MessageReceived) body()      {}
 func (ChildSpawned) body()         {}
 func (ChildEnded) body()           {}
 func (MessageUndeliverable) body() {}
+func (TaskMoved) body()            {}
 func (Unknown) body()              {}

@@ -382,12 +382,14 @@ func NewTaskForm(input NewTask, daemons []string, defaultModel, problem, created
 
 // Daemon is a daemon as the GUI shows it. Quota is its latest reading,
 // taken at QuotaAt; nil when it has reported none. InUse of its Slots
-// are held by tasks.
+// are held by tasks. LostSince is when the server declared it lost; zero
+// while it is not.
 type Daemon struct {
 	ID        string
 	Harness   string
 	LastSeen  time.Time
 	Connected bool
+	LostSince time.Time
 	Slots     int
 	InUse     int
 	Quota     *protocol.QuotaObserved
@@ -407,10 +409,19 @@ func DaemonRow(daemon Daemon) html.Node {
 		cell(html.Text(daemon.ID)),
 		cell(html.Text(daemon.Harness)),
 		cell(timestamp(daemon.LastSeen)),
-		cell(html.Text(yesNo(daemon.Connected))),
+		cell(connection(daemon)),
 		cell(html.Text(fmt.Sprintf("%d of %d in use", daemon.InUse, daemon.Slots))),
 		cell(quota),
 	)
+}
+
+// connection says whether daemon is connected, and since when it is lost
+// if it is.
+func connection(daemon Daemon) html.Node {
+	if !daemon.Connected && !daemon.LostSince.IsZero() {
+		return html.Fragment(html.Text("no, lost since "), timestamp(daemon.LostSince))
+	}
+	return html.Text(yesNo(daemon.Connected))
 }
 
 // Budget is the account's quota reading as the scheduler uses it: quota,
