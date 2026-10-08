@@ -31,8 +31,12 @@ documented way to do either.
 - The mod API call `$.turn.abort` ended a turn, but a running foreground
   command moved to the background and ran until the process exited. An
   interrupt written to stdin (`control_request` with subtype `interrupt`)
-  stopped the running command. **UNVERIFIED:** that its format, which the
-  headless documentation does not describe, is a supported interface.
+  stopped the running command. The headless documentation does not
+  describe its format. The Agent SDK TypeScript reference documents the
+  interrupt control request for the SDK; none of the pages checked says
+  that another program may write it to the CLI's stdin
+  ([marker verification](../design/2026-10-08-marker-verification.md),
+  "The stdin interrupt").
 
 A mod also sees the session id, usage, cumulative cost, and the full
 content of the conversation, which the brainstorm had listed as available
@@ -63,8 +67,7 @@ Reasons against adopting a mod now:
   settings or under a Team or Enterprise login, and withholds some events
   from them. On the test machine it withheld 13 event types. Agents are
   planned to run on cloud VPSes as well, and no VPS was tested, so what a
-  mod sees depends on the machine and account. **UNVERIFIED:** that a VPS
-  without managed settings, under a personal plan, does not run the guard.
+  mod sees depends on the machine and account.
 
 ## Decision
 
@@ -85,12 +88,14 @@ Adding a mod is deferred. The intended mod is small: it only reports
 - The adapter runs no code inside the harness. Its CLI flags are
   documented; the stdin interrupt and `rate_limit_event` are not.
 - Until a mod is added, the daemon's only quota figures come from
-  `rate_limit_event`. **UNVERIFIED:** that `rate_limit_event` is sent
-  again within a process when the rate-limit status changes; in the
-  spike, utilization rose only between processes.
+  `rate_limit_event`. In the spike, utilization rose only between
+  processes. In two later live runs, one process sent the event twice,
+  the second time with the five-hour utilization 0.01 higher and the
+  status unchanged
+  ([marker verification](../design/2026-10-08-marker-verification.md),
+  "`rate_limit_event` repeats within a process"); what makes Claude Code
+  send it again was not established.
 - The daemon does not see the context-window fill, the injected system
   reminders, or Claude Code's own permission verdict.
-- **UNVERIFIED:** that a non-blocking mod reporting `session.measure`
-  gives the daemon the quota figures stdout lacks; no such mod was built.
 
 Revisit if the scheduler needs quota figures that stdout does not give.
