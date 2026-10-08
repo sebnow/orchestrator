@@ -273,6 +273,17 @@ func (s *state) dropJournal(task protocol.TaskID, acked uint64, path string) (bo
 	return true, nil
 }
 
+// forget removes task from the state, whatever its record says.
+func (s *state) forget(task protocol.TaskID) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	delete(s.open, task)
+	if _, ok := s.saved.Tasks[task]; !ok {
+		return nil
+	}
+	return s.updateLocked(func(saved *savedState) { delete(saved.Tasks, task) })
+}
+
 // update applies change and writes the result. If the write fails the
 // state is left as it was.
 func (s *state) update(change func(*savedState)) error {

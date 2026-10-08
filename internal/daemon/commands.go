@@ -244,6 +244,13 @@ func (s *service) applyCommand(task protocol.TaskID, t *Task, command protocol.C
 		t.Stop(ctx, nil)
 		s.processEnded(task, t, true)
 		return nil, nil
+	case commandDropMoved:
+		if t != nil {
+			t.Kill()
+			s.processEnded(task, t, true)
+		}
+		s.forget(task)
+		return nil, nil
 	case protocol.CommandAnswerPermission:
 		answer, err := decodePayload[protocol.AnswerPermission](command)
 		if err != nil {

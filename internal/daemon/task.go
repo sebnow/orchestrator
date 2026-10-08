@@ -516,6 +516,13 @@ func (t *Task) Stop(ctx context.Context, cutShort func(session string, own proto
 	return *t.State().Exit
 }
 
+// Kill kills the harness at once, without interrupting its turn first,
+// and waits until its exit is journaled.
+func (t *Task) Kill() {
+	t.proc.Kill()
+	<-t.done
+}
+
 // AnswerPermission answers the pending permission request requestID.
 func (t *Task) AnswerPermission(requestID string, decision harness.Decision) error {
 	t.mu.Lock()

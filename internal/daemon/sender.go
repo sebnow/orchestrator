@@ -37,6 +37,19 @@ const (
 // this daemon's. Sending it again cannot succeed.
 var errRejected = errors.New("rejected by the server")
 
+// movedError reports a batch the server refused because it moved the
+// batch's task to another daemon after declaring this one lost
+// (docs/adr/2026-10-08-daemon-loss.md). The task is no longer this
+// daemon's.
+type movedError struct {
+	task    protocol.TaskID
+	message string
+}
+
+func (e *movedError) Error() string {
+	return fmt.Sprintf("the server moved task %s to another daemon: %s", e.task, e.message)
+}
+
 // sender sends every task's journal to the server, in seq order per task,
 // and records how far the server holds each. A task whose journal ends in
 // harness_exited and is held whole has its journal deleted, and is
@@ -56,6 +69,10 @@ type sender struct {
 
 	batchEvents int
 	batchBytes  int
+
+	// moved, when set, hears of each task the server refused as moved to
+	// another daemon. The sender stops sending the task.
+	moved func(protocol.TaskID)
 
 	wake chan struct{}
 	mu   sync.Mutex
@@ -223,6 +240,14 @@ func (s *sender) sendTask(ctx context.Context, task protocol.TaskID, ob *outbox)
 			break
 		}
 		held, err := s.postEvents(ctx, lines)
+		if _, ok := errors.AsType[*movedError](err); ok {
+			s.log.Warn("server moved the task to another daemon; dropping it here", "task", task, "error", err)
+			ob.rejected = true
+			if s.moved != nil {
+				s.moved(task)
+			}
+			return nil
+		}
 		if errors.Is(err, errRejected) {
 			s.log.Error("server refused events; they will not be sent again", "task", task,
 				"first_seq", lines[0].seq, "last_seq", lines[len(lines)-1].seq, "error", err)
@@ -351,6 +376,12 @@ func (s *sender) request(ctx context.Context, method, endpoint string, body io.R
 	data, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 	if err != nil {
 		return nil, fmt.Errorf("%s %s: %w", method, endpoint, err)
+	}
+	if resp.StatusCode == http.StatusConflict {
+		var refused protocol.EventsRefused
+		if json.Unmarshal(data, &refused) == nil && refused.Reason == protocol.RefusedTaskMoved {
+			return nil, &movedError{task: refused.TaskID, message: refused.Message}
+		}
 	}
 	if resp.StatusCode >= 400 && resp.StatusCode < 500 {
 		return nil, fmt.Errorf("%w: %s %s: %s: %s", errRejected, method, endpoint, resp.Status, bytes.TrimSpace(data))

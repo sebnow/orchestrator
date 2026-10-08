@@ -6,6 +6,7 @@ import (
 	"errors"
 	"io"
 	"sync"
+	"sync/atomic"
 	"testing"
 
 	"github.com/sebnow/orchestrator/internal/harness"
@@ -76,6 +77,8 @@ type fakeProcess struct {
 	// Code does when stdin closes.
 	endOnClose bool
 	endOnce    sync.Once
+	// killed is set once Kill is called.
+	killed atomic.Bool
 }
 
 func (p *fakeProcess) PID() int { return 4242 }
@@ -107,6 +110,7 @@ func (p *fakeProcess) CloseInput() error {
 }
 
 func (p *fakeProcess) Kill() error {
+	p.killed.Store(true)
 	p.end(protocol.HarnessExited{ExitCode: -1, Error: "signal: killed"})
 	return nil
 }

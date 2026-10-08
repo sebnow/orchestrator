@@ -55,7 +55,15 @@ type recordedRequest struct {
 // as with -insecure-loopback.
 func startServer(t *testing.T) *serverFixture {
 	t.Helper()
-	f, httpServer := newServerFixture(t, true)
+	return startServerWith(t, server.Options{})
+}
+
+// startServerWith is startServer with options, but for the default model
+// and authentication.
+func startServerWith(t *testing.T, options server.Options) *serverFixture {
+	t.Helper()
+	options.Insecure = true
+	f, httpServer := newServerFixture(t, options)
 	httpServer.Start()
 	f.owner = http.DefaultClient
 	f.url = mustParseURL(t, httpServer.URL)
@@ -67,7 +75,7 @@ func startServer(t *testing.T) *serverFixture {
 // the test's own CA and store.
 func startTLSServer(t *testing.T) *serverFixture {
 	t.Helper()
-	f, httpServer := newServerFixture(t, false)
+	f, httpServer := newServerFixture(t, server.Options{})
 	ca, err := pki.NewCA()
 	if err != nil {
 		t.Fatal(err)
@@ -110,17 +118,19 @@ func mustParseURL(t *testing.T, raw string) *url.URL {
 	return parsed
 }
 
-// newServerFixture makes the server, and the unstarted HTTP server that
-// fronts it. Unless insecure, the owner's token is issued into f.token.
-func newServerFixture(t *testing.T, insecure bool) (*serverFixture, *httptest.Server) {
+// newServerFixture makes the server with options, and the unstarted HTTP
+// server that fronts it. Unless options.Insecure, the owner's token is
+// issued into f.token.
+func newServerFixture(t *testing.T, options server.Options) (*serverFixture, *httptest.Server) {
 	t.Helper()
 	store, err := server.OpenStore(t.Context(), filepath.Join(t.TempDir(), "server.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	srv := server.New(store, slog.New(slog.DiscardHandler), server.Options{DefaultModel: "haiku", Insecure: insecure})
+	options.DefaultModel = "haiku"
+	srv := server.New(store, slog.New(slog.DiscardHandler), options)
 	f := &serverFixture{}
-	if !insecure {
+	if !options.Insecure {
 		if f.token, err = store.IssueOwnerToken(t.Context()); err != nil {
 			t.Fatal(err)
 		}

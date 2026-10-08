@@ -155,6 +155,7 @@ func Serve(ctx context.Context, cfg Config) error {
 		running:  map[protocol.TaskID]*worker{},
 		applied:  st.lastCommand(),
 	}
+	snd.moved = s.dropMoved
 
 	sendCtx, cancelSend := context.WithCancel(context.Background())
 	defer cancelSend()
@@ -512,4 +513,53 @@ func (s *service) openTaskJournal(task protocol.TaskID) (*journal, error) {
 		return nil, fmt.Errorf("open journal: %w", err)
 	}
 	return j, nil
+}
+
+// commandDropMoved is a command the daemon gives itself, never one the
+// server sends: drop the task, which the server moved to another daemon
+// after declaring this one lost (docs/adr/2026-10-08-daemon-loss.md).
+const commandDropMoved protocol.CommandKind = "drop_moved"
+
+// dropMoved has task's worker kill the task's harness, if it runs one,
+// and forget the task. A task the daemon has forgotten already has what
+// is left of it deleted at once.
+func (s *service) dropMoved(task protocol.TaskID) {
+	drop := protocol.Command{TaskID: task, Kind: commandDropMoved}
+	s.mu.Lock()
+	w, running := s.running[task]
+	forgotten := false
+	switch {
+	case running:
+		w.queue = append(w.queue, drop)
+		select {
+		case w.wake <- struct{}{}:
+		default:
+		}
+	case s.state.known(task):
+		s.spawnLocked(task, drop)
+	default:
+		forgotten = true
+	}
+	s.mu.Unlock()
+	if forgotten {
+		s.forget(task)
+	}
+}
+
+// forget deletes everything the daemon keeps of task: its record, its
+// journal and its workspace. The record goes first, so that a restart
+// part-way through finds no task to recover; a journal it finds without
+// a record it sends again, which the server refuses once more.
+func (s *service) forget(task protocol.TaskID) {
+	if err := s.state.forget(task); err != nil {
+		s.log.Error("forget task", "task", task, "error", err)
+		return
+	}
+	if err := os.Remove(JournalPath(s.cfg.StateDir, task)); err != nil && !errors.Is(err, fs.ErrNotExist) {
+		s.log.Error("delete the journal of a forgotten task", "task", task, "error", err)
+	}
+	if err := deleteWorkspace(s.cfg.StateDir, task); err != nil {
+		s.log.Error("delete the workspace of a forgotten task", "task", task, "error", err)
+	}
+	s.log.Info("task forgotten", "task", task)
 }
