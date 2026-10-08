@@ -182,7 +182,7 @@ func moveTask(ctx context.Context, tx *sql.Tx, task protocol.TaskID, from protoc
 	if err := json.Unmarshal([]byte(payload), &start); err != nil {
 		return fmt.Errorf("read the start of task %q: %w", task, err)
 	}
-	start.Prompt = prompt + "\n\n" + movedNote(from, latest)
+	start.Prompt = prompt + "\n\n" + movedNote(from, start.Workspace != nil, latest)
 	restart, err := json.Marshal(start)
 	if err != nil {
 		return fmt.Errorf("encode the new start of task %q: %w", task, err)
@@ -247,13 +247,21 @@ func latestOwnerPrompt(ctx context.Context, tx *sql.Tx, task protocol.TaskID) (s
 	return "", nil
 }
 
-// movedNote tells the agent of a task moved off the lost daemon from that
-// its earlier work is gone, and what the owner last asked, when latest is
-// not empty.
-func movedNote(from protocol.DaemonID, latest string) string {
+// movedNote tells the agent of a task moved off the lost daemon from what
+// of its earlier work is gone, and what the owner last asked, when latest
+// is not empty. For a task with a repository, the commits the lost daemon
+// pushed survive on the task's branch, which the new daemon checks out
+// (docs/adr/2026-10-08-work-delivery.md).
+func movedNote(from protocol.DaemonID, repository bool, latest string) string {
 	note := "Note from the orchestrator: you worked on this task before on daemon " + string(from) +
 		", which has been lost. Everything you did there is gone, your workspace and your conversation alike, " +
 		"so you are starting again in a fresh workspace."
+	if repository {
+		note = "Note from the orchestrator: you worked on this task before on daemon " + string(from) +
+			", which has been lost, and you are starting again in a fresh clone and a new conversation. " +
+			"The commits pushed from there are on your task's branch, which your clone has checked out; " +
+			"only the work that was not pushed is gone, along with your earlier conversation."
+	}
 	if latest != "" {
 		note += " The owner's latest prompt to you was:\n\n" + latest
 	}

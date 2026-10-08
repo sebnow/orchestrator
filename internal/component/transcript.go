@@ -141,7 +141,7 @@ func TranscriptEntry(entry transcript.Entry) html.Node {
 		}
 		body = html.Fragment(paragraph(branchCounts(b.Ahead, b.Uncommitted)), errorText(b.Error))
 	case transcript.TaskMoved:
-		label = "Daemon " + string(b.From) + " was lost with the task's work; the task started afresh on daemon " + string(b.To)
+		label = "Daemon " + string(b.From) + " was lost; the task started afresh on daemon " + string(b.To)
 		body = preformatted(b.Prompt)
 	case transcript.Unknown:
 		label = "Unrecognised " + b.RecordKind

@@ -409,3 +409,16 @@ func lastCommandID(t *testing.T, srv testServer, daemon protocol.DaemonID) uint6
 	}
 	return uint64(id)
 }
+
+func TestGivenMovedTaskWhenNotingTheMoveThenOnlyATaskWithARepositoryIsToldItsPushedCommitsSurvive(t *testing.T) {
+	withRepository := movedNote("vps", true, "")
+	without := movedNote("vps", false, "")
+
+	if !strings.Contains(withRepository, "The commits pushed from there are on your task's branch") ||
+		!strings.Contains(withRepository, "only the work that was not pushed is gone") {
+		t.Errorf("note with a repository = %q", withRepository)
+	}
+	if strings.Contains(without, "branch") || !strings.Contains(without, "Everything you did there is gone") {
+		t.Errorf("note without a repository = %q", without)
+	}
+}
