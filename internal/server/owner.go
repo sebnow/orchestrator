@@ -83,7 +83,8 @@ func validateStart(start protocol.StartTask) error {
 	return nil
 }
 
-// postCommand issues a command to a running task and returns it.
+// postCommand issues a command to a task that is not stopped or failed,
+// and returns it.
 func (s *Server) postCommand(w http.ResponseWriter, r *http.Request) {
 	task, err := protocol.ParseTaskID(r.PathValue("task"))
 	if err != nil {
@@ -103,6 +104,10 @@ func (s *Server) postCommand(w http.ResponseWriter, r *http.Request) {
 	command, err := s.issueCommand(r.Context(), task, request.Kind, payload)
 	if errors.Is(err, errUnknownTask) {
 		http.Error(w, err.Error(), http.StatusNotFound)
+		return
+	}
+	if errors.Is(err, errTaskEnded) {
+		http.Error(w, err.Error(), http.StatusConflict)
 		return
 	}
 	if err != nil {

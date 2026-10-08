@@ -27,33 +27,48 @@ const (
 	TaskAwaitingPermission TaskState = "awaiting_permission"
 	// TaskPausing: a pause was issued and has not taken effect yet.
 	TaskPausing TaskState = "pausing"
-	TaskPaused  TaskState = "paused"
-	// TaskFinished: the harness exited with code 0 and no stop was issued.
+	// TaskPaused: the pause took effect and the task's process exited; a
+	// resume or a prompt starts its next process.
+	TaskPaused TaskState = "paused"
+	// TaskFinished: the task's process exited with code 0 after its turn,
+	// with no stop issued and no pause in effect. A prompt starts its next
+	// process (docs/adr/2026-10-08-task-lifetime.md).
 	TaskFinished TaskState = "finished"
-	// TaskStopped: the harness exited after the owner issued a stop.
+	// TaskStopped: the owner stopped the task. It is terminal.
 	TaskStopped TaskState = "stopped"
-	// TaskFailed: the harness exited otherwise, or never started.
+	// TaskFailed: the harness exited otherwise, or never started. It is
+	// terminal.
 	TaskFailed TaskState = "failed"
 )
 
-// Ended reports whether the task's harness has exited. An ended task
-// stays in its state.
-func (s TaskState) Ended() bool {
-	return s == TaskFinished || s == TaskStopped || s == TaskFailed
+// Terminal reports whether the task can take no more commands.
+func (s TaskState) Terminal() bool {
+	return s == TaskStopped || s == TaskFailed
+}
+
+// Idle reports whether the task is between processes and can be resumed.
+func (s TaskState) Idle() bool {
+	return s == TaskFinished || s == TaskPaused
 }
 
 // afterCommand returns the state once a command of kind is issued.
 //
 // A prompt resumes a paused task as a resume does, because the daemon
 // treats both alike, and either one issued while a pause is under way
-// applies once the pause settles, so the task is running thereafter.
+// applies once the pause settles, so the task is running thereafter. A
+// prompt to a finished task starts its next process. A stop to a task
+// between processes ends it at once, as no process is left to report it.
 func (s TaskState) afterCommand(kind protocol.CommandKind) TaskState {
 	switch {
-	case s.Ended():
+	case s.Terminal():
 		return s
+	case kind == protocol.CommandStop && s.Idle():
+		return TaskStopped
 	case kind == protocol.CommandPause && (s == TaskPending || s == TaskRunning || s == TaskAwaitingPermission):
 		return TaskPausing
 	case (kind == protocol.CommandResume || kind == protocol.CommandPrompt) && (s == TaskPausing || s == TaskPaused):
+		return TaskRunning
+	case kind == protocol.CommandPrompt && s == TaskFinished:
 		return TaskRunning
 	case kind == protocol.CommandAnswerPermission && s == TaskAwaitingPermission:
 		return TaskRunning
@@ -66,12 +81,15 @@ func (s TaskState) afterCommand(kind protocol.CommandKind) TaskState {
 // harness_exited.
 //
 // pause_settled takes effect only while pausing: when a resume or prompt
-// was issued before the pause settled, the task resumes right after.
+// was issued before the pause settled, the task resumes right after. A
+// clean exit leaves a paused task paused; a pause that had not settled
+// when the process exited did not take effect, and the task is finished.
+// A process started after a clean exit makes the task running again.
 func (s TaskState) afterEvent(event protocol.Event, stopIssued bool) TaskState {
 	switch {
-	case s.Ended():
+	case s.Terminal():
 		return s
-	case event.Kind == protocol.KindHarnessStarted && s == TaskPending:
+	case event.Kind == protocol.KindHarnessStarted && (s == TaskPending || s.Idle()):
 		return TaskRunning
 	case event.Kind == protocol.KindPermissionRequested && s == TaskRunning:
 		return TaskAwaitingPermission
@@ -83,10 +101,12 @@ func (s TaskState) afterEvent(event protocol.Event, stopIssued bool) TaskState {
 		switch {
 		case stopIssued:
 			return TaskStopped
-		case decoded && exit.ExitCode == 0 && exit.Error == "":
-			return TaskFinished
-		default:
+		case !decoded || exit.ExitCode != 0 || exit.Error != "":
 			return TaskFailed
+		case s == TaskPaused:
+			return TaskPaused
+		default:
+			return TaskFinished
 		}
 	}
 	return s

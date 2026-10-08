@@ -93,7 +93,7 @@ func (v taskView) update(c cursor, polling bool) (html.Node, cursor) {
 		component.TranscriptEntries(fresh),
 		component.OutOfBand(component.RegionTaskHeader, v.header()),
 		permission,
-		component.OutOfBand(component.RegionPromptSubmit, component.PromptSubmit(v.detail.State == TaskPausing)),
+		component.OutOfBand(component.RegionPromptSubmit, component.PromptSubmit(v.promptClosed())),
 		live,
 	), next
 }

@@ -41,6 +41,8 @@ const schemaVersion = 1 + len(migrations)
 var (
 	errUnknownDaemon = errors.New("unknown daemon")
 	errUnknownTask   = errors.New("unknown task")
+	// errTaskEnded reports a command for a task that is stopped or failed.
+	errTaskEnded = errors.New("task has ended")
 )
 
 // foreignTaskError reports an event for a task that is not assigned to the
@@ -384,25 +386,28 @@ func (s *Store) issueCommand(ctx context.Context, task protocol.TaskID, kind pro
 }
 
 // insertCommand appends a command to the log and folds it into the task's
-// progress.
+// progress. A task that is stopped or failed takes no command.
 func insertCommand(ctx context.Context, tx *sql.Tx, daemon protocol.DaemonID, task protocol.TaskID, kind protocol.CommandKind, payload json.RawMessage) (protocol.Command, error) {
+	p, err := loadProgress(ctx, tx, task)
+	if err != nil {
+		return protocol.Command{}, err
+	}
+	if p.State.Terminal() {
+		return protocol.Command{}, fmt.Errorf("%w: %q is %s", errTaskEnded, task, p.State)
+	}
 	command := protocol.Command{DaemonID: daemon, TaskID: task, Kind: kind, Time: time.Now().UTC(), Payload: payload}
 	var stored any
 	if payload != nil {
 		stored = string(payload)
 	}
 	var id int64
-	err := tx.QueryRowContext(ctx, `
+	err = tx.QueryRowContext(ctx, `
 		INSERT INTO commands (daemon_id, task_id, kind, time, payload) VALUES (?, ?, ?, ?, ?) RETURNING id`,
 		string(daemon), string(task), string(kind), formatTime(command.Time), stored).Scan(&id)
 	if err != nil {
 		return protocol.Command{}, fmt.Errorf("issue %s for task %q: %w", kind, task, err)
 	}
 	command.ID = uint64(id)
-	p, err := loadProgress(ctx, tx, task)
-	if err != nil {
-		return protocol.Command{}, err
-	}
 	p.seeCommand(command)
 	if err := saveProgress(ctx, tx, task, p); err != nil {
 		return protocol.Command{}, err

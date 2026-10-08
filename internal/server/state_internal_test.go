@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"net/url"
 	"path/filepath"
 	"testing"
@@ -38,7 +39,14 @@ func TestGivenEachStateWhenACommandIsIssuedThenTheStateFollowsTheTable(t *testin
 		{TaskRunning, protocol.CommandInterrupt, TaskRunning},
 		{TaskPausing, protocol.CommandInterrupt, TaskPausing},
 		{TaskRunning, protocol.CommandStop, TaskRunning},
-		{TaskFinished, protocol.CommandPrompt, TaskFinished},
+		{TaskFinished, protocol.CommandPrompt, TaskRunning},
+		{TaskFinished, protocol.CommandResume, TaskFinished},
+		{TaskFinished, protocol.CommandPause, TaskFinished},
+		{TaskFinished, protocol.CommandInterrupt, TaskFinished},
+		{TaskFinished, protocol.CommandStop, TaskStopped},
+		{TaskPaused, protocol.CommandStop, TaskStopped},
+		{TaskStopped, protocol.CommandPrompt, TaskStopped},
+		{TaskFailed, protocol.CommandPrompt, TaskFailed},
 		{TaskStopped, protocol.CommandResume, TaskStopped},
 		{TaskFailed, protocol.CommandPause, TaskFailed},
 	} {
@@ -73,7 +81,11 @@ func TestGivenEachStateWhenAnEventIsStoredThenTheStateFollowsTheTable(t *testing
 		{"pause settles after a resume", TaskRunning, settled, false, TaskRunning},
 		{"harness output", TaskRunning, output, false, TaskRunning},
 		{"clean exit", TaskRunning, exitedCleanly, false, TaskFinished},
-		{"clean exit while paused", TaskPaused, exitedCleanly, false, TaskFinished},
+		{"clean exit while paused", TaskPaused, exitedCleanly, false, TaskPaused},
+		{"clean exit before the pause settled", TaskPausing, exitedCleanly, false, TaskFinished},
+		{"failed exit while paused", TaskPaused, exitedNonZero, false, TaskFailed},
+		{"next process of a finished task", TaskFinished, started, false, TaskRunning},
+		{"next process of a paused task", TaskPaused, started, false, TaskRunning},
 		{"exit after stop", TaskRunning, exitedCleanly, true, TaskStopped},
 		{"killed after stop", TaskPausing, restarted, true, TaskStopped},
 		{"non-zero exit", TaskRunning, exitedNonZero, false, TaskFailed},
@@ -81,7 +93,7 @@ func TestGivenEachStateWhenAnEventIsStoredThenTheStateFollowsTheTable(t *testing
 		{"clone failed", TaskPending, neverStarted, false, TaskFailed},
 		{"exit 0 with an error", TaskRunning, zeroWithError, false, TaskFailed},
 		{"undecodable exit", TaskRunning, controlEvent(protocol.KindHarnessExited, `"gone"`), false, TaskFailed},
-		{"exit after the end", TaskFinished, exitedNonZero, false, TaskFinished},
+		{"exit after a stop took effect", TaskStopped, exitedNonZero, false, TaskStopped},
 		{"start after the end", TaskFailed, started, false, TaskFailed},
 	} {
 		if got := tc.from.afterEvent(tc.event, tc.stopIssued); got != tc.want {
@@ -150,7 +162,7 @@ func newLifecycle(t *testing.T, store *Store, task protocol.TaskID) *lifecycle {
 	return &lifecycle{t: t, store: store, task: task}
 }
 
-func TestGivenTaskWhenItRunsThroughEveryTransitionAndExitsCleanlyThenItIsFinished(t *testing.T) {
+func TestGivenTaskWhenItRunsThroughEveryTransitionAndExitsCleanlyThenItIsFinishedAndAPromptResumesIt(t *testing.T) {
 	store, _ := openTestStore(t)
 	l := newLifecycle(t, store, "task-1")
 
@@ -161,10 +173,40 @@ func TestGivenTaskWhenItRunsThroughEveryTransitionAndExitsCleanlyThenItIsFinishe
 	l.event(protocol.KindPauseAcknowledged, `{"note":"after step 1"}`, TaskPausing)
 	l.command(protocol.CommandInterrupt, "", TaskPausing)
 	l.event(protocol.KindPauseSettled, `{"interrupted":false}`, TaskPaused)
+	l.event(protocol.KindHarnessExited, `{"exit_code":0}`, TaskPaused)
 	l.command(protocol.CommandResume, "", TaskRunning)
+	l.event(protocol.KindHarnessStarted, `{"pid":2}`, TaskRunning)
 	l.command(protocol.CommandInterrupt, "", TaskRunning)
 	l.event(protocol.KindHarnessExited, `{"exit_code":0}`, TaskFinished)
-	l.command(protocol.CommandPrompt, `{"text":"more"}`, TaskFinished)
+	l.command(protocol.CommandPrompt, `{"text":"more"}`, TaskRunning)
+	l.event(protocol.KindHarnessStarted, `{"pid":3}`, TaskRunning)
+	l.event(protocol.KindHarnessExited, `{"exit_code":0}`, TaskFinished)
+}
+
+func TestGivenResumeIssuedBeforeTheOldProcessExitReachesTheServerWhenEventsArriveThenTheTaskEndsUpRunning(t *testing.T) {
+	store, _ := openTestStore(t)
+	l := newLifecycle(t, store, "task-1")
+
+	l.event(protocol.KindHarnessStarted, `{"pid":1}`, TaskRunning)
+	l.command(protocol.CommandPause, "", TaskPausing)
+	l.event(protocol.KindPauseSettled, `{"interrupted":false}`, TaskPaused)
+	l.command(protocol.CommandResume, "", TaskRunning)
+	l.event(protocol.KindHarnessExited, `{"exit_code":0}`, TaskFinished)
+	l.event(protocol.KindHarnessStarted, `{"pid":2}`, TaskRunning)
+}
+
+func TestGivenTaskBetweenProcessesWhenStoppedThenItIsStoppedAtOnceAndTakesNoMoreCommands(t *testing.T) {
+	store, _ := openTestStore(t)
+	l := newLifecycle(t, store, "task-1")
+	l.event(protocol.KindHarnessStarted, `{"pid":1}`, TaskRunning)
+	l.event(protocol.KindHarnessExited, `{"exit_code":0}`, TaskFinished)
+
+	l.command(protocol.CommandStop, "", TaskStopped)
+
+	_, err := store.issueCommand(t.Context(), "task-1", protocol.CommandPrompt, json.RawMessage(`{"text":"more"}`))
+	if !errors.Is(err, errTaskEnded) {
+		t.Errorf("prompt to a stopped task: %v, want errTaskEnded", err)
+	}
 }
 
 func TestGivenStopIssuedWhenTheHarnessExitsThenTheTaskIsStopped(t *testing.T) {

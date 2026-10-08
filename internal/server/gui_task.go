@@ -55,22 +55,25 @@ func (v taskView) id() string { return string(v.detail.ID) }
 
 func (v taskView) task() component.Task { return guiTask(v.detail.taskSummary, v.detail.Start.Prompt) }
 
-// header is the task's header with the controls its state offers.
+// header is the task's header with the controls its state offers. A task
+// between processes can be resumed or stopped, but has nothing running to
+// pause or interrupt.
 func (v taskView) header() html.Node {
 	state := v.detail.State
+	live := !state.Terminal() && !state.Idle()
 	return component.TaskHeader(v.task(), component.Controls(v.id(), component.ControlSet{
 		Pause:     state == TaskRunning || state == TaskAwaitingPermission,
 		Resume:    state == TaskPaused,
-		Interrupt: !state.Ended(),
-		Stop:      !state.Ended(),
+		Interrupt: live,
+		Stop:      !state.Terminal(),
 	}))
 }
 
 // pending returns the permission requests waiting for an answer. The
 // transcript decides, not the state, which reads pausing while a request
-// waits; a task that has ended can no longer take an answer.
+// waits; a task with no process can no longer take an answer.
 func (v taskView) pending() []transcript.PermissionRequested {
-	if v.detail.State.Ended() {
+	if v.detail.State.Terminal() || v.detail.State.Idle() {
 		return nil
 	}
 	return pendingPermissions(v.entries)
@@ -80,8 +83,20 @@ func (v taskView) permission(problem string) html.Node {
 	return component.PermissionPrompt(v.id(), v.pending(), problem)
 }
 
+// promptClosed says why the task takes no follow-up prompt now, or
+// returns "" when it takes one.
+func (v taskView) promptClosed() string {
+	switch {
+	case v.detail.State == TaskPausing:
+		return "The task is pausing; prompts open again once it has paused."
+	case v.detail.State.Terminal():
+		return "The task has ended; it takes no more prompts."
+	}
+	return ""
+}
+
 func (v taskView) promptForm(text, problem string) html.Node {
-	return component.PromptForm(v.id(), v.detail.State == TaskPausing, text, problem)
+	return component.PromptForm(v.id(), v.promptClosed(), text, problem)
 }
 
 // refusal is a task form the server refused: what the owner entered and
@@ -170,7 +185,9 @@ func (s *Server) postCommandForm(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, err.Error(), http.StatusNotFound)
 			return
 		}
-		if err != nil {
+		if errors.Is(err, errTaskEnded) {
+			refused.problem = "The task has ended; it takes no more commands."
+		} else if err != nil {
 			s.internalError(w, err)
 			return
 		}
@@ -203,7 +220,7 @@ func (s *Server) postCommandForm(w http.ResponseWriter, r *http.Request) {
 	s.writeHTML(w, http.StatusOK, html.Fragment(
 		component.OutOfBand(component.RegionTaskHeader, view.header()),
 		component.OutOfBand(component.RegionPermission, view.permission("")),
-		component.OutOfBand(component.RegionPromptSubmit, component.PromptSubmit(view.detail.State == TaskPausing)),
+		component.OutOfBand(component.RegionPromptSubmit, component.PromptSubmit(view.promptClosed())),
 		promptForm,
 	))
 }
