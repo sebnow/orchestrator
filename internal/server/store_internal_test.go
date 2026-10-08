@@ -73,7 +73,7 @@ func admitTurns(t *testing.T, store *Store) {
 		connected = append(connected, protocol.DaemonID(id))
 	}
 	rows.Close()
-	if _, err := store.schedule(t.Context(), roomyPolicy, time.Now(), connected); err != nil {
+	if _, err := store.schedule(t.Context(), roomyPolicy, time.Now(), connected, time.Time{}); err != nil {
 		t.Fatal(err)
 	}
 }

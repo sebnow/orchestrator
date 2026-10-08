@@ -74,9 +74,11 @@ type Options struct {
 	// session (docs/adr/2026-10-08-owner-authentication.md).
 	Insecure bool
 	// Schedule is what the scheduler admits turns by; the zero value is
-	// DefaultSchedulePolicy.
+	// DefaultSchedulePolicy, and a zero DaemonTimeout is
+	// DefaultDaemonTimeout.
 	Schedule SchedulePolicy
-	// Now is the scheduler's clock; nil is time.Now.
+	// Now is the scheduler's clock, which also stamps when a daemon was
+	// last seen; nil is time.Now.
 	Now func() time.Time
 }
 
@@ -97,11 +99,15 @@ func New(store *Store, log *slog.Logger, options Options) *Server {
 	if policy == (SchedulePolicy{}) {
 		policy = DefaultSchedulePolicy
 	}
+	if policy.DaemonTimeout == 0 {
+		policy.DaemonTimeout = DefaultDaemonTimeout
+	}
 	now := options.Now
 	if now == nil {
 		now = time.Now
 	}
-	s.sched = &scheduler{store: store, log: log, policy: policy, now: now, connected: s.connectedDaemons, wake: make(chan struct{}, 1)}
+	store.now = now
+	s.sched = &scheduler{store: store, log: log, policy: policy, now: now, connected: s.connectedDaemons, upSince: now(), wake: make(chan struct{}, 1)}
 	store.published = s.storeChanged
 	s.mux.Handle("POST /v1/daemons/{daemon}/events", s.daemonOnly(s.postEvents))
 	s.mux.Handle("GET /v1/daemons/{daemon}/acks", s.daemonOnly(s.getAcks))
@@ -165,6 +171,8 @@ func (s *Server) EndStreams() {
 
 // postEvents stores a daemon's batch of events and acknowledges, per task
 // in the batch, the highest seq up to which the server holds every event.
+// A batch for a task that is not the daemon's is refused with 409 and a
+// protocol.EventsRefused saying why.
 func (s *Server) postEvents(w http.ResponseWriter, r *http.Request) {
 	daemon, ok := daemonFromPath(w, r)
 	if !ok {
@@ -182,8 +190,12 @@ func (s *Server) postEvents(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	held, conflicts, err := s.store.appendEvents(r.Context(), daemon, events)
+	if moved, ok := errors.AsType[*movedTaskError](err); ok {
+		writeJSON(w, http.StatusConflict, protocol.EventsRefused{Reason: protocol.RefusedTaskMoved, TaskID: moved.Task, Message: moved.Error()})
+		return
+	}
 	if foreign, ok := errors.AsType[*foreignTaskError](err); ok {
-		http.Error(w, foreign.Error(), http.StatusConflict)
+		writeJSON(w, http.StatusConflict, protocol.EventsRefused{Reason: protocol.RefusedNotAssigned, TaskID: foreign.Task, Message: foreign.Error()})
 		return
 	}
 	if err != nil {
@@ -331,7 +343,14 @@ func (s *Server) openStream(daemon protocol.DaemonID) *commandStream {
 	return stream
 }
 
+// closeStream ends the daemon's stream and records the daemon seen, since
+// it was connected until now.
 func (s *Server) closeStream(daemon protocol.DaemonID, stream *commandStream) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := s.store.recordSeen(ctx, daemon); err != nil {
+		s.log.Error("record the daemon seen as its command stream closes", "daemon", daemon, "error", err)
+	}
 	s.mu.Lock()
 	if s.streams[daemon] == stream {
 		delete(s.streams, daemon)

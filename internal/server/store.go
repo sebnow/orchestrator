@@ -84,6 +84,14 @@ var migrations = [...]string{
 	// Version 6 records when the owner dismissed a stopped or failed task
 	// from the dashboard's lists; NULL while it is not dismissed.
 	`ALTER TABLE tasks ADD COLUMN dismissed_at TEXT CHECK (dismissed_at IS NULL OR state IN ('stopped', 'failed'));`,
+	// Version 7 lets the server move the tasks of a lost daemon
+	// (docs/adr/2026-10-08-daemon-loss.md). A daemon gains when it was
+	// declared lost, NULL while it is not. A task gains the seq that the
+	// events from its latest daemon are stored after: each daemon numbers
+	// a task's events from 1, so they are stored as their seq plus
+	// seq_base.
+	`ALTER TABLE daemons ADD COLUMN lost_at TEXT;
+	ALTER TABLE tasks ADD COLUMN seq_base INTEGER NOT NULL DEFAULT 0 CHECK (seq_base >= 0);`,
 }
 
 // schemaVersion is the version this server migrates databases to. A
@@ -111,9 +119,24 @@ func (e *foreignTaskError) Error() string {
 	return fmt.Sprintf("task %q is not assigned to daemon %q", e.Task, e.Daemon)
 }
 
+// movedTaskError reports an event for a task the server moved from the
+// daemon that sent it, after declaring that daemon lost
+// (docs/adr/2026-10-08-daemon-loss.md).
+type movedTaskError struct {
+	Task   protocol.TaskID
+	Daemon protocol.DaemonID
+}
+
+func (e *movedTaskError) Error() string {
+	return fmt.Sprintf("task %q was moved from daemon %q, which the server declared lost", e.Task, e.Daemon)
+}
+
 // Store keeps the server's record in one SQLite database.
 type Store struct {
 	db *sql.DB
+	// now stamps when a daemon was last seen. The server sets it to the
+	// scheduler's clock, which decides when a daemon is lost.
+	now func() time.Time
 	// published, when set, hears of every committed change that issued a
 	// command or changed a task's transcript, so that open streams can be
 	// woken.
@@ -162,7 +185,7 @@ func OpenStore(ctx context.Context, path string) (*Store, error) {
 		db.Close()
 		return nil, err
 	}
-	return &Store{db: db}, nil
+	return &Store{db: db, now: time.Now}, nil
 }
 
 func (s *Store) Close() error {
@@ -216,9 +239,10 @@ func parseTime(raw string) (time.Time, error) {
 	return time.Parse(time.RFC3339Nano, raw)
 }
 
-// seeDaemon records that daemon made a request now, creating its row on
-// first sight. A nil harness leaves the recorded one unchanged.
-func seeDaemon(ctx context.Context, tx *sql.Tx, daemon protocol.DaemonID, harness *protocol.Harness) error {
+// seeDaemon records that daemon made a request at at, creating its row on
+// first sight. A daemon seen is no longer lost. A nil harness leaves the
+// recorded one unchanged.
+func seeDaemon(ctx context.Context, tx *sql.Tx, daemon protocol.DaemonID, at time.Time, harness *protocol.Harness) error {
 	var name, version any
 	if harness != nil {
 		name, version = harness.Name, harness.Version
@@ -228,9 +252,10 @@ func seeDaemon(ctx context.Context, tx *sql.Tx, daemon protocol.DaemonID, harnes
 		VALUES (?1, ?2, ?2, ?3, ?4)
 		ON CONFLICT (id) DO UPDATE SET
 			last_seen = excluded.last_seen,
+			lost_at = NULL,
 			harness_name = coalesce(excluded.harness_name, daemons.harness_name),
 			harness_version = coalesce(excluded.harness_version, daemons.harness_version)`,
-		string(daemon), formatTime(time.Now().UTC()), name, version)
+		string(daemon), formatTime(at.UTC()), name, version)
 	if err != nil {
 		return fmt.Errorf("record daemon %q: %w", daemon, err)
 	}
@@ -244,27 +269,30 @@ func (s *Store) recordSeen(ctx context.Context, daemon protocol.DaemonID) error 
 		return fmt.Errorf("record daemon %q: %w", daemon, err)
 	}
 	defer tx.Rollback()
-	if err := seeDaemon(ctx, tx, daemon, nil); err != nil {
+	if err := seeDaemon(ctx, tx, daemon, s.now(), nil); err != nil {
 		return err
 	}
 	return tx.Commit()
 }
 
-// heldSeqColumn is the highest seq up to which the server holds every
-// event of task t: the end of the contiguous prefix starting at 1, or 0.
-// That is the lowest stored seq whose successor is missing, provided seq
-// 1 is stored.
-const heldSeqColumn = `CASE WHEN EXISTS (SELECT 1 FROM events WHERE task_id = t.id AND seq = 1)
-	THEN (SELECT min(e.seq) FROM events e WHERE e.task_id = t.id
-		AND NOT EXISTS (SELECT 1 FROM events n WHERE n.task_id = t.id AND n.seq = e.seq + 1))
+// heldSeqColumn is the highest seq, as task t's latest daemon numbers
+// them, up to which the server holds every event that daemon sent: the
+// end of the contiguous prefix starting at 1, or 0. That is the lowest
+// stored seq above t.seq_base whose successor is missing, provided
+// seq_base + 1 is stored, less seq_base.
+const heldSeqColumn = `CASE WHEN EXISTS (SELECT 1 FROM events WHERE task_id = t.id AND seq = t.seq_base + 1)
+	THEN (SELECT min(e.seq) FROM events e WHERE e.task_id = t.id AND e.seq > t.seq_base
+		AND NOT EXISTS (SELECT 1 FROM events n WHERE n.task_id = t.id AND n.seq = e.seq + 1)) - t.seq_base
 	ELSE 0 END`
 
 // appendEvents stores a daemon's batch of events in one transaction and
 // returns the held seq of every task in the batch. An event already
 // stored under its task and seq is not stored again; when it differs from
 // the stored one it is returned in conflicts and the stored one is kept.
-// A batch naming any task not assigned to daemon is refused whole with a
-// *foreignTaskError.
+// A batch naming any task the server moved from daemon is refused whole
+// with a *movedTaskError, and one naming any other task not assigned to
+// daemon with a *foreignTaskError. Each event is stored at its seq plus
+// its task's seq base.
 //
 // A task the batch leaves finished has the messages waiting in its inbox
 // queued for delivery, a task the batch leaves yielded has its resume
@@ -285,10 +313,12 @@ func (s *Store) appendEvents(ctx context.Context, daemon protocol.DaemonID, even
 	}
 	progresses := make(map[protocol.TaskID]*progress, len(tasks))
 	before := make(map[protocol.TaskID]TaskState, len(tasks))
+	bases := make(map[protocol.TaskID]int64, len(tasks))
 	for _, task := range tasks {
 		var owner string
-		err := tx.QueryRowContext(ctx, `SELECT daemon_id FROM tasks WHERE id = ?`, string(task)).Scan(&owner)
-		if errors.Is(err, sql.ErrNoRows) || err == nil && owner != string(daemon) {
+		var base int64
+		err := tx.QueryRowContext(ctx, `SELECT daemon_id, seq_base FROM tasks WHERE id = ?`, string(task)).Scan(&owner, &base)
+		if errors.Is(err, sql.ErrNoRows) {
 			return nil, nil, &foreignTaskError{Task: task, Daemon: daemon}
 		}
 		if err != nil {
@@ -298,28 +328,37 @@ func (s *Store) appendEvents(ctx context.Context, daemon protocol.DaemonID, even
 		if err != nil {
 			return nil, nil, err
 		}
+		moved, err := movedFrom(ctx, tx, task, daemon, owner, p.State)
+		if err != nil {
+			return nil, nil, err
+		}
+		if moved {
+			return nil, nil, &movedTaskError{Task: task, Daemon: daemon}
+		}
 		// A task whose start has not been admitted is on no daemon yet.
-		if p.State == TaskQueued {
+		if owner != string(daemon) || p.State == TaskQueued {
 			return nil, nil, &foreignTaskError{Task: task, Daemon: daemon}
 		}
 		progresses[task] = &p
 		before[task] = p.State
+		bases[task] = base
 	}
 
 	var harness *protocol.Harness
 	if len(events) > 0 {
 		harness = &events[len(events)-1].Harness
 	}
-	if err := seeDaemon(ctx, tx, daemon, harness); err != nil {
+	if err := seeDaemon(ctx, tx, daemon, s.now(), harness); err != nil {
 		return nil, nil, err
 	}
 
 	for _, event := range events {
+		stored := int64(event.Seq) + bases[event.TaskID]
 		result, err := tx.ExecContext(ctx, `
 			INSERT INTO events (task_id, seq, kind, harness_name, harness_version, time, payload)
 			VALUES (?, ?, ?, ?, ?, ?, ?)
 			ON CONFLICT (task_id, seq) DO NOTHING`,
-			string(event.TaskID), int64(event.Seq), string(event.Kind), event.Harness.Name, event.Harness.Version,
+			string(event.TaskID), stored, string(event.Kind), event.Harness.Name, event.Harness.Version,
 			formatTime(event.Time), string(event.Payload))
 		if err != nil {
 			return nil, nil, fmt.Errorf("store event %s/%d: %w", event.TaskID, event.Seq, err)
@@ -341,7 +380,7 @@ func (s *Store) appendEvents(ctx context.Context, daemon protocol.DaemonID, even
 		var kind, harnessName, harnessVersion, eventTime, payload string
 		err = tx.QueryRowContext(ctx, `
 			SELECT kind, harness_name, harness_version, time, payload FROM events WHERE task_id = ? AND seq = ?`,
-			string(event.TaskID), int64(event.Seq)).Scan(&kind, &harnessName, &harnessVersion, &eventTime, &payload)
+			string(event.TaskID), stored).Scan(&kind, &harnessName, &harnessVersion, &eventTime, &payload)
 		if err != nil {
 			return nil, nil, fmt.Errorf("read stored event %s/%d: %w", event.TaskID, event.Seq, err)
 		}
@@ -402,7 +441,7 @@ func (s *Store) heldSeqs(ctx context.Context, daemon protocol.DaemonID) (map[pro
 		return nil, fmt.Errorf("read held seqs: %w", err)
 	}
 	defer tx.Rollback()
-	if err := seeDaemon(ctx, tx, daemon, nil); err != nil {
+	if err := seeDaemon(ctx, tx, daemon, s.now(), nil); err != nil {
 		return nil, err
 	}
 	rows, err := tx.QueryContext(ctx, `SELECT t.id, `+heldSeqColumn+` FROM tasks t WHERE t.daemon_id = ? AND t.state <> ?`, string(daemon), string(TaskQueued))
@@ -787,6 +826,9 @@ type daemonSummary struct {
 	Slots *int
 	// InUse counts the tasks holding a slot on the daemon.
 	InUse int
+	// LostAt is when the server declared the daemon lost; nil while it
+	// is not.
+	LostAt *time.Time
 }
 
 // reading returns the account's quota reading: the newest any daemon
@@ -813,7 +855,7 @@ func (s *Store) daemons(ctx context.Context) ([]daemonSummary, error) {
 				row_number() OVER (PARTITION BY t.daemon_id ORDER BY julianday(e.time) DESC, e.rowid DESC) AS newest
 			FROM events e JOIN tasks t ON t.id = e.task_id
 			WHERE e.kind = ?1)
-		SELECT d.id, d.last_seen, d.harness_name, d.harness_version, r.time, r.payload, d.slots,
+		SELECT d.id, d.last_seen, d.harness_name, d.harness_version, r.time, r.payload, d.slots, d.lost_at,
 			(SELECT count(*) FROM tasks t WHERE t.daemon_id = d.id AND t.state IN (?2, ?3, ?4, ?5))
 		FROM daemons d LEFT JOIN readings r ON r.daemon_id = d.id AND r.newest = 1
 		ORDER BY d.id`, string(protocol.KindQuotaObserved),
@@ -825,10 +867,10 @@ func (s *Store) daemons(ctx context.Context) ([]daemonSummary, error) {
 	var daemons []daemonSummary
 	for rows.Next() {
 		var id, lastSeen string
-		var harnessName, harnessVersion, quotaTime, quotaPayload sql.NullString
+		var harnessName, harnessVersion, quotaTime, quotaPayload, lostAt sql.NullString
 		var slots sql.NullInt64
 		var inUse int
-		if err := rows.Scan(&id, &lastSeen, &harnessName, &harnessVersion, &quotaTime, &quotaPayload, &slots, &inUse); err != nil {
+		if err := rows.Scan(&id, &lastSeen, &harnessName, &harnessVersion, &quotaTime, &quotaPayload, &slots, &lostAt, &inUse); err != nil {
 			return nil, fmt.Errorf("read daemons: %w", err)
 		}
 		daemon := daemonSummary{ID: protocol.DaemonID(id), InUse: inUse}
@@ -838,6 +880,13 @@ func (s *Store) daemons(ctx context.Context) ([]daemonSummary, error) {
 		}
 		if daemon.LastSeen, err = parseTime(lastSeen); err != nil {
 			return nil, fmt.Errorf("read daemon %q: %w", id, err)
+		}
+		if lostAt.Valid {
+			at, err := parseTime(lostAt.String)
+			if err != nil {
+				return nil, fmt.Errorf("read daemon %q: %w", id, err)
+			}
+			daemon.LostAt = &at
 		}
 		if harnessName.Valid {
 			daemon.Harness = &protocol.Harness{Name: harnessName.String, Version: harnessVersion.String}

@@ -364,7 +364,7 @@ func schedulerAt(t *testing.T, store *Store, now time.Time) []protocol.Command {
 		t.Fatal(err)
 	}
 	policy := SchedulePolicy{SlotsPerDaemon: 1, FillerThreshold: 0.5, LowThreshold: 0.85}
-	if _, err := store.schedule(t.Context(), policy, now, []protocol.DaemonID{"laptop"}); err != nil {
+	if _, err := store.schedule(t.Context(), policy, now, []protocol.DaemonID{"laptop"}, time.Time{}); err != nil {
 		t.Fatal(err)
 	}
 	var last uint64
@@ -400,7 +400,7 @@ func quotaEvent(utilization float64, now time.Time) (protocol.Kind, string) {
 func readingFromVPS(t *testing.T, store *Store, now time.Time, utilization float64) {
 	t.Helper()
 	queueTask(t, store, ownersTask("reporter", "vps"))
-	if _, err := store.schedule(t.Context(), roomyPolicy, now, []protocol.DaemonID{"vps"}); err != nil {
+	if _, err := store.schedule(t.Context(), roomyPolicy, now, []protocol.DaemonID{"vps"}, time.Time{}); err != nil {
 		t.Fatal(err)
 	}
 	kind, payload := quotaEvent(utilization, now)
@@ -452,7 +452,7 @@ func TestGivenYieldedFillerWhenTheOwnerResumesItThenItsResumeIsOrdinaryAndRunsDe
 	now := time.Now()
 	readingFromVPS(t, store, now, 0.1)
 	fill := heldTask(t, store, "filler", PriorityNormal, true)
-	if _, err := store.schedule(t.Context(), roomyPolicy, now, []protocol.DaemonID{"laptop"}); err != nil {
+	if _, err := store.schedule(t.Context(), roomyPolicy, now, []protocol.DaemonID{"laptop"}, time.Time{}); err != nil {
 		t.Fatal(err)
 	}
 	fill.event(protocol.KindHarnessStarted, started, TaskRunning)

@@ -172,6 +172,9 @@ func (s *Server) dashboardLists(ctx context.Context, showDismissed bool) (html.N
 		if daemon.Slots != nil {
 			row.Slots = *daemon.Slots
 		}
+		if daemon.LostAt != nil {
+			row.LostSince = *daemon.LostAt
+		}
 		if daemon.Harness != nil {
 			row.Harness = daemon.Harness.Name + " " + daemon.Harness.Version
 		}

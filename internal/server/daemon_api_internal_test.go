@@ -278,7 +278,13 @@ func openCommandStream(t *testing.T, srv testServer, daemon protocol.DaemonID, l
 // openCommandStream does. An event's data lines are joined by line feeds.
 func openEventStream(t *testing.T, url, lastEventID string) <-chan sseEvent {
 	t.Helper()
-	request, err := http.NewRequestWithContext(t.Context(), http.MethodGet, url, nil)
+	return openEventStreamUntil(t, t.Context(), url, lastEventID)
+}
+
+// openEventStreamUntil is openEventStream until ctx ends.
+func openEventStreamUntil(t *testing.T, ctx context.Context, url, lastEventID string) <-chan sseEvent {
+	t.Helper()
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -294,7 +300,6 @@ func openEventStream(t *testing.T, url, lastEventID string) <-chan sseEvent {
 		t.Fatalf("status = %d, content type = %q; want an event stream", response.StatusCode, response.Header.Get("Content-Type"))
 	}
 	events := make(chan sseEvent)
-	ctx := t.Context()
 	go func() {
 		defer close(events)
 		defer response.Body.Close()

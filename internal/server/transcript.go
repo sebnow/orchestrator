@@ -70,9 +70,20 @@ func assemble(task protocol.TaskID, h history) []transcript.Entry {
 		}
 	}
 	var fromCommands []transcript.Entry
+	// started maps each task whose start is among the commands to the
+	// daemon its latest start went to, so that a later start reads as a
+	// move.
+	started := make(map[protocol.TaskID]protocol.DaemonID)
 	for _, command := range h.commands {
 		source := transcript.Source{TaskID: command.TaskID, CommandID: command.ID}
-		for _, body := range commandBodies(task, h.parent, command, delivered[command.ID]) {
+		var movedFrom *protocol.DaemonID
+		if command.Kind == protocol.CommandStartTask {
+			if from, ok := started[command.TaskID]; ok {
+				movedFrom = &from
+			}
+			started[command.TaskID] = command.DaemonID
+		}
+		for _, body := range commandBodies(task, h.parent, command, movedFrom, delivered[command.ID]) {
 			fromCommands = append(fromCommands, transcript.Entry{Time: command.Time, Source: source, Body: body})
 		}
 	}
@@ -137,14 +148,25 @@ func eventBodies(event protocol.Event) []transcript.Body {
 
 // commandBodies describes a command in task's transcript. A start_task of
 // another task is a child of task starting; task's own is spawned by
-// parent, when that is set. A prompt with a sender delivered the messages
-// in delivered, one entry each; when they cannot be found, the prompt's
-// own text and sender stand for them.
-func commandBodies(task protocol.TaskID, parent *protocol.TaskID, command protocol.Command, delivered []storedMessage) []transcript.Body {
+// parent, when that is set. A start_task after an earlier one, which went
+// to the daemon movedFrom, restarts a task moved off that lost daemon:
+// task's own is a TaskMoved, and a child's adds nothing. A prompt with
+// a sender delivered the messages in delivered, one entry each; when they
+// cannot be found, the prompt's own text and sender stand for them.
+func commandBodies(task protocol.TaskID, parent *protocol.TaskID, command protocol.Command, movedFrom *protocol.DaemonID, delivered []storedMessage) []transcript.Body {
 	var body transcript.Body
 	ok := true
 	switch command.Kind {
 	case protocol.CommandStartTask:
+		if movedFrom != nil && command.TaskID != task {
+			return nil
+		}
+		if movedFrom != nil {
+			body, ok = decodeBody(command.Payload, func(p protocol.StartTask) transcript.Body {
+				return transcript.TaskMoved{From: *movedFrom, To: command.DaemonID, Prompt: p.Prompt}
+			})
+			break
+		}
 		if command.TaskID != task {
 			body, ok = decodeBody(command.Payload, func(p protocol.StartTask) transcript.Body {
 				return transcript.ChildSpawned{Child: command.TaskID, Prompt: p.Prompt}

@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"log/slog"
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/sebnow/orchestrator/internal/protocol"
@@ -25,10 +26,15 @@ type SchedulePolicy struct {
 	// to stay below.
 	FillerThreshold float64
 	LowThreshold    float64
+	// DaemonTimeout is how long a daemon may go unseen, with no command
+	// stream open, before it is lost and its tasks are moved
+	// (docs/adr/2026-10-08-daemon-loss.md). Zero declares no daemon lost.
+	DaemonTimeout time.Duration
 }
 
-// DefaultSchedulePolicy is the policy the scheduling record names.
-var DefaultSchedulePolicy = SchedulePolicy{SlotsPerDaemon: 2, FillerThreshold: 0.5, LowThreshold: 0.85}
+// DefaultSchedulePolicy is the policy the scheduling and daemon loss
+// records name.
+var DefaultSchedulePolicy = SchedulePolicy{SlotsPerDaemon: 2, FillerThreshold: 0.5, LowThreshold: 0.85, DaemonTimeout: DefaultDaemonTimeout}
 
 // fiveHourWindow names the window the thresholds apply to.
 const fiveHourWindow = "five_hour"
@@ -100,6 +106,10 @@ type pendingTurn struct {
 	Daemon    protocol.DaemonID
 	Placement placement
 	PausedBy  pauseOrigin
+	// Ran lists the daemons a start was issued to before, for a task that
+	// was moved off a lost daemon. Its start goes to none of them: one
+	// that came back may still hold the task's old record.
+	Ran []protocol.DaemonID
 }
 
 // slotHolder is a task holding a slot on its daemon.
@@ -149,10 +159,11 @@ type decisions struct {
 
 // slotWait is a turn that would be admitted but for a free slot. It
 // waits on daemon, unless flexible, when any connected daemon's slot
-// would do, daemon's first if it is set.
+// would do, daemon's first if it is set, other than those in ran.
 type slotWait struct {
 	daemon   protocol.DaemonID
 	flexible bool
+	ran      []protocol.DaemonID
 }
 
 // decide applies the scheduling rules to s at now:
@@ -282,7 +293,7 @@ func percent(fraction float64) string {
 
 // place picks the daemon with a free slot that turn goes to. When there
 // is none it returns why, and, if the turn waits only for a slot, what
-// it waits on.
+// it waits on. A start goes to no daemon the task ran on before.
 func place(turn pendingTurn, slots, free map[protocol.DaemonID]int) (protocol.DaemonID, string, *slotWait) {
 	_, connected := slots[turn.Daemon]
 	if turn.Kind != turnStart || turn.Placement == placementBound {
@@ -294,11 +305,17 @@ func place(turn pendingTurn, slots, free map[protocol.DaemonID]int) (protocol.Da
 		}
 		return "", "slots: daemon " + string(turn.Daemon) + " has no free slot", &slotWait{daemon: turn.Daemon}
 	}
-	if connected && turn.Placement == placementParent && free[turn.Daemon] > 0 {
+	parent := connected && turn.Placement == placementParent && !slices.Contains(turn.Ran, turn.Daemon)
+	if parent && free[turn.Daemon] > 0 {
 		return turn.Daemon, "", nil
 	}
 	var best protocol.DaemonID
+	usable := 0
 	for daemon := range slots {
+		if slices.Contains(turn.Ran, daemon) {
+			continue
+		}
+		usable++
 		if free[daemon] > 0 && (best == "" || free[daemon] > free[best] || free[daemon] == free[best] && daemon < best) {
 			best = daemon
 		}
@@ -309,8 +326,11 @@ func place(turn pendingTurn, slots, free map[protocol.DaemonID]int) (protocol.Da
 	if len(slots) == 0 {
 		return "", "no daemon is connected", nil
 	}
-	wait := &slotWait{flexible: true}
-	if connected && turn.Placement == placementParent {
+	if usable == 0 {
+		return "", "the task ran on every connected daemon before it was moved; it waits for another daemon", nil
+	}
+	wait := &slotWait{flexible: true, ran: turn.Ran}
+	if parent {
 		wait.daemon = turn.Daemon
 	}
 	return "", "slots: no connected daemon has a free slot", wait
@@ -320,7 +340,8 @@ func place(turn pendingTurn, slots, free map[protocol.DaemonID]int) (protocol.Da
 // A yield already under way on a daemon serves one wait there. A
 // flexible wait takes its own daemon if that has a yield under way or a
 // running filler task, else a daemon with a yield under way, else the
-// one whose newest running filler task was admitted last.
+// one whose newest running filler task was admitted last, of the daemons
+// its task did not run on before.
 func yields(waits []slotWait, s schedule) []slotHolder {
 	underway := make(map[protocol.DaemonID]int)
 	fillers := make(map[protocol.DaemonID][]slotHolder)
@@ -347,13 +368,13 @@ func yields(waits []slotWait, s schedule) []slotHolder {
 		if wait.flexible && !usable(daemon) {
 			daemon = ""
 			for candidate, count := range underway {
-				if count > 0 && (daemon == "" || candidate < daemon) {
+				if count > 0 && !slices.Contains(wait.ran, candidate) && (daemon == "" || candidate < daemon) {
 					daemon = candidate
 				}
 			}
 			var newest uint64
 			for candidate, list := range fillers {
-				if underway[daemon] == 0 && len(list) > 0 && (daemon == "" || list[0].Admitted > newest) {
+				if underway[daemon] == 0 && len(list) > 0 && !slices.Contains(wait.ran, candidate) && (daemon == "" || list[0].Admitted > newest) {
 					daemon, newest = candidate, list[0].Admitted
 				}
 			}
@@ -370,30 +391,49 @@ func yields(waits []slotWait, s schedule) []slotHolder {
 	return chosen
 }
 
+// passResult is what one pass did beyond admitting turns: the daemons it
+// declared lost, the tasks it moved off lost daemons, and when the next
+// pass is due on its own, as the budget changes or a daemon would be
+// lost; zero when none is.
+type passResult struct {
+	wake  time.Time
+	lost  []protocol.DaemonID
+	moved []protocol.TaskID
+}
+
 // schedule admits what the scheduling rules allow at now, with connected
-// the daemons whose command streams are open, in one transaction, and
-// returns when the budget next changes on its own: zero when it will
-// not.
-func (s *Store) schedule(ctx context.Context, policy SchedulePolicy, now time.Time, connected []protocol.DaemonID) (time.Time, error) {
+// the daemons whose command streams are open, in one transaction. First
+// it declares lost the daemons away for longer than policy allows, since
+// upSince, and moves the tasks on lost daemons that have work to do
+// (docs/adr/2026-10-08-daemon-loss.md).
+func (s *Store) schedule(ctx context.Context, policy SchedulePolicy, now time.Time, connected []protocol.DaemonID, upSince time.Time) (passResult, error) {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
-		return time.Time{}, fmt.Errorf("schedule: %w", err)
+		return passResult{}, fmt.Errorf("schedule: %w", err)
 	}
 	defer tx.Rollback()
+	var fx effects
+	l, err := findLost(ctx, tx, connected, now, upSince, policy.DaemonTimeout)
+	if err != nil {
+		return passResult{}, err
+	}
+	moved, err := moveLostTasks(ctx, tx, l.lost, now, &fx)
+	if err != nil {
+		return passResult{}, err
+	}
 	state, err := readSchedule(ctx, tx, policy, connected)
 	if err != nil {
-		return time.Time{}, err
+		return passResult{}, err
 	}
 	d := decide(state, policy, now)
-	var fx effects
 	for _, admitted := range d.admit {
 		if err := admit(ctx, tx, admitted, &fx); err != nil {
-			return time.Time{}, err
+			return passResult{}, err
 		}
 	}
 	for _, holder := range d.yield {
 		if _, err := yieldTask(ctx, tx, holder.Daemon, holder.Task, &fx); err != nil {
-			return time.Time{}, err
+			return passResult{}, err
 		}
 	}
 	for _, turn := range state.turns {
@@ -402,17 +442,21 @@ func (s *Store) schedule(ctx context.Context, policy SchedulePolicy, now time.Ti
 			continue
 		}
 		if _, err := tx.ExecContext(ctx, `UPDATE turns SET reason = ? WHERE id = ?`, reason, int64(turn.ID)); err != nil {
-			return time.Time{}, fmt.Errorf("record why turn %d waits: %w", turn.ID, err)
+			return passResult{}, fmt.Errorf("record why turn %d waits: %w", turn.ID, err)
 		}
 		fx.changed = append(fx.changed, turn.Task)
 	}
 	if err := tx.Commit(); err != nil {
-		return time.Time{}, fmt.Errorf("schedule: %w", err)
+		return passResult{}, fmt.Errorf("schedule: %w", err)
 	}
 	// The scheduler's own commands need no further pass unless they
 	// changed what it can admit, which issuing them did.
 	s.publish(&fx)
-	return d.wake, nil
+	wake := d.wake
+	if !l.next.IsZero() && (wake.IsZero() || l.next.Before(wake)) {
+		wake = l.next
+	}
+	return passResult{wake: wake, lost: l.newly, moved: moved}, nil
 }
 
 // readSchedule reads what the scheduler decides on.
@@ -468,14 +512,20 @@ func readSchedule(ctx context.Context, tx *sql.Tx, policy SchedulePolicy, connec
 }
 
 // queryWaitingTurns returns the waiting turns of tasks that have not
-// ended, oldest first.
+// ended, oldest first. A task placed by its parent's daemon has that
+// daemon as its own, as it is now: the parent may have been moved since
+// the task was spawned. A daemon id holds no comma, so the daemons a
+// task's starts went to are read as one comma-separated list.
 func queryWaitingTurns(ctx context.Context, tx *sql.Tx) ([]pendingTurn, error) {
 	rows, err := tx.QueryContext(ctx, `
 		SELECT u.id, u.task_id, u.kind, u.payload, u.filler, u.reason,
-			t.state, t.priority, t.daemon_id, t.placement, coalesce(t.pause_origin, '')
+			t.state, t.priority,
+			CASE WHEN t.placement = ?3 THEN coalesce((SELECT p.daemon_id FROM tasks p WHERE p.id = t.parent_id), t.daemon_id) ELSE t.daemon_id END,
+			t.placement, coalesce(t.pause_origin, ''),
+			coalesce((SELECT group_concat(DISTINCT c.daemon_id) FROM commands c WHERE c.task_id = t.id AND c.kind = ?4), '')
 		FROM turns u JOIN tasks t ON t.id = u.task_id
-		WHERE u.admitted_command_id IS NULL AND t.state NOT IN (?, ?)
-		ORDER BY u.id`, string(TaskStopped), string(TaskFailed))
+		WHERE u.admitted_command_id IS NULL AND t.state NOT IN (?1, ?2)
+		ORDER BY u.id`, string(TaskStopped), string(TaskFailed), string(placementParent), string(protocol.CommandStartTask))
 	if err != nil {
 		return nil, fmt.Errorf("read waiting turns: %w", err)
 	}
@@ -484,14 +534,19 @@ func queryWaitingTurns(ctx context.Context, tx *sql.Tx) ([]pendingTurn, error) {
 	for rows.Next() {
 		var turn pendingTurn
 		var id int64
-		var task, kind, state, priority, daemon, placed, pausedBy string
+		var task, kind, state, priority, daemon, placed, pausedBy, ran string
 		var payload []byte
-		if err := rows.Scan(&id, &task, &kind, &payload, &turn.Filler, &turn.Reason, &state, &priority, &daemon, &placed, &pausedBy); err != nil {
+		if err := rows.Scan(&id, &task, &kind, &payload, &turn.Filler, &turn.Reason, &state, &priority, &daemon, &placed, &pausedBy, &ran); err != nil {
 			return nil, fmt.Errorf("read waiting turns: %w", err)
 		}
 		turn.ID, turn.Task, turn.Kind, turn.Payload = uint64(id), protocol.TaskID(task), turnKind(kind), payload
 		turn.State, turn.Priority, turn.Daemon, turn.Placement, turn.PausedBy =
 			TaskState(state), Priority(priority), protocol.DaemonID(daemon), placement(placed), pauseOrigin(pausedBy)
+		if ran != "" {
+			for daemon := range strings.SplitSeq(ran, ",") {
+				turn.Ran = append(turn.Ran, protocol.DaemonID(daemon))
+			}
+		}
 		turns = append(turns, turn)
 	}
 	if err := rows.Err(); err != nil {
@@ -533,7 +588,12 @@ func admit(ctx context.Context, tx *sql.Tx, a admission, fx *effects) error {
 	var err error
 	switch turn.Kind {
 	case turnStart:
-		_, err = tx.ExecContext(ctx, `UPDATE tasks SET daemon_id = ?, placement = ? WHERE id = ?`,
+		// A task moved off a lost daemon has events from there; the new
+		// daemon numbers its own from 1, so they are stored after those.
+		_, err = tx.ExecContext(ctx, `
+			UPDATE tasks SET daemon_id = ?1, placement = ?2,
+				seq_base = coalesce((SELECT max(seq) FROM events WHERE task_id = ?3), 0)
+			WHERE id = ?3`,
 			string(a.daemon), string(placementBound), string(turn.Task))
 		if err != nil {
 			return fmt.Errorf("place task %q: %w", turn.Task, err)
@@ -571,6 +631,9 @@ type scheduler struct {
 	policy    SchedulePolicy
 	now       func() time.Time
 	connected func() []protocol.DaemonID
+	// upSince is when the server started, by now: a daemon's absence
+	// counts towards its loss from then at the earliest.
+	upSince time.Time
 	// wake holds a signal when something may have changed what the
 	// scheduler can admit.
 	wake chan struct{}
@@ -586,7 +649,17 @@ func (s *scheduler) poke() {
 
 // pass runs one pass and returns when the next is due on its own.
 func (s *scheduler) pass(ctx context.Context) (time.Time, error) {
-	return s.store.schedule(ctx, s.policy, s.now(), s.connected())
+	result, err := s.store.schedule(ctx, s.policy, s.now(), s.connected(), s.upSince)
+	if err != nil {
+		return time.Time{}, err
+	}
+	for _, daemon := range result.lost {
+		s.log.Warn("daemon lost: not seen and not connected", "daemon", daemon, "timeout", s.policy.DaemonTimeout)
+	}
+	for _, task := range result.moved {
+		s.log.Info("task moved off a lost daemon; its next turn starts it afresh on another", "task", task)
+	}
+	return result.wake, nil
 }
 
 // retryAfter is how long the scheduler waits after a failed pass.
