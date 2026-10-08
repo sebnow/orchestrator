@@ -224,6 +224,13 @@ prompt, or Resume on a paused or yielded task, starts a new process that continu
 working directory. A task ends for good as `stopped` when stopped from
 its page, or as `failed`; the task page then takes no more prompts.
 
+The daemon deletes a task's working directory, with everything in it,
+when the task ends for good on that daemon: when the owner stops it,
+and when its `claude` process fails or it cannot start. A daemon
+starting on its `-state-dir` also deletes every working directory under
+`workspaces/` of a task it no longer knows or cannot run again. A task
+a shutdown or restart paused keeps its working directory.
+
 An agent can start child tasks and message other tasks with two tools
 the daemon gives it, `spawn_task` and `send_message`
 ([inbox delivery](docs/adr/2026-10-08-inbox-delivery.md)). The server
