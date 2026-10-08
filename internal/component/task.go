@@ -31,6 +31,9 @@ type Task struct {
 	Filler   bool
 	// Queue is where the task's waiting turn stands; nil when none waits.
 	Queue *QueuePlace
+	// DismissedAt is when the owner dismissed the ended task from the
+	// dashboard's lists; zero while it is not dismissed.
+	DismissedAt time.Time
 }
 
 // QueuePlace is where a task's waiting turn stands in the scheduler's
@@ -103,7 +106,7 @@ var TaskColumns = []string{"State", "Prompt", "Priority", "Daemon", "Model", "Co
 // TaskRow is a task in the task list, linking to its page.
 func TaskRow(task Task) html.Node {
 	return html.El("tr", nil,
-		cell(queueBadges(task), queueReason(task)),
+		cell(queueBadges(task), queueReason(task), dismissedMark(task)),
 		cell(link(taskURL(task.ID), excerpt(task.Prompt)), lineage(task.Parent)),
 		cell(html.Text(priorityLabel(task))),
 		cell(html.Text(task.Daemon)),
@@ -111,6 +114,14 @@ func TaskRow(task Task) html.Node {
 		cell(html.Text(cost(task.CostUSD))),
 		cell(timestamp(task.LastActivityAt)),
 	)
+}
+
+// dismissedMark marks a dismissed task, or is empty.
+func dismissedMark(task Task) html.Node {
+	if task.DismissedAt.IsZero() {
+		return nil
+	}
+	return html.El("span", attrs("class", "reason"), html.Text(" dismissed"))
 }
 
 // lineage marks a task spawned by parent, or is empty for the owner's.
@@ -121,14 +132,17 @@ func lineage(parent string) html.Node {
 	return html.El("span", attrs("class", "reason"), html.Text(" ↳ child of "), link(taskURL(parent), parent))
 }
 
-// Attention is a task waiting for the owner, and why.
+// Attention is a task waiting for the owner, and why. Dismissable says
+// the owner may dismiss it from the list.
 type Attention struct {
-	Task   Task
-	Reason string
+	Task        Task
+	Reason      string
+	Dismissable bool
 }
 
-// AttentionList lists the tasks waiting for the owner.
-func AttentionList(items []Attention) html.Node {
+// AttentionList lists the tasks waiting for the owner. Dismissing one
+// returns the owner to back.
+func AttentionList(items []Attention, back string) html.Node {
 	if len(items) == 0 {
 		return html.El("p", attrs("class", "empty"), html.Text("Nothing needs attention."))
 	}
@@ -137,7 +151,8 @@ func AttentionList(items []Attention) html.Node {
 		entries[idx] = html.El("li", nil,
 			StateBadge(item.Task.State), html.Text(" "),
 			link(taskURL(item.Task.ID), excerpt(item.Task.Prompt)),
-			html.El("span", attrs("class", "reason"), html.Text(item.Reason)))
+			html.El("span", attrs("class", "reason"), html.Text(item.Reason)),
+			dismissIf(item.Dismissable, item.Task.ID, back))
 	}
 	return html.El("ul", attrs("class", "attention"), entries...)
 }
@@ -147,7 +162,10 @@ func TaskHeader(task Task, controls html.Node) html.Node {
 	term := func(name string, value html.Node) html.Node {
 		return html.Fragment(html.El("dt", nil, html.Text(name)), html.El("dd", nil, value))
 	}
-	var parent, children, queue html.Node
+	var parent, children, queue, dismissed html.Node
+	if !task.DismissedAt.IsZero() {
+		dismissed = term("Dismissed", timestamp(task.DismissedAt))
+	}
 	if task.Queue != nil {
 		queue = term("Waits", html.Text(task.Queue.Reason))
 	}
@@ -178,6 +196,7 @@ func TaskHeader(task Task, controls html.Node) html.Node {
 			term("Last activity", timestamp(task.LastActivityAt)),
 			parent,
 			children,
+			dismissed,
 		),
 		controls,
 		html.El("p", nil, link(taskURL(task.ID)+"/raw", "Stored events")),
@@ -206,6 +225,58 @@ func Controls(taskID string, offered ControlSet) html.Node {
 		return nil
 	}
 	return Form(commandsURL(taskID), "", html.El("div", attrs("class", "controls"), buttons...))
+}
+
+// DismissForm dismisses the ended task taskID from the dashboard's
+// lists, and returns the owner to back.
+func DismissForm(taskID, back string) html.Node {
+	return html.El("div", attrs("class", "dismiss"), Form(taskURL(taskID)+"/dismiss", "",
+		Field(FieldSpec{Kind: FieldHidden, Name: "back", Value: back}),
+		Button("Dismiss", VariantPlain, "", "")))
+}
+
+func dismissIf(on bool, taskID, back string) html.Node {
+	if !on {
+		return nil
+	}
+	return DismissForm(taskID, back)
+}
+
+// DismissedParam set to DismissedShown makes the dashboard list
+// dismissed tasks.
+const (
+	DismissedParam = "dismissed"
+	DismissedShown = "show"
+)
+
+// DashboardURL is the dashboard, listing dismissed tasks when shown is
+// set.
+func DashboardURL(shown bool) string {
+	if shown {
+		return "/?" + DismissedParam + "=" + DismissedShown
+	}
+	return "/"
+}
+
+// DismissedToggle says how many dismissed tasks the task list hides, or
+// shows when shown is set, with a link that flips it. It is empty when
+// there are none.
+func DismissedToggle(count int, shown bool) html.Node {
+	if count == 0 {
+		return nil
+	}
+	noun := "tasks"
+	if count == 1 {
+		noun = "task"
+	}
+	if shown {
+		return html.El("p", attrs("class", "notice"),
+			html.Text(fmt.Sprintf("Showing %d dismissed %s. ", count, noun)),
+			link(DashboardURL(false), "Hide them"))
+	}
+	return html.El("p", attrs("class", "notice"),
+		html.Text(fmt.Sprintf("%d dismissed %s hidden. ", count, noun)),
+		link(DashboardURL(true), "Show them"))
 }
 
 // decisionVariant maps an answer to a permission request to its button.

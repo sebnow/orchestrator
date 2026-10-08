@@ -122,3 +122,4 @@ button {
 button.primary { color: #fff; background: var(--state-running); border-color: transparent; }
 button.danger { color: #fff; background: var(--state-failed); border-color: transparent; }
 button:disabled { opacity: 0.5; cursor: not-allowed; }
+.attention .dismiss { display: inline-block; margin-left: var(--space); }

@@ -71,16 +71,72 @@ func (v taskView) task() component.Task {
 
 // header is the task's header with the controls its state offers. A task
 // between processes can be resumed or stopped, but has nothing running to
-// pause or interrupt.
+// pause or interrupt. An ended task can be dismissed once.
 func (v taskView) header() html.Node {
 	state := v.detail.State
 	live := !state.Terminal() && !state.Idle()
-	return component.TaskHeader(v.task(), component.Controls(v.id(), component.ControlSet{
+	var dismiss html.Node
+	if state.Terminal() && v.detail.DismissedAt == nil {
+		dismiss = component.DismissForm(v.id(), "/tasks/"+v.id())
+	}
+	return component.TaskHeader(v.task(), html.Fragment(component.Controls(v.id(), component.ControlSet{
 		Pause:     state == TaskRunning || state == TaskAwaitingPermission,
 		Resume:    state == TaskPaused || state == TaskYielded,
 		Interrupt: live,
 		Stop:      !state.Terminal(),
-	}))
+	}), dismiss))
+}
+
+// postDismissForm dismisses an ended task from the dashboard's lists and
+// returns the owner to the page the form names: the task's, or the
+// dashboard, listing dismissed tasks or not.
+func (s *Server) postDismissForm(w http.ResponseWriter, r *http.Request) {
+	task, err := protocol.ParseTaskID(r.PathValue("task"))
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, maxOwnerRequestBytes)
+	if err := r.ParseForm(); err != nil {
+		http.Error(w, "read form: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+	back := r.PostForm.Get("back")
+	// back is only ever one of these, so that the form cannot send the
+	// browser elsewhere.
+	if back != component.DashboardURL(false) && back != component.DashboardURL(true) {
+		back = "/tasks/" + string(task)
+	}
+	_, err = s.store.dismissTask(r.Context(), task)
+	switch {
+	case errors.Is(err, errUnknownTask):
+		http.Error(w, err.Error(), http.StatusNotFound)
+		return
+	case errors.Is(err, errNotEnded):
+		http.Error(w, "The task has not ended; only a stopped or failed task can be dismissed.", http.StatusConflict)
+		return
+	case err != nil:
+		s.internalError(w, err)
+		return
+	}
+	if !fromHTMX(r) {
+		redirect(w, r, back)
+		return
+	}
+	if back == "/tasks/"+string(task) {
+		view, ok := s.taskViewFromPath(w, r)
+		if !ok {
+			return
+		}
+		s.writeHTML(w, http.StatusOK, component.OutOfBand(component.RegionTaskHeader, view.header()))
+		return
+	}
+	lists, _, err := s.dashboardLists(r.Context(), back == component.DashboardURL(true))
+	if err != nil {
+		s.internalError(w, err)
+		return
+	}
+	s.writeHTML(w, http.StatusOK, component.OutOfBand(component.RegionDashboard, lists))
 }
 
 // pending returns the permission requests waiting for an answer. The

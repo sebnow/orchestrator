@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"net/url"
 	"slices"
 	"strconv"
 	"strings"
@@ -30,6 +31,7 @@ func (s *Server) routeGUI(mux *http.ServeMux) {
 	mux.HandleFunc("POST /tasks", s.postTaskForm)
 	mux.HandleFunc("GET /tasks/{task}", s.getTaskPage)
 	mux.HandleFunc("POST /tasks/{task}/commands", s.postCommandForm)
+	mux.HandleFunc("POST /tasks/{task}/dismiss", s.postDismissForm)
 	mux.HandleFunc("GET /tasks/{task}/raw", s.getRawPage)
 	mux.HandleFunc("GET /tasks/{task}/stream", s.streamTask)
 	mux.HandleFunc("GET /tasks/{task}/updates", s.getTaskUpdates)
@@ -77,7 +79,23 @@ func guiTask(summary taskSummary, prompt string) component.Task {
 	if summary.Queue != nil {
 		task.Queue = &component.QueuePlace{Position: summary.Queue.Position, Reason: summary.Queue.Reason}
 	}
+	if summary.DismissedAt != nil {
+		task.DismissedAt = *summary.DismissedAt
+	}
 	return task
+}
+
+// showsDismissed reports whether the request asks for the dashboard to
+// list dismissed tasks. A form htmx posts from the dashboard carries the
+// dashboard's address in HX-Current-URL.
+func showsDismissed(r *http.Request) bool {
+	query := r.URL.Query()
+	if fromHTMX(r) && !query.Has(component.DismissedParam) {
+		if current, err := url.Parse(r.Header.Get("HX-Current-URL")); err == nil {
+			query = current.Query()
+		}
+	}
+	return query.Get(component.DismissedParam) == component.DismissedShown
 }
 
 func (s *Server) getDashboard(w http.ResponseWriter, r *http.Request) {
@@ -87,13 +105,14 @@ func (s *Server) getDashboard(w http.ResponseWriter, r *http.Request) {
 // writeDashboard writes the dashboard with input in the new-task form,
 // and problem, when set, saying why it was refused.
 func (s *Server) writeDashboard(w http.ResponseWriter, r *http.Request, status int, input component.NewTask, problem string) {
-	lists, daemons, err := s.dashboardLists(r.Context())
+	shown := showsDismissed(r)
+	lists, daemons, err := s.dashboardLists(r.Context(), shown)
 	if err != nil {
 		s.internalError(w, err)
 		return
 	}
 	s.writeHTML(w, status, component.Page("Tasks",
-		component.Refreshing(component.RegionDashboard, "/", lists),
+		component.Refreshing(component.RegionDashboard, component.DashboardURL(shown), lists),
 		component.Section("New task", component.RegionOf(component.RegionNewTask,
 			component.NewTaskForm(input, daemons, s.defaultModel, problem, ""))),
 	))
@@ -101,8 +120,9 @@ func (s *Server) writeDashboard(w http.ResponseWriter, r *http.Request, status i
 
 // dashboardLists renders the tasks needing attention, every task, newest
 // first, the account's quota reading, and every daemon. It also returns
-// the daemons' ids.
-func (s *Server) dashboardLists(ctx context.Context) (html.Node, []string, error) {
+// the daemons' ids. Dismissed tasks need no attention, and the task list
+// leaves them out unless showDismissed is set.
+func (s *Server) dashboardLists(ctx context.Context, showDismissed bool) (html.Node, []string, error) {
 	summaries, err := s.store.tasks(ctx)
 	if err != nil {
 		return nil, nil, err
@@ -121,15 +141,23 @@ func (s *Server) dashboardLists(ctx context.Context) (html.Node, []string, error
 	}
 	var attention []component.Attention
 	taskRows := make([]html.Node, 0, len(summaries))
+	dismissed := 0
 	for _, summary := range slices.Backward(summaries) {
 		task := guiTask(summary, prompts[summary.ID])
+		if summary.DismissedAt != nil {
+			dismissed++
+			if showDismissed {
+				taskRows = append(taskRows, component.TaskRow(task))
+			}
+			continue
+		}
 		taskRows = append(taskRows, component.TaskRow(task))
 		reason, err := s.attentionReason(ctx, summary)
 		if err != nil {
 			return nil, nil, err
 		}
 		if reason != "" {
-			attention = append(attention, component.Attention{Task: task, Reason: reason})
+			attention = append(attention, component.Attention{Task: task, Reason: reason, Dismissable: summary.State.Terminal()})
 		}
 	}
 	connected := s.connectedDaemons()
@@ -150,8 +178,9 @@ func (s *Server) dashboardLists(ctx context.Context) (html.Node, []string, error
 		daemonRows[idx] = component.DaemonRow(row)
 	}
 	return html.Fragment(
-		component.Section("Needs attention", component.AttentionList(attention)),
-		component.Section("Tasks", component.Table(component.TaskColumns, "No tasks yet.", taskRows...)),
+		component.Section("Needs attention", component.AttentionList(attention, component.DashboardURL(showDismissed))),
+		component.Section("Tasks", component.Table(component.TaskColumns, "No tasks yet.", taskRows...),
+			component.DismissedToggle(dismissed, showDismissed)),
 		component.Section("Budget", s.budget(reading)),
 		component.Section("Daemons", component.Table(component.DaemonColumns, "No daemon has connected yet.", daemonRows...)),
 	), ids, nil
@@ -259,7 +288,7 @@ func (s *Server) postTaskForm(w http.ResponseWriter, r *http.Request) {
 	}
 	switch {
 	case problem != "" && fromHTMX(r):
-		_, daemons, err := s.dashboardLists(r.Context())
+		_, daemons, err := s.dashboardLists(r.Context(), showsDismissed(r))
 		if err != nil {
 			s.internalError(w, err)
 			return
@@ -269,7 +298,7 @@ func (s *Server) postTaskForm(w http.ResponseWriter, r *http.Request) {
 	case problem != "":
 		s.writeDashboard(w, r, http.StatusUnprocessableEntity, input, problem)
 	case fromHTMX(r):
-		lists, daemons, err := s.dashboardLists(r.Context())
+		lists, daemons, err := s.dashboardLists(r.Context(), showsDismissed(r))
 		if err != nil {
 			s.internalError(w, err)
 			return
