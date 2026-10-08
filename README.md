@@ -213,11 +213,26 @@ that turn ends. Messages to `stopped` or `failed` tasks are refused, and
 a parent is told when its child stops or fails. The task page links a
 task's parent and children and shows the messages it sent and received.
 
-SIGINT or SIGTERM shuts either program down. The daemon stops its
-running turns first; a second signal makes it exit at once. A daemon
-started again with the same `-state-dir` marks as `failed` every task
-whose turn its previous run did not end; a task that was between turns
-can still be resumed.
+SIGINT or SIGTERM shuts either program down. The daemon first
+interrupts each running turn and closes the input of the task's
+`claude` process. A task whose process then exits with code 0 is
+`finished`, even though its turn was interrupted; a task whose process
+exits otherwise, or is killed for not exiting within 30 seconds of the
+interrupt, is `failed`. The daemon then sends the server the events it
+has not sent yet, for up to 30 more seconds. A second signal makes it
+exit at once.
+
+A daemon started again with the same `-state-dir` finds the tasks that
+were in the middle of a turn when its previous run ended, by a crash, a
+kill, or a second signal
+([restart recovery](docs/adr/2026-10-08-restart-recovery.md)). Each
+such task becomes `paused`, and its page and the dashboard's tasks that
+need attention say that the daemon restarted. Resume continues the
+task's Claude Code session and tells the agent that its last turn was
+cut short; when the process died before Claude Code reported a session,
+Resume starts a new session with the task's first prompt instead. A
+task whose workspace was still being cloned becomes `failed`. A task
+that was between turns keeps its state.
 
 ### Scheduling
 
