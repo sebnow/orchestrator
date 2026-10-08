@@ -150,8 +150,12 @@ of higher priority waiting, the budget, the daemon not connected, or
   spawned a child does not.
 - Filler depends on readings. A server that has run no turn since the
   five-hour window reset holds filler until a non-filler turn brings a
-  fresh reading. **UNVERIFIED:** that `rate_limit_event` arrives often
-  enough to keep the reading current; the spike saw one per process.
+  fresh reading. Each process in the spike and in the daemon's first
+  live runs sent one `rate_limit_event`
+  ([daemon live findings](../design/2026-10-07-daemon-live-findings.md),
+  "Quota readings"); in two later live runs, one process sent two
+  ([marker verification](../design/2026-10-08-marker-verification.md),
+  "`rate_limit_event` repeats within a process").
 - A filler task waits behind any non-filler turn that could run but for
   a slot, so a steady stream of ordinary work keeps filler from running,
   as the budget and pause note asks.
@@ -170,9 +174,10 @@ of higher priority waiting, the budget, the daemon not connected, or
   issued just before a pause can reach the daemon after it. The
   scheduler wakes on each change that may let a turn run, so the window
   is one wake-up wide.
-- **UNVERIFIED:** that two concurrent sessions per daemon, and the 0.5
-  and 0.85 thresholds, suit the owner's subscription plan; none was
-  measured.
+- The defaults of two concurrent sessions per daemon and the 0.5 and
+  0.85 thresholds are starting points, not measured against the
+  owner's plan; the owner chose to tune them once there is usage to
+  measure.
 
 Revisit if Claude Code documents a quota interface, or Anthropic
 documents a session cap per account.
