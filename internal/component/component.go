@@ -47,8 +47,32 @@ func attrs(pairs ...string) []html.Attribute {
 	return list
 }
 
-// Page is a whole document titled title, with children as its content.
+// Page is a whole document titled title, with children as its content,
+// under a navigation bar that links to the dashboard and logs out.
 func Page(title string, children ...html.Node) html.Node {
+	return document(title, html.El("nav", nil,
+		html.El("a", attrs("href", "/"), html.Text("Orchestrator")),
+		html.El("form", attrs("method", "post", "action", "/logout"), Button("Log out", VariantPlain, "", "")),
+	), children...)
+}
+
+// LoginPage is the page that asks for the owner's token, with problem,
+// when set, saying why the last one was refused.
+func LoginPage(problem string) html.Node {
+	return document("Log in", html.El("nav", nil, html.Text("Orchestrator")), LoginForm(problem))
+}
+
+// LoginForm asks for the owner's token. problem, when set, is shown
+// above it. It is a plain form, which htmx leaves to the browser.
+func LoginForm(problem string) html.Node {
+	return Section("Log in", html.El("form", attrs("method", "post", "action", "/login"),
+		problemNote(problem),
+		Field(FieldSpec{Kind: FieldPassword, Name: "token", Label: "Owner token", Required: true}),
+		Button("Log in", VariantPrimary, "", ""),
+	))
+}
+
+func document(title string, nav html.Node, children ...html.Node) html.Node {
 	return html.Fragment(
 		// A constant with no data in it.
 		html.Raw("<!DOCTYPE html>\n"),
@@ -63,7 +87,7 @@ func Page(title string, children ...html.Node) html.Node {
 				html.El("script", attrs("src", "/static/htmx-ext-sse.min.js", "defer", "")),
 			),
 			html.El("body", nil,
-				html.El("nav", nil, html.El("a", attrs("href", "/"), html.Text("Orchestrator"))),
+				nav,
 				html.El("main", nil, children...),
 			),
 		),
@@ -121,12 +145,16 @@ func badge(label, class string) html.Node {
 // them. With htmx the response is only out-of-band swaps, so the form
 // swaps nothing itself.
 func Form(action, problem string, children ...html.Node) html.Node {
-	var shown html.Node
-	if problem != "" {
-		shown = html.El("p", attrs("class", "problem", "role", "alert"), html.Text(problem))
-	}
 	return html.El("form", attrs("method", "post", "action", action, "hx-post", action, "hx-swap", "none"),
-		shown, html.Fragment(children...))
+		problemNote(problem), html.Fragment(children...))
+}
+
+// problemNote shows problem, or nothing when it is empty.
+func problemNote(problem string) html.Node {
+	if problem == "" {
+		return nil
+	}
+	return html.El("p", attrs("class", "problem", "role", "alert"), html.Text(problem))
 }
 
 // FieldKind is the control a Field shows.
@@ -137,6 +165,8 @@ const (
 	FieldTextarea
 	FieldSelect
 	FieldHidden
+	// FieldPassword is a text input whose value the browser hides.
+	FieldPassword
 )
 
 // FieldSpec describes one form field. Options are the choices of a
@@ -164,6 +194,8 @@ func Field(spec FieldSpec) html.Node {
 	switch spec.Kind {
 	case FieldHidden:
 		return html.El("input", append(list, html.Attr("type", "hidden"), html.Attr("value", spec.Value)))
+	case FieldPassword:
+		control = html.El("input", append(list, html.Attr("type", "password"), html.Attr("value", spec.Value)))
 	case FieldTextarea:
 		// A newline right after <textarea> is dropped by the parser, so
 		// one is written to keep a value's own leading newline.

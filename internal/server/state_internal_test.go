@@ -299,8 +299,11 @@ func TestGivenVersionOneDatabaseWhenOpeningStoreThenItIsMigratedAndItsTasksKeepP
 	if err := store.db.QueryRowContext(t.Context(), `SELECT version FROM schema_version`).Scan(&version); err != nil {
 		t.Fatal(err)
 	}
-	if version != schemaVersion || schemaVersion != 2 {
-		t.Errorf("schema version = %d (server knows %d), want 2", version, schemaVersion)
+	if version != schemaVersion || schemaVersion != 3 {
+		t.Errorf("schema version = %d (server knows %d), want 3", version, schemaVersion)
+	}
+	if has, err := store.HasOwnerToken(t.Context()); err != nil || has {
+		t.Errorf("migrated HasOwnerToken = %v, %v; want false", has, err)
 	}
 	created := time.Date(2026, 10, 7, 10, 0, 1, 500_000_000, time.UTC)
 	if p := readProgress(t, store, "old"); p != (progress{State: TaskPending, LastActivity: created}) {

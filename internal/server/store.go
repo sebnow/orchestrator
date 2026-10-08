@@ -32,6 +32,11 @@ var migrations = [...]string{
 	`ALTER TABLE tasks ADD COLUMN last_activity_at TEXT NOT NULL DEFAULT '';
 	UPDATE tasks SET last_activity_at = created_at;
 	ALTER TABLE tasks ADD COLUMN cost_usd REAL NOT NULL DEFAULT 0;`,
+	// Version 3 keeps the hash of the owner's token, and the hash and
+	// expiry, in Unix seconds, of each login session
+	// (docs/adr/2026-10-08-owner-authentication.md).
+	`CREATE TABLE settings (name TEXT PRIMARY KEY, value TEXT NOT NULL) STRICT;
+	CREATE TABLE sessions (id_sha256 TEXT PRIMARY KEY, expires_at INTEGER NOT NULL) STRICT;`,
 }
 
 // schemaVersion is the version this server migrates databases to. A

@@ -63,7 +63,9 @@ type Options struct {
 	// Insecure serves every route without authentication, for a server
 	// that listens on loopback without TLS. Otherwise a daemon route
 	// needs the daemon's verified client certificate
-	// (docs/adr/2026-10-08-daemon-authentication.md).
+	// (docs/adr/2026-10-08-daemon-authentication.md), and every route
+	// but the login form and the static files needs the owner's token or
+	// session (docs/adr/2026-10-08-owner-authentication.md).
 	Insecure bool
 }
 
@@ -83,6 +85,7 @@ func New(store *Store, log *slog.Logger, options Options) *Server {
 	s.mux.Handle("GET /v1/daemons/{daemon}/acks", s.daemonOnly(s.getAcks))
 	s.mux.Handle("GET /v1/daemons/{daemon}/commands", s.daemonOnly(s.streamCommands))
 	s.mux.Handle("GET /static/", http.StripPrefix("/static/", http.FileServerFS(component.Static)))
+	s.routeLogin()
 
 	// Every other route is the owner's.
 	owner := http.NewServeMux()
@@ -92,7 +95,7 @@ func New(store *Store, log *slog.Logger, options Options) *Server {
 	owner.HandleFunc("POST /v1/tasks/{task}/commands", s.postCommand)
 	owner.HandleFunc("GET /v1/tasks/{task}/events", s.getEvents)
 	s.routeGUI(owner)
-	s.mux.Handle("/", owner)
+	s.mux.Handle("/", s.ownerOnly(owner))
 	return s
 }
 
