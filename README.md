@@ -215,6 +215,8 @@ Daemon flags:
   The daemon runs `claude --version` when it starts and exits if that
   fails. Tasks use the Claude Code login of the OS user who starts the
   daemon and spend that account's quota.
+- `-git-identity`: name and email for the commits an agent makes, as
+  `Name <email>`; `orchestrator <orchestrator@localhost>` by default.
 
 ### Tasks
 
@@ -245,17 +247,24 @@ parent's ref.
 The daemon's `git` runs with prompts off and ignores the user's and the
 system's git configuration, credential helpers and URL rewrites
 included (`GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1
-GIT_TERMINAL_PROMPT=0`), for cloning and for pushing. ssh still
-authenticates with the daemon user's `~/.ssh`: its config, its keys,
-its `known_hosts`, and its ssh agent. ssh runs in batch mode, so a host
-missing from `known_hosts` or a key that needs a passphrase fails the
-clone or the push rather than waiting. Pushing needs those credentials
-on every daemon's machine, with write access to the repository; a
-repository over https that needs credentials fails to clone, as no
-credential helper applies. The agent runs as the same user and can read
-those credentials. Its own `git` commands use that user's git
-configuration, so its commits carry that user's identity and follow
-its signing settings.
+GIT_TERMINAL_PROMPT=0`), for cloning and for pushing, and runs ssh in
+batch mode. ssh authenticates with the daemon user's ssh setup; the
+expected form is an ssh agent, with `SSH_AUTH_SOCK` in the daemon's
+environment, so the daemon never needs a key file it can read.
+`known_hosts` must already list the host, since batch mode fails the
+clone or the push on an unknown host key rather than waiting. Pushing
+needs those credentials on every daemon's machine, with write access to
+the repository; a repository over https that needs credentials fails
+to clone, as no credential helper applies. The harness and the agent it
+runs inherit the daemon's environment, the ssh agent included, so the
+agent's own `git` can authenticate over ssh the same way; the agent is
+told not to push, and a `pre-push` hook in the clone refuses any ref
+but the task branch, so the daemon pushes for it. The agent's own `git
+commit` uses the clone's local configuration instead of the daemon
+user's: identity from `-git-identity` (`orchestrator
+<orchestrator@localhost>` by default) and signing off, so the daemon
+user's own signing settings do not apply to agent commits; other
+user-level git settings still apply to the agent's git.
 
 Each turn of a task runs in its own `claude` process, which exits when
 the turn ends. The task is then `finished`, `paused` if the owner paused
