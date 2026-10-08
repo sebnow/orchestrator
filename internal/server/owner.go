@@ -262,3 +262,24 @@ func (s *Server) getTask(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, http.StatusOK, detail)
 }
+
+// postDismiss dismisses a stopped or failed task from the dashboard's
+// lists and returns the task. A task that has not ended gets 409.
+func (s *Server) postDismiss(w http.ResponseWriter, r *http.Request) {
+	task, err := protocol.ParseTaskID(r.PathValue("task"))
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	detail, err := s.store.dismissTask(r.Context(), task)
+	switch {
+	case errors.Is(err, errUnknownTask):
+		http.Error(w, err.Error(), http.StatusNotFound)
+	case errors.Is(err, errNotEnded):
+		http.Error(w, err.Error()+": only a stopped or failed task can be dismissed", http.StatusConflict)
+	case err != nil:
+		s.internalError(w, err)
+	default:
+		writeJSON(w, http.StatusOK, detail)
+	}
+}

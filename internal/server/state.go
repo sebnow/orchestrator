@@ -293,6 +293,9 @@ type taskSummary struct {
 	// Queue is where the task's first waiting turn stands; nil when none
 	// waits for the scheduler.
 	Queue *queuePlace `json:"queue,omitempty"`
+	// DismissedAt is when the owner dismissed the ended task from the
+	// dashboard's lists; nil while it is not dismissed.
+	DismissedAt *time.Time `json:"dismissed_at,omitempty"`
 }
 
 // taskDetail is one task: its summary and what it was started with.
@@ -301,14 +304,14 @@ type taskDetail struct {
 	Start protocol.StartTask `json:"start"`
 }
 
-const summaryColumns = `id, daemon_id, placement, parent_id, state, model, priority, filler, created_at, last_activity_at, cost_usd`
+const summaryColumns = `id, daemon_id, placement, parent_id, state, model, priority, filler, created_at, last_activity_at, cost_usd, dismissed_at`
 
 // scanSummary reads summaryColumns, followed by extra destinations.
 func scanSummary(row interface{ Scan(...any) error }, extra ...any) (taskSummary, error) {
 	var summary taskSummary
 	var id, daemon, placed, state, priority, created, lastActivity string
-	var parent sql.NullString
-	dest := append([]any{&id, &daemon, &placed, &parent, &state, &summary.Model, &priority, &summary.Filler, &created, &lastActivity, &summary.CostUSD}, extra...)
+	var parent, dismissed sql.NullString
+	dest := append([]any{&id, &daemon, &placed, &parent, &state, &summary.Model, &priority, &summary.Filler, &created, &lastActivity, &summary.CostUSD, &dismissed}, extra...)
 	if err := row.Scan(dest...); err != nil {
 		return taskSummary{}, err
 	}
@@ -326,6 +329,13 @@ func scanSummary(row interface{ Scan(...any) error }, extra ...any) (taskSummary
 	}
 	if summary.LastActivityAt, err = parseTime(lastActivity); err != nil {
 		return taskSummary{}, fmt.Errorf("task %q last_activity_at: %w", id, err)
+	}
+	if dismissed.Valid {
+		at, err := parseTime(dismissed.String)
+		if err != nil {
+			return taskSummary{}, fmt.Errorf("task %q dismissed_at: %w", id, err)
+		}
+		summary.DismissedAt = &at
 	}
 	return summary, nil
 }
@@ -449,4 +459,36 @@ func (s *Store) children(ctx context.Context, task protocol.TaskID) ([]protocol.
 		return nil, fmt.Errorf("read children of task %q: %w", task, err)
 	}
 	return children, nil
+}
+
+// dismissTask records that the owner dismissed task, which must be
+// stopped or failed, from the dashboard's lists, and returns the task. A
+// task dismissed already keeps the time of its first dismissal.
+func (s *Store) dismissTask(ctx context.Context, task protocol.TaskID) (taskDetail, error) {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return taskDetail{}, fmt.Errorf("dismiss task %q: %w", task, err)
+	}
+	defer tx.Rollback()
+	var state string
+	err = tx.QueryRowContext(ctx, `SELECT state FROM tasks WHERE id = ?`, string(task)).Scan(&state)
+	if errors.Is(err, sql.ErrNoRows) {
+		return taskDetail{}, fmt.Errorf("%w: %q", errUnknownTask, task)
+	}
+	if err != nil {
+		return taskDetail{}, fmt.Errorf("dismiss task %q: %w", task, err)
+	}
+	if !TaskState(state).Terminal() {
+		return taskDetail{}, fmt.Errorf("%w: %q is %s", errNotEnded, task, state)
+	}
+	_, err = tx.ExecContext(ctx, `UPDATE tasks SET dismissed_at = coalesce(dismissed_at, ?) WHERE id = ?`,
+		formatTime(time.Now().UTC()), string(task))
+	if err != nil {
+		return taskDetail{}, fmt.Errorf("dismiss task %q: %w", task, err)
+	}
+	if err := tx.Commit(); err != nil {
+		return taskDetail{}, fmt.Errorf("dismiss task %q: %w", task, err)
+	}
+	s.publish(&effects{changed: []protocol.TaskID{task}})
+	return s.task(ctx, task)
 }

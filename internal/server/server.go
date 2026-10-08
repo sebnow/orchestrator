@@ -116,6 +116,7 @@ func New(store *Store, log *slog.Logger, options Options) *Server {
 	owner.HandleFunc("POST /v1/tasks", s.postTask)
 	owner.HandleFunc("GET /v1/tasks/{task}", s.getTask)
 	owner.HandleFunc("POST /v1/tasks/{task}/commands", s.postCommand)
+	owner.HandleFunc("POST /v1/tasks/{task}/dismiss", s.postDismiss)
 	owner.HandleFunc("GET /v1/tasks/{task}/events", s.getEvents)
 	s.routeGUI(owner)
 	s.mux.Handle("/", s.ownerOnly(owner))

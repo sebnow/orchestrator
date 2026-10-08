@@ -81,6 +81,9 @@ var migrations = [...]string{
 	) STRICT;
 	CREATE INDEX turns_by_task ON turns (task_id, admitted_command_id);
 	CREATE INDEX events_by_kind ON events (kind);`,
+	// Version 6 records when the owner dismissed a stopped or failed task
+	// from the dashboard's lists; NULL while it is not dismissed.
+	`ALTER TABLE tasks ADD COLUMN dismissed_at TEXT CHECK (dismissed_at IS NULL OR state IN ('stopped', 'failed'));`,
 }
 
 // schemaVersion is the version this server migrates databases to. A
@@ -92,6 +95,9 @@ var (
 	errUnknownTask   = errors.New("unknown task")
 	// errTaskEnded reports a command for a task that is stopped or failed.
 	errTaskEnded = errors.New("task has ended")
+	// errNotEnded reports a dismissal of a task that is not stopped or
+	// failed.
+	errNotEnded = errors.New("task has not ended")
 )
 
 // foreignTaskError reports an event for a task that is not assigned to the

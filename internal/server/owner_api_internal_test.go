@@ -387,3 +387,54 @@ func TestGivenTaskThatHasNotStartedWhenStoppedThenItEndsWithNothingSentAndOtherC
 		t.Errorf("issued %+v, want nothing", commands)
 	}
 }
+
+func TestGivenEndedTaskWhenDismissedThenItIsMarkedOnceAndListedWithTheTime(t *testing.T) {
+	srv := startTestServer(t)
+	doRequest(t, http.MethodGet, srv.url+"/v1/daemons/laptop/acks", "")
+	created := postForTurn(t, srv.url+"/v1/tasks", startTaskBody, http.StatusCreated)
+	doRequest(t, http.MethodPost, srv.url+"/v1/tasks/"+string(created.TaskID)+"/commands", `{"kind":"stop"}`)
+	dismissURL := srv.url + "/v1/tasks/" + string(created.TaskID) + "/dismiss"
+
+	first, firstBody := doRequest(t, http.MethodPost, dismissURL, "")
+	again, againBody := doRequest(t, http.MethodPost, dismissURL, "")
+
+	if first != http.StatusOK || again != http.StatusOK {
+		t.Fatalf("dismiss: %d %s, again: %d %s; want 200 twice", first, firstBody, again, againBody)
+	}
+	var dismissed, redismissed map[string]any
+	json.Unmarshal([]byte(firstBody), &dismissed)
+	json.Unmarshal([]byte(againBody), &redismissed)
+	if dismissed["dismissed_at"] == nil || redismissed["dismissed_at"] != dismissed["dismissed_at"] {
+		t.Errorf("dismissed_at = %v, then %v; want the first time kept", dismissed["dismissed_at"], redismissed["dismissed_at"])
+	}
+	var list []map[string]any
+	getJSON(t, srv.url+"/v1/tasks", &list)
+	if len(list) != 1 || list[0]["dismissed_at"] != dismissed["dismissed_at"] {
+		t.Errorf("list = %v, want the task with its dismissal", list)
+	}
+}
+
+func TestGivenTaskThatHasNotEndedWhenDismissedThenConflict(t *testing.T) {
+	srv := startTestServer(t)
+	doRequest(t, http.MethodGet, srv.url+"/v1/daemons/laptop/acks", "")
+	created := postForTurn(t, srv.url+"/v1/tasks", startTaskBody, http.StatusCreated)
+
+	status, body := doRequest(t, http.MethodPost, srv.url+"/v1/tasks/"+string(created.TaskID)+"/dismiss", "")
+
+	if status != http.StatusConflict {
+		t.Errorf("status = %d (%s), want 409", status, body)
+	}
+	if summary, err := srv.store.task(t.Context(), created.TaskID); err != nil || summary.DismissedAt != nil {
+		t.Errorf("task = %+v, %v; want it not dismissed", summary, err)
+	}
+}
+
+func TestGivenUnknownTaskWhenDismissedThenNotFound(t *testing.T) {
+	srv := startTestServer(t)
+
+	status, body := doRequest(t, http.MethodPost, srv.url+"/v1/tasks/ghost/dismiss", "")
+
+	if status != http.StatusNotFound {
+		t.Errorf("status = %d (%s), want 404", status, body)
+	}
+}
