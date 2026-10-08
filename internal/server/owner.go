@@ -135,6 +135,9 @@ func commandPayload(kind protocol.CommandKind, raw json.RawMessage) (json.RawMes
 		if prompt.Text == "" {
 			return nil, errors.New("prompt text is required")
 		}
+		if prompt.From != nil {
+			return nil, errors.New("prompt from is set only by the server, for a message it delivers")
+		}
 		payload = prompt
 	case protocol.CommandAnswerPermission:
 		var answer protocol.AnswerPermission

@@ -87,6 +87,7 @@ func New(store *Store, log *slog.Logger, options Options) *Server {
 	s.mux.Handle("POST /v1/daemons/{daemon}/events", s.daemonOnly(s.postEvents))
 	s.mux.Handle("GET /v1/daemons/{daemon}/acks", s.daemonOnly(s.getAcks))
 	s.mux.Handle("GET /v1/daemons/{daemon}/commands", s.daemonOnly(s.streamCommands))
+	s.mux.Handle("POST /v1/daemons/{daemon}/tasks/{task}/requests", s.daemonOnly(s.postAgentRequest))
 	s.mux.Handle("GET /static/", http.StripPrefix("/static/", http.FileServerFS(component.Static)))
 	s.routeLogin()
 
