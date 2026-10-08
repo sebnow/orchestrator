@@ -25,7 +25,10 @@ and spend subscription quota:
 
 The server stores daemons, tasks and their events, and serves the GUI.
 The daemon runs the tasks with Claude Code, so `claude` must be
-installed and logged in for the user who starts the daemon. Build both
+installed and logged in for the user who starts the daemon. The daemon
+clones a task's repository with the `git` on the daemon's `PATH`, so
+`git` must be installed on every daemon's machine. A missing `git`
+shows only when a task with a repository starts, and fails it. Build both
 from the repository root:
 
     nix develop -c go build ./cmd/server
