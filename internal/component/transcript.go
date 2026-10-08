@@ -117,6 +117,10 @@ func TranscriptEntry(entry transcript.Entry) html.Node {
 	case transcript.ChildEnded:
 		label = "Child task "
 		subject = html.Fragment(link(taskURL(string(b.Child)), string(b.Child)), html.Text(" ended as "+b.State))
+	case transcript.MessageUndeliverable:
+		label = "Task "
+		subject = html.Fragment(link(taskURL(string(b.To)), string(b.To)),
+			html.Text(" ended as "+b.State+" before the agent's messages reached it; they were not delivered"))
 	case transcript.Unknown:
 		label = "Unrecognised " + b.RecordKind
 		if b.Type != "" {

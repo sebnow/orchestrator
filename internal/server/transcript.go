@@ -33,7 +33,8 @@ func (s *Server) Transcript(ctx context.Context, task protocol.TaskID) ([]transc
 
 // assemble merges task's history into one transcript: its events, in seq
 // order; its commands and its children's starts, in id order; and the
-// messages it sent and the notices that its children ended, in id order.
+// messages it sent and the notices that its children ended or that tasks
+// ended before its messages reached them, in id order.
 // Each list keeps its own order; where they interleave is decided by
 // time, in that order of preference when the times are equal. Events are
 // stamped by the daemon's clock and the rest by the server's, so the
@@ -50,9 +51,12 @@ func assemble(task protocol.TaskID, h history) []transcript.Entry {
 		case message.From != nil && *message.From == task:
 			fromMessages = append(fromMessages, transcript.Entry{Time: message.CreatedAt, Source: source,
 				Body: transcript.MessageSent{To: message.To, Text: message.Text}})
-		case message.About != nil:
+		case message.About != nil && message.AboutChild:
 			fromMessages = append(fromMessages, transcript.Entry{Time: message.CreatedAt, Source: source,
 				Body: transcript.ChildEnded{Child: *message.About, State: string(message.AboutState)}})
+		case message.About != nil:
+			fromMessages = append(fromMessages, transcript.Entry{Time: message.CreatedAt, Source: source,
+				Body: transcript.MessageUndeliverable{To: *message.About, State: string(message.AboutState)}})
 		}
 		if message.To == task && message.DeliveredBy != 0 {
 			delivered[message.DeliveredBy] = append(delivered[message.DeliveredBy], message)

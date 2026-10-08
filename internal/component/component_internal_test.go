@@ -138,6 +138,8 @@ func TestGivenMessagesAndChildrenWhenRenderedThenEachSaysWhatHappenedAndLinksThe
 			`<li class="entry from-agent"><header>never Agent started child task <a href="/tasks/child-1">child-1</a></header><pre>`+"\n"+`Say PEAR.</pre></li>`},
 		{transcript.ChildEnded{Child: child, State: "failed"},
 			`<li class="entry from-daemon"><header>never Child task <a href="/tasks/child-1">child-1</a> ended as failed</header></li>`},
+		{transcript.MessageUndeliverable{To: child, State: "stopped"},
+			`<li class="entry from-daemon"><header>never Task <a href="/tasks/child-1">child-1</a> ended as stopped before the agent&#39;s messages reached it; they were not delivered</header></li>`},
 	} {
 		if got := render(t, TranscriptEntry(transcript.Entry{Body: tc.body})); got != tc.want {
 			t.Errorf("%s:\ngot  %s\nwant %s", tc.body.Kind(), got, tc.want)

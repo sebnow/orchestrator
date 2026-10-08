@@ -268,7 +268,8 @@ const heldSeqColumn = `CASE WHEN EXISTS (SELECT 1 FROM events WHERE task_id = t.
 //
 // A task the batch leaves finished has the messages waiting in its inbox
 // queued for delivery, a task the batch leaves yielded has its resume
-// queued, and the parent of a task the batch ends is told.
+// queued, and the parent of a task the batch ends is told, as are the
+// senders of the messages left undelivered in its inbox.
 func (s *Store) appendEvents(ctx context.Context, daemon protocol.DaemonID, events []protocol.Event) (held map[protocol.TaskID]uint64, conflicts []protocol.Event, err error) {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -357,12 +358,12 @@ func (s *Store) appendEvents(ctx context.Context, daemon protocol.DaemonID, even
 		}
 	}
 	// Each step below reads the progress it needs afresh, because telling
-	// a parent can queue a turn for a task of this batch.
+	// a parent or a sender can queue a turn for a task of this batch.
 	fx := effects{reschedule: len(events) > 0}
 	for _, task := range tasks {
 		state := progresses[task].State
 		if !before[task].Terminal() && state.Terminal() {
-			if err := notifyParent(ctx, tx, task, state, &fx); err != nil {
+			if err := taskEnded(ctx, tx, task, state, &fx); err != nil {
 				return nil, nil, err
 			}
 		}
@@ -473,7 +474,7 @@ func (s *Store) issueCommand(ctx context.Context, task protocol.TaskID, kind pro
 		}
 		fx.changed = append(fx.changed, task)
 		fx.reschedule = true
-		if err := notifyParent(ctx, tx, task, p.State, &fx); err != nil {
+		if err := taskEnded(ctx, tx, task, p.State, &fx); err != nil {
 			return protocol.Command{}, err
 		}
 	case p.State == TaskQueued:
@@ -497,7 +498,8 @@ func (s *Store) issueCommand(ctx context.Context, task protocol.TaskID, kind pro
 
 // insertCommand appends a command to the log and folds it into the task's
 // progress. A task that is stopped or failed takes no command. When the
-// command ends the task, its parent is told.
+// command ends the task, its parent and the senders of the messages left
+// undelivered in its inbox are told.
 func insertCommand(ctx context.Context, tx *sql.Tx, daemon protocol.DaemonID, task protocol.TaskID, kind protocol.CommandKind, payload json.RawMessage, fx *effects) (protocol.Command, error) {
 	p, err := loadProgress(ctx, tx, task)
 	if err != nil {
@@ -526,7 +528,7 @@ func insertCommand(ctx context.Context, tx *sql.Tx, daemon protocol.DaemonID, ta
 	fx.issued = append(fx.issued, command)
 	fx.reschedule = true
 	if p.State.Terminal() {
-		if err := notifyParent(ctx, tx, task, p.State, fx); err != nil {
+		if err := taskEnded(ctx, tx, task, p.State, fx); err != nil {
 			return protocol.Command{}, err
 		}
 	}
@@ -606,15 +608,19 @@ type history struct {
 
 // storedMessage is a message as the messages table keeps it. Exactly one
 // of From and About is set: From for an agent's message, About for the
-// server's notice that a child ended, AboutState being that child's
-// state. DeliveredBy is the id of the prompt that delivered it, 0 while
+// server's notice that a task ended, AboutState being that task's state.
+// DeliveredBy is the id of the prompt that delivered it, 0 while
 // it waits.
 type storedMessage struct {
-	ID          uint64
-	From        *protocol.TaskID
-	To          protocol.TaskID
-	About       *protocol.TaskID
-	AboutState  TaskState
+	ID         uint64
+	From       *protocol.TaskID
+	To         protocol.TaskID
+	About      *protocol.TaskID
+	AboutState TaskState
+	// AboutChild says About is a child of the recipient, so that the
+	// notice says the child ended rather than that messages to it were
+	// not delivered.
+	AboutChild  bool
 	Text        string
 	CreatedAt   time.Time
 	DeliveredBy uint64
@@ -670,7 +676,7 @@ func (s *Store) taskHistory(ctx context.Context, task protocol.TaskID) (history,
 // queryMessages returns the messages task sent or was sent, in id order.
 func queryMessages(ctx context.Context, tx *sql.Tx, task protocol.TaskID) ([]storedMessage, error) {
 	rows, err := tx.QueryContext(ctx, `
-		SELECT m.id, m.from_task, m.to_task, m.about_task, coalesce(a.state, ''), m.text, m.created_at, coalesce(m.delivered_command_id, 0)
+		SELECT m.id, m.from_task, m.to_task, m.about_task, coalesce(a.state, ''), coalesce(a.parent_id = m.to_task, 0), m.text, m.created_at, coalesce(m.delivered_command_id, 0)
 		FROM messages m LEFT JOIN tasks a ON a.id = m.about_task
 		WHERE m.from_task = ?1 OR m.to_task = ?1 ORDER BY m.id`, string(task))
 	if err != nil {
@@ -683,7 +689,7 @@ func queryMessages(ctx context.Context, tx *sql.Tx, task protocol.TaskID) ([]sto
 		var id, delivered int64
 		var from, about sql.NullString
 		var to, state, created string
-		if err := rows.Scan(&id, &from, &to, &about, &state, &message.Text, &created, &delivered); err != nil {
+		if err := rows.Scan(&id, &from, &to, &about, &state, &message.AboutChild, &message.Text, &created, &delivered); err != nil {
 			return nil, fmt.Errorf("read messages of task %q: %w", task, err)
 		}
 		message.ID, message.To, message.AboutState, message.DeliveredBy = uint64(id), protocol.TaskID(to), TaskState(state), uint64(delivered)

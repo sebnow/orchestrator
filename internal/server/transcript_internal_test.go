@@ -167,7 +167,7 @@ func TestGivenWatchedTaskWhenEventsAreStoredOrCommandsIssuedThenOnlyItsWatchersA
 }
 
 func TestGivenMessagesAndChildrenWhenAssemblingThenTheyInterleaveByTimeWithTheTasksOwnRecords(t *testing.T) {
-	parent, child, other := protocol.TaskID("task-1"), protocol.TaskID("child"), protocol.TaskID("other")
+	parent, child, other, peer := protocol.TaskID("task-1"), protocol.TaskID("child"), protocol.TaskID("other"), protocol.TaskID("peer")
 	childStart := historyCommand(11, 2, protocol.CommandStartTask, `{"prompt":"Say PEAR.","pause_limits":{"acknowledge":"1m0s","cleanup":"5m0s"}}`)
 	childStart.TaskID = child
 	notice := "Your child task other has ended as failed. It will send no more messages."
@@ -183,7 +183,8 @@ func TestGivenMessagesAndChildrenWhenAssemblingThenTheyInterleaveByTimeWithTheTa
 		messages: []storedMessage{
 			{ID: 1, From: &parent, To: child, Text: "Go.", CreatedAt: at(3)},
 			{ID: 2, From: &child, To: parent, Text: "PEAR", CreatedAt: at(3.5), DeliveredBy: 13},
-			{ID: 3, About: &other, AboutState: TaskFailed, To: parent, Text: notice, CreatedAt: at(4), DeliveredBy: 13},
+			{ID: 3, About: &other, AboutState: TaskFailed, AboutChild: true, To: parent, Text: notice, CreatedAt: at(4), DeliveredBy: 13},
+			{ID: 4, About: &peer, AboutState: TaskStopped, To: parent, Text: "Task peer has ended as stopped.", CreatedAt: at(6.5)},
 		},
 	}
 
@@ -207,6 +208,7 @@ func TestGivenMessagesAndChildrenWhenAssemblingThenTheyInterleaveByTimeWithTheTa
 		{fromCommand(parent, 13), at(5), transcript.MessageReceived{From: &child, Text: "PEAR"}},
 		{fromCommand(parent, 13), at(5), transcript.MessageReceived{Text: notice}},
 		{fromCommand(parent, 14), at(6), transcript.MessageReceived{From: &child, Text: "Message from task child: lost"}},
+		{fromMessage(4), at(6.5), transcript.MessageUndeliverable{To: peer, State: "stopped"}},
 		{fromCommand(parent, 15), at(7), transcript.OwnerPrompt{Text: "Carry on."}},
 	}
 	if len(got) != len(want) {

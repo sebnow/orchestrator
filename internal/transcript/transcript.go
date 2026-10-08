@@ -39,27 +39,28 @@ type Source struct {
 type Kind string
 
 const (
-	KindOwnerPrompt         Kind = "owner_prompt"
-	KindPauseRequested      Kind = "pause_requested"
-	KindStopRequested       Kind = "stop_requested"
-	KindInterrupted         Kind = "interrupted"
-	KindPermissionAnswered  Kind = "permission_answered"
-	KindAgentText           Kind = "agent_text"
-	KindAgentThinking       Kind = "agent_thinking"
-	KindToolCall            Kind = "tool_call"
-	KindToolResult          Kind = "tool_result"
-	KindTurnEnded           Kind = "turn_ended"
-	KindPermissionRequested Kind = "permission_requested"
-	KindPauseAcknowledged   Kind = "pause_acknowledged"
-	KindPauseSettled        Kind = "pause_settled"
-	KindQuotaObserved       Kind = "quota_observed"
-	KindHarnessStarted      Kind = "harness_started"
-	KindHarnessExited       Kind = "harness_exited"
-	KindMessageSent         Kind = "message_sent"
-	KindMessageReceived     Kind = "message_received"
-	KindChildSpawned        Kind = "child_spawned"
-	KindChildEnded          Kind = "child_ended"
-	KindUnknown             Kind = "unknown"
+	KindOwnerPrompt          Kind = "owner_prompt"
+	KindPauseRequested       Kind = "pause_requested"
+	KindStopRequested        Kind = "stop_requested"
+	KindInterrupted          Kind = "interrupted"
+	KindPermissionAnswered   Kind = "permission_answered"
+	KindAgentText            Kind = "agent_text"
+	KindAgentThinking        Kind = "agent_thinking"
+	KindToolCall             Kind = "tool_call"
+	KindToolResult           Kind = "tool_result"
+	KindTurnEnded            Kind = "turn_ended"
+	KindPermissionRequested  Kind = "permission_requested"
+	KindPauseAcknowledged    Kind = "pause_acknowledged"
+	KindPauseSettled         Kind = "pause_settled"
+	KindQuotaObserved        Kind = "quota_observed"
+	KindHarnessStarted       Kind = "harness_started"
+	KindHarnessExited        Kind = "harness_exited"
+	KindMessageSent          Kind = "message_sent"
+	KindMessageReceived      Kind = "message_received"
+	KindChildSpawned         Kind = "child_spawned"
+	KindChildEnded           Kind = "child_ended"
+	KindMessageUndeliverable Kind = "message_undeliverable"
+	KindUnknown              Kind = "unknown"
 )
 
 // Body is what an entry says. It is one of the types in this package.
@@ -216,6 +217,14 @@ type ChildEnded struct {
 	State string
 }
 
+// MessageUndeliverable is the task To, to which the agent sent messages,
+// ending for good in State, the server's name for a stopped or failed
+// task, before they were delivered. They never will be.
+type MessageUndeliverable struct {
+	To    protocol.TaskID
+	State string
+}
+
 // Unknown is a record no other Body describes, kept so that nothing is
 // silently dropped. RecordKind is the event or command kind; Type is the
 // harness's own type for a harness line, empty otherwise. Raw is the
@@ -226,46 +235,48 @@ type Unknown struct {
 	Raw        json.RawMessage
 }
 
-func (OwnerPrompt) Kind() Kind         { return KindOwnerPrompt }
-func (PauseRequested) Kind() Kind      { return KindPauseRequested }
-func (StopRequested) Kind() Kind       { return KindStopRequested }
-func (Interrupted) Kind() Kind         { return KindInterrupted }
-func (PermissionAnswered) Kind() Kind  { return KindPermissionAnswered }
-func (AgentText) Kind() Kind           { return KindAgentText }
-func (AgentThinking) Kind() Kind       { return KindAgentThinking }
-func (ToolCall) Kind() Kind            { return KindToolCall }
-func (ToolResult) Kind() Kind          { return KindToolResult }
-func (TurnEnded) Kind() Kind           { return KindTurnEnded }
-func (PermissionRequested) Kind() Kind { return KindPermissionRequested }
-func (PauseAcknowledged) Kind() Kind   { return KindPauseAcknowledged }
-func (PauseSettled) Kind() Kind        { return KindPauseSettled }
-func (QuotaObserved) Kind() Kind       { return KindQuotaObserved }
-func (HarnessStarted) Kind() Kind      { return KindHarnessStarted }
-func (HarnessExited) Kind() Kind       { return KindHarnessExited }
-func (MessageSent) Kind() Kind         { return KindMessageSent }
-func (MessageReceived) Kind() Kind     { return KindMessageReceived }
-func (ChildSpawned) Kind() Kind        { return KindChildSpawned }
-func (ChildEnded) Kind() Kind          { return KindChildEnded }
-func (Unknown) Kind() Kind             { return KindUnknown }
+func (OwnerPrompt) Kind() Kind          { return KindOwnerPrompt }
+func (PauseRequested) Kind() Kind       { return KindPauseRequested }
+func (StopRequested) Kind() Kind        { return KindStopRequested }
+func (Interrupted) Kind() Kind          { return KindInterrupted }
+func (PermissionAnswered) Kind() Kind   { return KindPermissionAnswered }
+func (AgentText) Kind() Kind            { return KindAgentText }
+func (AgentThinking) Kind() Kind        { return KindAgentThinking }
+func (ToolCall) Kind() Kind             { return KindToolCall }
+func (ToolResult) Kind() Kind           { return KindToolResult }
+func (TurnEnded) Kind() Kind            { return KindTurnEnded }
+func (PermissionRequested) Kind() Kind  { return KindPermissionRequested }
+func (PauseAcknowledged) Kind() Kind    { return KindPauseAcknowledged }
+func (PauseSettled) Kind() Kind         { return KindPauseSettled }
+func (QuotaObserved) Kind() Kind        { return KindQuotaObserved }
+func (HarnessStarted) Kind() Kind       { return KindHarnessStarted }
+func (HarnessExited) Kind() Kind        { return KindHarnessExited }
+func (MessageSent) Kind() Kind          { return KindMessageSent }
+func (MessageReceived) Kind() Kind      { return KindMessageReceived }
+func (ChildSpawned) Kind() Kind         { return KindChildSpawned }
+func (ChildEnded) Kind() Kind           { return KindChildEnded }
+func (MessageUndeliverable) Kind() Kind { return KindMessageUndeliverable }
+func (Unknown) Kind() Kind              { return KindUnknown }
 
-func (OwnerPrompt) body()         {}
-func (PauseRequested) body()      {}
-func (StopRequested) body()       {}
-func (Interrupted) body()         {}
-func (PermissionAnswered) body()  {}
-func (AgentText) body()           {}
-func (AgentThinking) body()       {}
-func (ToolCall) body()            {}
-func (ToolResult) body()          {}
-func (TurnEnded) body()           {}
-func (PermissionRequested) body() {}
-func (PauseAcknowledged) body()   {}
-func (PauseSettled) body()        {}
-func (QuotaObserved) body()       {}
-func (HarnessStarted) body()      {}
-func (HarnessExited) body()       {}
-func (MessageSent) body()         {}
-func (MessageReceived) body()     {}
-func (ChildSpawned) body()        {}
-func (ChildEnded) body()          {}
-func (Unknown) body()             {}
+func (OwnerPrompt) body()          {}
+func (PauseRequested) body()       {}
+func (StopRequested) body()        {}
+func (Interrupted) body()          {}
+func (PermissionAnswered) body()   {}
+func (AgentText) body()            {}
+func (AgentThinking) body()        {}
+func (ToolCall) body()             {}
+func (ToolResult) body()           {}
+func (TurnEnded) body()            {}
+func (PermissionRequested) body()  {}
+func (PauseAcknowledged) body()    {}
+func (PauseSettled) body()         {}
+func (QuotaObserved) body()        {}
+func (HarnessStarted) body()       {}
+func (HarnessExited) body()        {}
+func (MessageSent) body()          {}
+func (MessageReceived) body()      {}
+func (ChildSpawned) body()         {}
+func (ChildEnded) body()           {}
+func (MessageUndeliverable) body() {}
+func (Unknown) body()              {}

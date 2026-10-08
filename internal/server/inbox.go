@@ -150,17 +150,85 @@ func insertMessage(ctx context.Context, tx *sql.Tx, from, about *protocol.TaskID
 	return nil
 }
 
-// notifyParent tells the parent of child, which has just ended in state,
-// that it has, unless child has no parent or the parent has ended too.
-func notifyParent(ctx context.Context, tx *sql.Tx, child protocol.TaskID, state TaskState, fx *effects) error {
+// taskEnded tells the tasks that wait on task, which has just ended in
+// state, that it has: its parent, which will hear from it no more, and
+// every task whose messages wait undelivered in its inbox, which never
+// will be delivered. A parent that sent such messages hears of both in
+// one notice.
+func taskEnded(ctx context.Context, tx *sql.Tx, task protocol.TaskID, state TaskState, fx *effects) error {
 	var parent sql.NullString
-	if err := tx.QueryRowContext(ctx, `SELECT parent_id FROM tasks WHERE id = ?`, string(child)).Scan(&parent); err != nil {
-		return fmt.Errorf("look up parent of task %q: %w", child, err)
+	if err := tx.QueryRowContext(ctx, `SELECT parent_id FROM tasks WHERE id = ?`, string(task)).Scan(&parent); err != nil {
+		return fmt.Errorf("look up parent of task %q: %w", task, err)
+	}
+	senders, err := undeliveredSenders(ctx, tx, task)
+	if err != nil {
+		return err
+	}
+	for _, sender := range senders {
+		if parent.Valid && sender.task == protocol.TaskID(parent.String) {
+			continue
+		}
+		text := fmt.Sprintf("Task %s has ended as %s before your message reached it, so it was not delivered.", task, state)
+		if sender.count > 1 {
+			text = fmt.Sprintf("Task %s has ended as %s before your %d messages reached it, so they were not delivered.", task, state, sender.count)
+		}
+		if err := notify(ctx, tx, sender.task, task, text, fx); err != nil {
+			return err
+		}
 	}
 	if !parent.Valid {
 		return nil
 	}
-	recipient := protocol.TaskID(parent.String)
+	text := fmt.Sprintf("Your child task %s has ended as %s. It will send no more messages.", task, state)
+	for _, sender := range senders {
+		switch {
+		case sender.task != protocol.TaskID(parent.String):
+		case sender.count == 1:
+			text += " Your message to it was not delivered."
+		default:
+			text += fmt.Sprintf(" Your %d messages to it were not delivered.", sender.count)
+		}
+	}
+	return notify(ctx, tx, protocol.TaskID(parent.String), task, text, fx)
+}
+
+// undeliveredSender is a task with count messages waiting undelivered in
+// another task's inbox.
+type undeliveredSender struct {
+	task  protocol.TaskID
+	count int
+}
+
+// undeliveredSenders returns the tasks with messages waiting in task's
+// inbox, in the order of their oldest message there.
+func undeliveredSenders(ctx context.Context, tx *sql.Tx, task protocol.TaskID) ([]undeliveredSender, error) {
+	rows, err := tx.QueryContext(ctx, `
+		SELECT from_task, count(*) FROM messages
+		WHERE to_task = ? AND delivered_command_id IS NULL AND from_task IS NOT NULL
+		GROUP BY from_task ORDER BY min(id)`, string(task))
+	if err != nil {
+		return nil, fmt.Errorf("read inbox of task %q: %w", task, err)
+	}
+	defer rows.Close()
+	var senders []undeliveredSender
+	for rows.Next() {
+		var sender string
+		var count int
+		if err := rows.Scan(&sender, &count); err != nil {
+			return nil, fmt.Errorf("read inbox of task %q: %w", task, err)
+		}
+		senders = append(senders, undeliveredSender{task: protocol.TaskID(sender), count: count})
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("read inbox of task %q: %w", task, err)
+	}
+	return senders, nil
+}
+
+// notify puts the server's notice text about the task about in
+// recipient's inbox and queues its delivery, so that recipient hears it
+// as its next prompt, unless recipient has ended.
+func notify(ctx context.Context, tx *sql.Tx, recipient, about protocol.TaskID, text string, fx *effects) error {
 	p, err := loadProgress(ctx, tx, recipient)
 	if err != nil {
 		return err
@@ -168,8 +236,7 @@ func notifyParent(ctx context.Context, tx *sql.Tx, child protocol.TaskID, state 
 	if p.State.Terminal() {
 		return nil
 	}
-	text := fmt.Sprintf("Your child task %s has ended as %s. It will send no more messages.", child, state)
-	if err := insertMessage(ctx, tx, nil, &child, recipient, text); err != nil {
+	if err := insertMessage(ctx, tx, nil, &about, recipient, text); err != nil {
 		return err
 	}
 	fx.changed = append(fx.changed, recipient)
@@ -257,7 +324,7 @@ func deliverWaiting(ctx context.Context, tx *sql.Tx, daemon protocol.DaemonID, t
 
 // inboxMessage is a message waiting to be delivered. Exactly one of from
 // and about is set: from for an agent's message, about for the server's
-// notice that a child ended.
+// notice that a task ended.
 type inboxMessage struct {
 	from, about sql.NullString
 	text        string

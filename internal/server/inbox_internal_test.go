@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/sebnow/orchestrator/internal/protocol"
+	"github.com/sebnow/orchestrator/internal/transcript"
 )
 
 const (
@@ -409,5 +410,73 @@ func TestGivenOwnersTaskAndChildWhenStartedThenEachSystemPromptExplainsMessaging
 		"task " + string(command.TaskID) + " does not see your replies otherwise."
 	if spawnedChild.Start.SystemPrompt != wantChild {
 		t.Errorf("child's system prompt = %q\nwant %q", spawnedChild.Start.SystemPrompt, wantChild)
+	}
+}
+
+func TestGivenMessagesWaitingForARecipientWhenItFailsThenEachSenderIsPromptedWithANoticeOfItsUndeliveredMessages(t *testing.T) {
+	store, _ := openTestStore(t)
+	recipient := taskIn(t, store, "recipient", TaskRunning)
+	first := taskIn(t, store, "first", TaskRunning)
+	second := taskIn(t, store, "second", TaskRunning)
+	sendFrom(t, store, "first", "recipient", "one")
+	sendFrom(t, store, "second", "recipient", "two")
+	sendFrom(t, store, "first", "recipient", "three")
+	first.event(protocol.KindHarnessExited, cleanly, TaskFinished)
+	second.event(protocol.KindHarnessExited, cleanly, TaskFinished)
+
+	recipient.event(protocol.KindHarnessExited, nonZero, TaskFailed)
+
+	requirePrompts(t, prompts(t, store, "first"), []protocol.Prompt{{
+		Text: "Notice from the orchestrator: Task recipient has ended as failed before your 2 messages reached it, so they were not delivered.",
+		From: fromTask("recipient"),
+	}})
+	requirePrompts(t, prompts(t, store, "second"), []protocol.Prompt{{
+		Text: "Notice from the orchestrator: Task recipient has ended as failed before your message reached it, so it was not delivered.",
+		From: fromTask("recipient"),
+	}})
+	h, err := store.taskHistory(t.Context(), "first")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var notices []transcript.Body
+	for _, entry := range assemble("first", h) {
+		if _, ok := entry.Body.(transcript.MessageUndeliverable); ok {
+			notices = append(notices, entry.Body)
+		}
+	}
+	if want := []transcript.Body{transcript.MessageUndeliverable{To: "recipient", State: "failed"}}; !reflect.DeepEqual(notices, want) {
+		t.Errorf("notices in the sender's transcript = %+v, want %+v", notices, want)
+	}
+}
+
+func TestGivenParentMessageWaitingForItsChildWhenTheChildIsStoppedThenTheParentGetsOneNoticeSayingBoth(t *testing.T) {
+	store, _ := openTestStore(t)
+	parent := taskIn(t, store, "parent", TaskRunning)
+	child := spawned(t, store, "parent", "child")
+	child.event(protocol.KindHarnessStarted, started, TaskRunning)
+	sendFrom(t, store, "parent", "child", "more detail")
+	parent.event(protocol.KindHarnessExited, cleanly, TaskFinished)
+
+	child.command(protocol.CommandStop, "", TaskRunning)
+	child.event(protocol.KindHarnessExited, cleanly, TaskStopped)
+
+	requirePrompts(t, prompts(t, store, "parent"), []protocol.Prompt{{
+		Text: "Notice from the orchestrator: Your child task child has ended as stopped. It will send no more messages. " +
+			"Your message to it was not delivered.",
+		From: fromTask("child"),
+	}})
+}
+
+func TestGivenSenderThatHasEndedWhenItsRecipientFailsThenNoNoticeIsKept(t *testing.T) {
+	store, _ := openTestStore(t)
+	recipient := taskIn(t, store, "recipient", TaskRunning)
+	sender := taskIn(t, store, "sender", TaskRunning)
+	sendFrom(t, store, "sender", "recipient", "one")
+	sender.event(protocol.KindHarnessExited, nonZero, TaskFailed)
+
+	recipient.event(protocol.KindHarnessExited, nonZero, TaskFailed)
+
+	if n := waiting(t, store, "sender"); n != 0 {
+		t.Errorf("%d messages wait for the failed sender", n)
 	}
 }
