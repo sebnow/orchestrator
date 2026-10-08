@@ -77,9 +77,6 @@ The protocol's messages are unchanged.
   certificate. Renewal is by hand.
 - The owner's browser warns about the server's certificate until it
   trusts the CA certificate.
-- **UNVERIFIED:** a browser that holds client certificates may ask the
-  owner to pick one, because the server asks for an optional client
-  certificate at every handshake.
 - A proxy in front of the server must pass TLS through rather than
   terminate it, or the server never sees the client certificate.
 - In development on one machine, the daemon needs its certificate for
