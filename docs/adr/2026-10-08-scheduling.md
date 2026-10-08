@@ -162,6 +162,11 @@ of higher priority waiting, the budget, the daemon not connected, or
 - A turn for a daemon that is not connected waits until it connects, so
   a task bound to a daemon that never returns stays queued until the
   owner stops it.
+- Pause, interrupt, stop and permission answers go to the daemon at
+  once, while prompts and resumes are queued, so an owner's prompt
+  issued just before a pause can reach the daemon after it. The
+  scheduler wakes on each change that may let a turn run, so the window
+  is one wake-up wide.
 - **UNVERIFIED:** that two concurrent sessions per daemon, and the 0.5
   and 0.85 thresholds, suit the owner's subscription plan; none was
   measured.
