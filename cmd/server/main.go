@@ -9,6 +9,7 @@ import (
 	"context"
 	"errors"
 	"flag"
+	"io"
 	"log/slog"
 	"net"
 	"net/http"
@@ -26,19 +27,23 @@ import (
 const shutdownTimeout = 30 * time.Second
 
 func main() {
-	os.Exit(run())
+	os.Exit(run(os.Args[1:], os.Stderr))
 }
 
-func run() int {
-	listen := flag.String("listen", "127.0.0.1:8080", "address to serve HTTP on")
-	dbPath := flag.String("db", "", "SQLite database file, created with its directory when missing (required)")
-	defaultModel := flag.String("default-model", "haiku", "model of a task created without one")
-	flag.Parse()
+func run(args []string, stderr io.Writer) int {
+	flags := flag.NewFlagSet("server", flag.ContinueOnError)
+	flags.SetOutput(stderr)
+	listen := flags.String("listen", "127.0.0.1:8080", "address to serve HTTP on")
+	dbPath := flags.String("db", "", "SQLite database file, created with its directory when missing (required)")
+	defaultModel := flags.String("default-model", "haiku", "model of a task created without one")
+	if err := flags.Parse(args); err != nil {
+		return exitCode(err)
+	}
 	if *dbPath == "" || *defaultModel == "" {
-		flag.Usage()
+		flags.Usage()
 		return 2
 	}
-	log := slog.New(slog.NewTextHandler(os.Stderr, nil))
+	log := slog.New(slog.NewTextHandler(stderr, nil))
 
 	if err := os.MkdirAll(filepath.Dir(*dbPath), 0o700); err != nil {
 		log.Error("create database directory", "error", err)
@@ -90,4 +95,13 @@ func run() int {
 		return 1
 	}
 	return 0
+}
+
+// exitCode is the status of a run whose flags did not parse: 0 when help
+// was asked for, as with flag.ExitOnError, and 2 otherwise.
+func exitCode(err error) int {
+	if errors.Is(err, flag.ErrHelp) {
+		return 0
+	}
+	return 2
 }
