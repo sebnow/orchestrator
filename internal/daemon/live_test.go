@@ -444,3 +444,73 @@ func TestLiveGivenPauseTheAgentCannotMeetWhenTheLimitPassesThenItIsInterruptedAn
 		t.Logf("result seq %d %s %s: %q", o.event.Seq, o.msg.Subtype, r.TerminalReason, r.Result)
 	}
 }
+
+// Cost: one claude process, one turn with one Bash tool call. The allow
+// is held for 6 minutes, past the 5-minute idle timeout the MCP page
+// (https://code.claude.com/docs/en/mcp.md) gives an HTTP server without a
+// per-server timeout, to see whether Claude Code gives up on an
+// unanswered --permission-prompt-tool call of its own accord.
+func TestLiveGivenPermissionRequestUnansweredForSixMinutesWhenTheOwnerAllowsItThenTheHarnessWasStillWaitingAndTheTurnCompletes(t *testing.T) {
+	ctx, cancel := context.WithTimeout(t.Context(), 12*time.Minute)
+	defer cancel()
+	const hold = 6 * time.Minute
+	lt := startLiveTask(t, ctx, "Use the Bash tool to run `touch held.txt`, then reply with exactly DONE.",
+		daemon.PauseLimits{Acknowledge: time.Minute, Cleanup: time.Minute})
+
+	s := waitFor(t, ctx, lt.task, "a permission request", func(s daemon.State) bool { return len(s.Permissions) > 0 || !s.Running })
+	if !s.Running {
+		t.Fatalf("the harness exited before asking for permission: %+v", s.Exit)
+	}
+	req := s.Permissions[0]
+	requestedAt := time.Now()
+	t.Logf("permission %s %s %s requested; holding it for %s", req.RequestID, req.Tool, req.Input, hold)
+	for time.Since(requestedAt) < hold {
+		select {
+		case <-ctx.Done():
+			t.Fatal(ctx.Err())
+		case <-time.After(30 * time.Second):
+		}
+		s, _ := lt.task.WaitFor(ctx, func(daemon.State) bool { return true })
+		t.Logf("after %s: running %v, turns ended %d, pending permissions %d", time.Since(requestedAt).Round(time.Second), s.Running, s.TurnsEnded, len(s.Permissions))
+		if !s.Running || s.TurnsEnded > 0 || len(s.Permissions) != 1 || s.Permissions[0].RequestID != req.RequestID {
+			t.Fatalf("the harness stopped waiting %s after the request: %+v", time.Since(requestedAt).Round(time.Second), s)
+		}
+	}
+	if err := lt.task.AnswerPermission(req.RequestID, harness.Decision{Allow: true}); err != nil {
+		t.Fatalf("answer after %s: %v", time.Since(requestedAt).Round(time.Second), err)
+	}
+	answeredAt := time.Now()
+	answerPermissions(t, ctx, lt.task, func(protocol.PermissionRequested) harness.Decision {
+		return harness.Decision{Message: "Not part of this test."}
+	})
+	waitFor(t, ctx, lt.task, "the turn to end", turnsSettled(1))
+	lt.task.Stop(ctx)
+
+	if _, err := os.Stat(filepath.Join(lt.workdir, "held.txt")); err != nil {
+		t.Errorf("the allowed command did not run: %v", err)
+	}
+	events := lt.journal(t)
+	assertContiguous(t, events)
+	var requestSeq uint64
+	for _, event := range events {
+		if event.Kind == protocol.KindPermissionRequested && requestSeq == 0 {
+			requestSeq = event.Seq
+		}
+	}
+	var during []string
+	for _, o := range outputs(t, events) {
+		if o.event.Seq > requestSeq && o.event.Time.Before(answeredAt) {
+			during = append(during, o.msg.Type+"/"+o.msg.Subtype)
+		}
+	}
+	t.Logf("harness output between the request (seq %d) and the answer: %q", requestSeq, during)
+	res := results(outputs(t, events))
+	if len(res) != 1 {
+		t.Fatalf("got %d results, want 1", len(res))
+	}
+	result, _ := res[0].msg.Result()
+	t.Logf("result %s after %s: %q", res[0].msg.Subtype, res[0].event.Time.Sub(requestedAt).Round(time.Second), result.Result)
+	if res[0].msg.Subtype != "success" || !strings.Contains(result.Result, "DONE") {
+		t.Errorf("result %s: %q", res[0].msg.Subtype, result.Result)
+	}
+}
