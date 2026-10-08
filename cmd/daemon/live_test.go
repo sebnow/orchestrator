@@ -306,6 +306,9 @@ type liveSystem struct {
 	daemonArgs []string
 	// answered holds the permission requests the test has answered.
 	answered map[string]bool
+	// answeredByPolicy says the server answers permission requests itself,
+	// so the test leaves them alone.
+	answeredByPolicy bool
 }
 
 // startLiveSystem starts the server, with serverFlags, and the daemon.
@@ -699,6 +702,9 @@ func pingRequests(events []protocol.Event) int {
 // yet: allowed when decide accepts it, denied otherwise.
 func (sys liveSystem) answerPermissions(t *testing.T, task protocol.TaskID, events []protocol.Event, decide func(tool, command string) bool) {
 	t.Helper()
+	if sys.answeredByPolicy {
+		return
+	}
 	for _, event := range events {
 		if event.Kind != protocol.KindPermissionRequested {
 			continue
@@ -1094,4 +1100,108 @@ func getPage(t *testing.T, url string) string {
 		t.Fatalf("GET %s: %d, %v", url, resp.StatusCode, err)
 	}
 	return string(data)
+}
+
+// liveGit runs git with no configuration of the owner's and a fixed
+// identity, and returns its trimmed output.
+func liveGit(t *testing.T, dir string, args ...string) string {
+	t.Helper()
+	cmd := exec.Command("git", args...)
+	cmd.Dir = dir
+	cmd.Env = append(os.Environ(), "GIT_CONFIG_GLOBAL=/dev/null", "GIT_CONFIG_NOSYSTEM=1",
+		"GIT_AUTHOR_NAME=Test", "GIT_AUTHOR_EMAIL=test@example.com",
+		"GIT_COMMITTER_NAME=Test", "GIT_COMMITTER_EMAIL=test@example.com")
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("git %s: %v\n%s", strings.Join(args, " "), err, out)
+	}
+	return strings.TrimSpace(string(out))
+}
+
+// liveRemote makes a bare repository with one commit on main and returns
+// its path and an https URL that git, in this test's processes and theirs,
+// rewrites to it. The rewrite and the switch-off of commit signing, which
+// the agent's git would otherwise take from the owner's configuration,
+// come from the environment, which the server, the daemon and claude
+// inherit.
+func liveRemote(t *testing.T) (bare, repoURL string) {
+	t.Helper()
+	work := t.TempDir()
+	liveGit(t, work, "init", "--quiet", "-b", "main")
+	if err := os.WriteFile(filepath.Join(work, "README"), []byte("live delivery test\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	liveGit(t, work, "add", "README")
+	liveGit(t, work, "commit", "--quiet", "-m", "add README")
+	bare = filepath.Join(t.TempDir(), "repo.git")
+	liveGit(t, "", "clone", "--quiet", "--bare", work, bare)
+	prefix := "https://repos.invalid/live/"
+	t.Setenv("GIT_CONFIG_COUNT", "2")
+	t.Setenv("GIT_CONFIG_KEY_0", "url."+filepath.Dir(bare)+"/.insteadOf")
+	t.Setenv("GIT_CONFIG_VALUE_0", prefix)
+	t.Setenv("GIT_CONFIG_KEY_1", "commit.gpgsign")
+	t.Setenv("GIT_CONFIG_VALUE_1", "false")
+	return bare, prefix + filepath.Base(bare)
+}
+
+// branchPushes returns the branch_pushed events among events, in order.
+func branchPushes(t *testing.T, events []protocol.Event) []protocol.BranchPushed {
+	t.Helper()
+	var pushes []protocol.BranchPushed
+	for _, event := range events {
+		if event.Kind != protocol.KindBranchPushed {
+			continue
+		}
+		var pushed protocol.BranchPushed
+		if err := json.Unmarshal(event.Payload, &pushed); err != nil {
+			t.Fatalf("branch_pushed %s: %v", event.Payload, err)
+		}
+		t.Logf("branch_pushed %+v", pushed)
+		pushes = append(pushes, pushed)
+	}
+	return pushes
+}
+
+// Cost: `claude --version` and two claude sessions, each one turn that
+// writes a file and commits it with git.
+func TestLiveGivenTaskWithARepositoryWhenTheAgentCommitsEachTurnThenTheDaemonPushesItsBranchAndTheServerHearsOfIt(t *testing.T) {
+	ctx, cancel := context.WithTimeout(t.Context(), 8*time.Minute)
+	defer cancel()
+	bare, repoURL := liveRemote(t)
+	main := liveGit(t, bare, "rev-parse", "refs/heads/main")
+	sys := startLiveSystem(t, "-permissions", "allow-all")
+	sys.answeredByPolicy = true
+
+	task := sys.startTaskViaGUI(t, ctx,
+		"Create a file named hello.txt whose only line is: hello. Then commit it with git, with a clear commit message.",
+		"repo", repoURL, "ref", "main")
+	events := sys.waitForState(t, ctx, task, "finished", 1, nil)
+	sys.command(t, task, url.Values{"kind": {"prompt"}, "text": {"Add a second line to hello.txt: world. Then commit that change with git."}})
+	events = sys.waitForState(t, ctx, task, "finished", 2, nil)
+
+	branch := "orchestrator/" + string(task)
+	pushes := branchPushes(t, events)
+	if len(pushes) != 2 {
+		t.Fatalf("got %d branch_pushed events, want one per turn", len(pushes))
+	}
+	last := pushes[1]
+	if last.Branch != branch || last.Error != "" || last.Ahead < 2 || pushes[0].Error != "" || pushes[0].Ahead < 1 {
+		t.Errorf("branch_pushed = %+v, want %s pushed each turn, its commits counted", pushes, branch)
+	}
+	if remote := liveGit(t, bare, "rev-parse", "refs/heads/"+branch); remote != last.Commit {
+		t.Errorf("remote %s = %s, want the reported %s", branch, remote, last.Commit)
+	}
+	if hello := liveGit(t, bare, "show", last.Commit+":hello.txt"); hello != "hello\nworld" {
+		t.Errorf("hello.txt on the branch = %q, want hello and world", hello)
+	}
+	if got := liveGit(t, bare, "rev-parse", "refs/heads/main"); got != main {
+		t.Errorf("remote main = %s, want it untouched at %s", got, main)
+	}
+	var detail struct {
+		Branch *protocol.BranchPushed `json:"branch"`
+	}
+	call(t, http.MethodGet, sys.server+"/v1/tasks/"+string(task), nil, &detail)
+	if detail.Branch == nil || *detail.Branch != last {
+		t.Errorf("the server's task holds branch %+v, want %+v", detail.Branch, last)
+	}
 }
