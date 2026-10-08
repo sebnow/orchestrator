@@ -222,8 +222,8 @@ func (s *Server) attentionReason(ctx context.Context, summary taskSummary) (stri
 				}
 				break latest
 			case transcript.HarnessExited:
-				if body.Restarted {
-					return "paused: the daemon restarted during its turn", nil
+				if body.CutShortBy != "" {
+					return "paused: the daemon " + body.CutShortBy + " during its turn", nil
 				}
 			case transcript.HarnessStarted:
 				break latest

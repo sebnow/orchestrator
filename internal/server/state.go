@@ -108,11 +108,11 @@ func (s TaskState) afterCommand(kind protocol.CommandKind) TaskState {
 // was issued before the pause settled, the task resumes right after. A
 // clean exit leaves a paused or yielded task so; a pause that had not
 // settled when the process exited did not take effect, and the task is
-// finished. An exit that says a daemon restart cut the turn short pauses
-// a task with a process for the owner to resume
-// (docs/adr/2026-10-08-restart-recovery.md), and leaves a task between
-// processes as it is. A process started after a clean exit makes the task
-// running again.
+// finished. An exit that says the daemon cut the turn short, by
+// restarting or by shutting down, pauses a task with a process for the
+// owner to resume (docs/adr/2026-10-08-shutdown-recovery.md), and leaves
+// a task between processes as it is. A process started after a clean
+// exit makes the task running again.
 func (s TaskState) afterEvent(event protocol.Event, stopIssued bool, pausedBy pauseOrigin) TaskState {
 	switch {
 	case s.Terminal():
@@ -128,15 +128,16 @@ func (s TaskState) afterEvent(event protocol.Event, stopIssued bool, pausedBy pa
 	case event.Kind == protocol.KindHarnessExited:
 		var exit protocol.HarnessExited
 		decoded := json.Unmarshal(event.Payload, &exit) == nil
-		restarted, _ := restartOf(exit)
+		by, _ := cutShortOf(exit)
+		cutShort := decoded && by != ""
 		switch {
 		case stopIssued:
 			return TaskStopped
-		case decoded && restarted && s.Idle():
+		case cutShort && s.Idle():
 			// The turn ended before the daemon restarted; only the
 			// process's exit was lost.
 			return s
-		case decoded && restarted:
+		case cutShort:
 			return TaskPaused
 		case !decoded || exit.ExitCode != 0 || exit.Error != "":
 			return TaskFailed
@@ -149,30 +150,38 @@ func (s TaskState) afterEvent(event protocol.Event, stopIssued bool, pausedBy pa
 	return s
 }
 
-// The errors a daemon gives in harness_exited when its restart cut the
-// task's turn short and it can resume the task, continuing the recorded
-// harness session or, when none was recorded, starting a new one
-// (docs/adr/2026-10-08-restart-recovery.md). internal/daemon words them
+// The errors a daemon gives in harness_exited when it cut the task's turn
+// short and can resume the task, continuing the recorded harness session
+// or, when none was recorded, starting a new one: by restarting after it
+// died during the turn, or by shutting down during it
+// (docs/adr/2026-10-08-shutdown-recovery.md). internal/daemon words them
 // the same.
 const (
 	exitRestarted          = "daemon restarted during the turn"
 	exitRestartedNoSession = "daemon restarted during the turn, before the harness reported a session"
+	exitStopped            = "daemon stopped during the turn"
+	exitStoppedNoSession   = "daemon stopped during the turn, before the harness reported a session"
 )
 
-// restartOf reports whether exit is a turn cut short by a daemon restart
-// that left the task resumable, and whether resuming it starts a new
-// harness session.
-func restartOf(exit protocol.HarnessExited) (restarted, newSession bool) {
+// cutShortOf reports whether exit is a turn the daemon cut short and left
+// resumable: by is "restarted" or "stopped" when it is, and empty
+// otherwise. newSession says whether resuming starts a new harness
+// session.
+func cutShortOf(exit protocol.HarnessExited) (by string, newSession bool) {
 	if exit.ExitCode != -1 {
-		return false, false
+		return "", false
 	}
 	switch exit.Error {
 	case exitRestarted:
-		return true, false
+		return "restarted", false
 	case exitRestartedNoSession:
-		return true, true
+		return "restarted", true
+	case exitStopped:
+		return "stopped", false
+	case exitStoppedNoSession:
+		return "stopped", true
 	}
-	return false, false
+	return "", false
 }
 
 // progress is what the server keeps per task as events are stored and

@@ -113,9 +113,9 @@ func TestGivenStoppedTaskWhenACommandIsIssuedThroughTheAPIThenConflict(t *testin
 	}
 }
 
-// taskCutShortByARestart starts a task whose first turn a daemon restart
-// cut short, with exitError as the restart's harness_exited error.
-func taskCutShortByARestart(t *testing.T, srv testServer, exitError string) protocol.TaskID {
+// taskCutShortByTheDaemon starts a task whose first turn the daemon cut
+// short, with exitError as the error of the harness_exited it gave.
+func taskCutShortByTheDaemon(t *testing.T, srv testServer, exitError string) protocol.TaskID {
 	t.Helper()
 	task := startTaskViaForm(t, srv, "laptop", "The codeword is MARMALADE.")
 	events := &taskEvents{task: task}
@@ -127,7 +127,7 @@ func taskCutShortByARestart(t *testing.T, srv testServer, exitError string) prot
 
 func TestGivenTaskCutShortByADaemonRestartWhenShownThenItIsPausedForTheOwnerWithTheRestartAsTheReason(t *testing.T) {
 	srv := startTestServer(t)
-	task := taskCutShortByARestart(t, srv, exitRestarted)
+	task := taskCutShortByTheDaemon(t, srv, exitRestarted)
 
 	page := getPage(t, srv.url+"/tasks/"+string(task))
 	dashboard := getPage(t, srv.url+"/")
@@ -138,9 +138,22 @@ func TestGivenTaskCutShortByADaemonRestartWhenShownThenItIsPausedForTheOwnerWith
 	requireContains(t, dashboard, `<span class="reason">paused: the daemon restarted during its turn</span>`)
 }
 
+func TestGivenTaskCutShortByADaemonShutdownWhenShownThenItIsPausedForTheOwnerWithTheShutdownAsTheReason(t *testing.T) {
+	srv := startTestServer(t)
+	task := taskCutShortByTheDaemon(t, srv, exitStopped)
+
+	page := getPage(t, srv.url+"/tasks/"+string(task))
+	dashboard := getPage(t, srv.url+"/")
+
+	requireContains(t, page, `<span class="badge state-paused">paused</span>`, resumeButton,
+		"The daemon stopped during the turn; the task is paused", "Resume continues its session.")
+	requireLacks(t, page, "Harness exited with code -1", "restarted")
+	requireContains(t, dashboard, `<span class="reason">paused: the daemon stopped during its turn</span>`)
+}
+
 func TestGivenTaskCutShortBeforeItReportedASessionWhenShownThenItSaysResumeStartsANewSession(t *testing.T) {
 	srv := startTestServer(t)
-	task := taskCutShortByARestart(t, srv, exitRestartedNoSession)
+	task := taskCutShortByTheDaemon(t, srv, exitRestartedNoSession)
 
 	page := getPage(t, srv.url+"/tasks/"+string(task))
 
@@ -150,7 +163,7 @@ func TestGivenTaskCutShortBeforeItReportedASessionWhenShownThenItSaysResumeStart
 
 func TestGivenTaskCutShortByARestartThenResumedAndPausedWithoutANoteWhenListedThenTheReasonIsThePauseNotTheRestart(t *testing.T) {
 	srv := startTestServer(t)
-	task := taskCutShortByARestart(t, srv, exitRestarted)
+	task := taskCutShortByTheDaemon(t, srv, exitRestarted)
 	postForm(t, srv, task, url.Values{"kind": {"resume"}})
 	admitTurns(t, srv.store)
 	events := &taskEvents{task: task, seq: 2}

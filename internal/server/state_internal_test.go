@@ -69,6 +69,9 @@ func TestGivenEachStateWhenAnEventIsStoredThenTheStateFollowsTheTable(t *testing
 	cutShort := controlEvent(protocol.KindHarnessExited, `{"exit_code":-1,"error":"daemon restarted during the turn"}`)
 	cutShortNoSession := controlEvent(protocol.KindHarnessExited, `{"exit_code":-1,"error":"daemon restarted during the turn, before the harness reported a session"}`)
 	cutShortWithCode := controlEvent(protocol.KindHarnessExited, `{"exit_code":1,"error":"daemon restarted during the turn"}`)
+	stoppedMidTurn := controlEvent(protocol.KindHarnessExited, `{"exit_code":-1,"error":"daemon stopped during the turn"}`)
+	stoppedNoSession := controlEvent(protocol.KindHarnessExited, `{"exit_code":-1,"error":"daemon stopped during the turn, before the harness reported a session"}`)
+	stoppedWithCode := controlEvent(protocol.KindHarnessExited, `{"exit_code":1,"error":"daemon stopped during the turn"}`)
 	neverStarted := controlEvent(protocol.KindHarnessExited, `{"exit_code":-1,"error":"clone https://example.com/r.git: exit status 128"}`)
 	zeroWithError := controlEvent(protocol.KindHarnessExited, `{"exit_code":0,"error":"read harness output: broken pipe"}`)
 	output := controlEvent(protocol.KindHarnessOutput, `{"type":"assistant"}`)
@@ -105,6 +108,12 @@ func TestGivenEachStateWhenAnEventIsStoredThenTheStateFollowsTheTable(t *testing
 		{"restart after the yield settled", TaskYielded, cutShort, false, TaskYielded},
 		{"restart after the pause settled", TaskPaused, cutShort, false, TaskPaused},
 		{"restart after a clean exit was journaled", TaskFinished, cutShort, false, TaskFinished},
+		{"shutdown cut the turn short", TaskRunning, stoppedMidTurn, false, TaskPaused},
+		{"shutdown cut a permission request short", TaskAwaitingPermission, stoppedMidTurn, false, TaskPaused},
+		{"shutdown cut a pause short", TaskPausing, stoppedMidTurn, false, TaskPaused},
+		{"shutdown cut the first turn short before a session", TaskRunning, stoppedNoSession, false, TaskPaused},
+		{"shutdown after a stop", TaskRunning, stoppedMidTurn, true, TaskStopped},
+		{"shutdown text with an exit code", TaskRunning, stoppedWithCode, false, TaskFailed},
 		{"clone failed", TaskPending, neverStarted, false, TaskFailed},
 		{"exit 0 with an error", TaskRunning, zeroWithError, false, TaskFailed},
 		{"undecodable exit", TaskRunning, controlEvent(protocol.KindHarnessExited, `"gone"`), false, TaskFailed},

@@ -180,15 +180,16 @@ type HarnessStarted struct {
 // HarnessExited ends the task's harness process. ExitCode is -1 when the
 // process never started or was killed; Error then says why.
 //
-// Restarted is set when a daemon restart cut the turn short and left the
-// task paused, to be resumed by the owner; NewSession is then set when no
-// harness session was recorded, so that resuming starts a new one with
-// the task's first prompt.
+// CutShortBy is set when the daemon cut the turn short and left the task
+// paused, to be resumed by the owner: "restarted" when it restarted after
+// dying during the turn, "stopped" when it shut down during the turn.
+// NewSession is then set when no harness session was recorded, so that
+// resuming starts a new one with the task's first prompt.
 type HarnessExited struct {
 	ExitCode   int
 	Error      string
 	Stderr     string
-	Restarted  bool
+	CutShortBy string
 	NewSession bool
 }
 
