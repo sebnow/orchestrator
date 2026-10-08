@@ -221,8 +221,11 @@ connected daemon with the most free slots instead. A message to a
 `finished` task becomes its next turn; one to a running task waits until
 its turn ends, and one to a `paused` task until the owner resumes it and
 that turn ends. Messages to `stopped` or `failed` tasks are refused, and
-a parent is told when its child stops or fails. The task page links a
-task's parent and children and shows the messages it sent and received.
+a parent is told when its child stops or fails. When a task stops or
+fails with messages still waiting in its inbox, each sender's next
+prompt is a notice that those messages were not delivered. The
+task page links a task's parent and children and shows the messages it
+sent and received.
 
 SIGINT or SIGTERM shuts either program down. The daemon first
 interrupts each running turn and closes the input of the task's
