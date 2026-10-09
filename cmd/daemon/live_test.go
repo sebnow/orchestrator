@@ -1309,3 +1309,111 @@ func (sys liveSystem) page(t *testing.T, path string) string {
 	body, _ := io.ReadAll(resp.Body)
 	return string(body)
 }
+
+// toolCall is a tool_use block the harness wrote.
+type toolCall struct {
+	Type  string          `json:"type"`
+	ID    string          `json:"id"`
+	Name  string          `json:"name"`
+	Input json.RawMessage `json:"input"`
+}
+
+// toolCalls returns the tool calls the harness wrote, in order.
+func toolCalls(events []protocol.Event) []toolCall {
+	var calls []toolCall
+	for _, event := range events {
+		if event.Kind != protocol.KindHarnessOutput {
+			continue
+		}
+		var line struct {
+			Type    string `json:"type"`
+			Message struct {
+				Content []toolCall `json:"content"`
+			} `json:"message"`
+		}
+		if json.Unmarshal(event.Payload, &line) != nil || line.Type != "assistant" {
+			continue
+		}
+		for _, block := range line.Message.Content {
+			if block.Type == "tool_use" {
+				calls = append(calls, block)
+			}
+		}
+	}
+	return calls
+}
+
+// Cost: `claude --version` and one claude session with one turn, in which
+// the agent asks for a subagent with isolation "remote" and, once that is
+// refused, may start a local one. Every stream-json line after the
+// harness's start is logged, prefixed "raw:", so that what Claude Code
+// did after the refusal is on record
+// (docs/design/2026-10-09-remote-subagents.md).
+//
+// Should the ask rule not reach the gateway and the login have remote
+// subagents, the subagent would run in a cloud environment; its prompt
+// asks only for the word PONG, in an empty workspace.
+func TestLiveGivenAllowAllWhenTheAgentAsksForARemoteSubagentThenTheServerDeniesItAndNoRemoteAgentStarts(t *testing.T) {
+	ctx, cancel := context.WithTimeout(t.Context(), 6*time.Minute)
+	defer cancel()
+	sys := startLiveSystem(t, "-permissions", "allow-all")
+	sys.answeredByPolicy = true
+
+	task := sys.startTaskViaGUI(t, ctx,
+		`Call the Agent tool once, with the isolation parameter set to "remote", a short description, and this prompt for the subagent: `+
+			`"Reply with exactly the word PONG." Make that your first tool call. Afterwards, reply with one line saying what the Agent tool returned.`)
+	events := sys.waitForState(t, ctx, task, "finished", 1, nil)
+
+	var remoteCalls []string
+	for _, call := range toolCalls(events) {
+		t.Logf("tool call %s %s %s", call.ID, call.Name, call.Input)
+		if claude.IsRemoteSubagent(call.Name, call.Input) {
+			remoteCalls = append(remoteCalls, call.ID)
+		}
+	}
+	var requests []protocol.PermissionRequested
+	for _, event := range events {
+		switch event.Kind {
+		case protocol.KindPermissionRequested:
+			var req protocol.PermissionRequested
+			if err := json.Unmarshal(event.Payload, &req); err != nil {
+				t.Fatal(err)
+			}
+			t.Logf("seq %d permission_requested %s %s %s", event.Seq, req.RequestID, req.Tool, req.Input)
+			requests = append(requests, req)
+		case protocol.KindHarnessOutput:
+			t.Logf("raw: %s", event.Payload)
+			msg, err := claude.Parse(event.Payload)
+			if err != nil {
+				continue
+			}
+			if started, ok := msg.TaskStarted(); ok && started.TaskType == "remote_agent" {
+				t.Errorf("seq %d: a remote agent started: %s", event.Seq, event.Payload)
+			}
+			if res, ok := msg.Result(); ok {
+				t.Logf("result %s: %q; permission_denials %d", msg.Subtype, res.Result, len(res.PermissionDenials))
+			}
+		default:
+			t.Logf("seq %d %s %s", event.Seq, event.Kind, event.Payload)
+		}
+	}
+	if len(remoteCalls) == 0 {
+		t.Fatal("the agent made no Agent call with isolation \"remote\"")
+	}
+
+	var remoteRequests []protocol.PermissionRequested
+	for _, req := range requests {
+		if claude.IsRemoteSubagent(req.Tool, req.Input) {
+			remoteRequests = append(remoteRequests, req)
+		}
+	}
+	if len(remoteRequests) == 0 {
+		t.Fatalf("the agent made %d remote Agent call(s), and none reached the gateway as a permission request", len(remoteCalls))
+	}
+	page := sys.page(t, "/tasks/"+string(task))
+	for _, req := range remoteRequests {
+		if !strings.Contains(page, "Request "+req.RequestID+" denied by policy") {
+			t.Errorf("the task page does not show request %s denied by policy", req.RequestID)
+		}
+	}
+}
