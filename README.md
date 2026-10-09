@@ -414,7 +414,12 @@ Server flags:
   as it arrives, and the task's transcript says it was allowed by
   policy. With `ask`, each request waits, without limit, for the owner
   to answer it on the task page or through the owner API. Changing it
-  does not answer requests already waiting.
+  does not answer requests already waiting. Under either setting the
+  server denies an `Agent` call that sets `isolation` to `"remote"`,
+  which would run Claude Code's subagent in a cloud environment, and
+  tells the agent to run it locally; some other paths off the machine
+  are not covered
+  ([remote subagents](docs/design/2026-10-09-remote-subagents.md)).
 
 Without `-insecure-loopback`, the server also refuses to start until an
 owner token has been issued into its database.
