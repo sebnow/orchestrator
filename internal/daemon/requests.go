@@ -65,7 +65,8 @@ var errNotConnected = errors.New("this daemon is not connected to an orchestrato
 
 type spawnTaskInput struct {
 	Prompt string `json:"prompt" jsonschema:"the child task's instructions; it sees nothing else of your conversation"`
-	Model  string `json:"model,omitempty" jsonschema:"the model the child runs, such as haiku; yours when omitted"`
+	Agent  string `json:"agent,omitempty" jsonschema:"the name of the agent to start the child as, from the agents your instructions list; none when omitted"`
+	Model  string `json:"model,omitempty" jsonschema:"the model the child runs, such as haiku; the agent's, or yours, when omitted"`
 }
 
 type sendMessageInput struct {
@@ -77,7 +78,7 @@ type sendMessageInput struct {
 func (d *Daemon) spawnTask(task protocol.TaskID) func(context.Context, spawnTaskInput) (string, error) {
 	return func(ctx context.Context, in spawnTaskInput) (string, error) {
 		var spawned protocol.Spawned
-		if err := d.request(ctx, task, protocol.AgentSpawn, protocol.Spawn{Prompt: in.Prompt, Model: in.Model}, &spawned); err != nil {
+		if err := d.request(ctx, task, protocol.AgentSpawn, protocol.Spawn{Prompt: in.Prompt, Model: in.Model, Agent: in.Agent}, &spawned); err != nil {
 			return "", err
 		}
 		return fmt.Sprintf("Started child task %s. It works on its own and sends its result with %s. "+

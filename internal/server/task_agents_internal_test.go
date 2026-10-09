@@ -1,6 +1,7 @@
 package server
 
 import (
+	"errors"
 	"net/http"
 	"net/url"
 	"reflect"
@@ -111,5 +112,52 @@ func TestGivenNewTaskFormWithoutAnAgentAndBlankPauseLimitsWhenSubmittedThenTheTa
 	detail := readTask(t, srv.store, task)
 	if detail.Agent != "" || detail.Start.PauseLimits != defaultPauseLimits || detail.Priority != PriorityNormal || detail.Start.Tools != nil {
 		t.Errorf("task = %+v, start %+v; want the defaults", detail.taskSummary, detail.Start)
+	}
+}
+
+func TestGivenRunningParentWhenItSpawnsAChildAsAnAgentThenTheChildHasTheAgentsSettingsAndTheParentsWhereTheAgentSetsNone(t *testing.T) {
+	store, _ := openTestStore(t)
+	taskIn(t, store, "parent", TaskRunning)
+	createAgents(t, store, Agent{Name: "reviewer", SystemPrompt: "You review.", Model: "opus", Tools: []string{}, Priority: PriorityLow, Requires: Labels{}})
+
+	if _, err := store.spawnTask(t.Context(), "laptop", "parent", "child", protocol.Spawn{Prompt: "Review.", Agent: "reviewer"}); err != nil {
+		t.Fatal(err)
+	}
+
+	child, parent := readTask(t, store, "child"), readTask(t, store, "parent")
+	if child.Agent != "reviewer" || child.Model != "opus" || child.Priority != PriorityLow || child.Start.PauseLimits != parent.Start.PauseLimits ||
+		child.Start.Tools == nil || len(child.Start.Tools) != 0 {
+		t.Errorf("child = %+v, start %+v; want the reviewer's settings and the parent's pause limits", child.taskSummary, child.Start)
+	}
+	want := systemPrompt(fromTask("parent"), []string{}, "You review.")
+	if child.Start.SystemPrompt != want {
+		t.Errorf("system prompt = %q\nwant %q", child.Start.SystemPrompt, want)
+	}
+}
+
+func TestGivenSpawnNamingNoAgentThereIsWhenRequestedThenItIsRefusedForTheAgentToRead(t *testing.T) {
+	store, _ := openTestStore(t)
+	taskIn(t, store, "parent", TaskRunning)
+
+	_, err := store.spawnTask(t.Context(), "laptop", "parent", "child", protocol.Spawn{Prompt: "Review.", Agent: "nobody"})
+
+	if !errors.Is(err, errRefused) || !strings.Contains(err.Error(), `there is no agent "nobody"`) {
+		t.Errorf("err = %v, want a refusal naming the agent", err)
+	}
+}
+
+func TestGivenTaskNotAllowedAToolWhenItsAgentCallsItAnywayThenTheServerRefuses(t *testing.T) {
+	store, _ := openTestStore(t)
+	taskIn(t, store, "task", TaskRunning)
+	taskIn(t, store, "other", TaskRunning)
+	if _, err := store.db.ExecContext(t.Context(), `UPDATE tasks SET tools = '[]' WHERE id = 'task'`); err != nil {
+		t.Fatal(err)
+	}
+
+	_, spawnErr := store.spawnTask(t.Context(), "laptop", "task", "child", protocol.Spawn{Prompt: "p"})
+	_, sendErr := store.sendMessage(t.Context(), "laptop", "task", protocol.Send{To: "other", Text: "hi"})
+
+	if !errors.Is(spawnErr, errRefused) || !errors.Is(sendErr, errRefused) {
+		t.Errorf("spawn err = %v, send err = %v; want both refused", spawnErr, sendErr)
 	}
 }

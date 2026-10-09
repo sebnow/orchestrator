@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"time"
 
@@ -49,8 +50,13 @@ func requireRunning(ctx context.Context, tx *sql.Tx, daemon protocol.DaemonID, t
 // an agent of parent running on daemon. The start goes to parent's
 // daemon unless that has no free slot when it is admitted
 // (docs/adr/2026-10-08-scheduling.md). The child works in a fresh copy of
-// parent's workspace, with parent's pause limits, priority and filler
-// flag, and with parent's model unless spawn names one.
+// parent's workspace. Started as the agent spawn names, it has the
+// agent's tools, priority and filler flag, and the agent's model and
+// pause limits, or else parent's
+// (docs/adr/2026-10-09-agents-and-placement.md); started as none, it has
+// every tool and parent's settings. A model spawn names wins over both.
+// A parent not allowed spawn_task, or a spawn naming no agent there is,
+// is refused with errRefused.
 func (s *Store) spawnTask(ctx context.Context, daemon protocol.DaemonID, parent, child protocol.TaskID, spawn protocol.Spawn) (queuedTurn, error) {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -58,6 +64,9 @@ func (s *Store) spawnTask(ctx context.Context, daemon protocol.DaemonID, parent,
 	}
 	defer tx.Rollback()
 	if err := requireRunning(ctx, tx, daemon, parent); err != nil {
+		return queuedTurn{}, err
+	}
+	if err := requireTool(ctx, tx, parent, protocol.ToolSpawnTask); err != nil {
 		return queuedTurn{}, err
 	}
 	var model, priority string
@@ -71,20 +80,41 @@ func (s *Store) spawnTask(ctx context.Context, daemon protocol.DaemonID, parent,
 		return queuedTurn{}, fmt.Errorf("read task %q: %w", parent, err)
 	}
 	start := protocol.StartTask{
-		Prompt:       spawn.Prompt,
-		SystemPrompt: systemPrompt(&parent, nil),
-		Model:        model,
-		PauseLimits:  protocol.PauseLimits{Acknowledge: time.Duration(acknowledge), Cleanup: time.Duration(cleanup)},
+		Prompt:      spawn.Prompt,
+		Model:       model,
+		PauseLimits: protocol.PauseLimits{Acknowledge: time.Duration(acknowledge), Cleanup: time.Duration(cleanup)},
+	}
+	var agentPrompt string
+	if spawn.Agent != "" {
+		a, err := queryAgent(ctx, tx, spawn.Agent)
+		if errors.Is(err, errUnknownAgent) {
+			return queuedTurn{}, fmt.Errorf("%w: there is no agent %q", errRefused, spawn.Agent)
+		}
+		if err != nil {
+			return queuedTurn{}, err
+		}
+		if a.Model != "" {
+			start.Model = a.Model
+		}
+		if a.PauseLimits != nil {
+			start.PauseLimits = *a.PauseLimits
+		}
+		start.Tools, priority, filler, agentPrompt = a.Tools, string(a.Priority), a.Filler, a.SystemPrompt
 	}
 	if spawn.Model != "" {
 		start.Model = spawn.Model
 	}
+	agents, err := queryAgents(ctx, tx)
+	if err != nil {
+		return queuedTurn{}, err
+	}
+	start.SystemPrompt = systemPrompt(&parent, start.Tools, spawnable(start.Tools, agents), agentPrompt)
 	if repo.Valid {
 		start.Workspace = &protocol.Workspace{Repo: repo.String, Ref: ref.String}
 	}
 	fx := effects{changed: []protocol.TaskID{parent}}
 	turn, err := insertTask(ctx, tx, newTask{
-		ID: child, Parent: &parent, Daemon: daemon, Placement: placementParent,
+		ID: child, Parent: &parent, Daemon: daemon, Placement: placementParent, Agent: spawn.Agent,
 		Priority: Priority(priority), Filler: filler, Start: start, Origin: originServer,
 	}, &fx)
 	if err != nil {
@@ -95,6 +125,27 @@ func (s *Store) spawnTask(ctx context.Context, daemon protocol.DaemonID, parent,
 	}
 	s.publish(&fx)
 	return turn, nil
+}
+
+// requireTool refuses, with errRefused, a request for tool from task when
+// its start does not allow tool. The daemon does not offer such a tool,
+// so this guards against a daemon that does.
+func requireTool(ctx context.Context, tx *sql.Tx, task protocol.TaskID, tool string) error {
+	var tools sql.NullString
+	if err := tx.QueryRowContext(ctx, `SELECT tools FROM tasks WHERE id = ?`, string(task)).Scan(&tools); err != nil {
+		return fmt.Errorf("read tools of task %q: %w", task, err)
+	}
+	if !tools.Valid {
+		return nil
+	}
+	var allowed []string
+	if err := json.Unmarshal([]byte(tools.String), &allowed); err != nil {
+		return fmt.Errorf("read tools of task %q: %w", task, err)
+	}
+	if !slices.Contains(allowed, tool) {
+		return fmt.Errorf("%w: task %s is not allowed %s", errRefused, task, tool)
+	}
+	return nil
 }
 
 // sendMessage puts a message from the task from, whose agent runs on
@@ -109,6 +160,9 @@ func (s *Store) sendMessage(ctx context.Context, daemon protocol.DaemonID, from 
 	}
 	defer tx.Rollback()
 	if err := requireRunning(ctx, tx, daemon, from); err != nil {
+		return false, err
+	}
+	if err := requireTool(ctx, tx, from, protocol.ToolSendMessage); err != nil {
 		return false, err
 	}
 	if send.To == from {

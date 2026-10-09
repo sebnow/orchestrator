@@ -23,11 +23,13 @@ type AgentRequest struct {
 	Payload json.RawMessage  `json:"payload"`
 }
 
-// Spawn starts a child task with Prompt. An empty Model leaves the choice
-// to the server.
+// Spawn starts a child task with Prompt, as the agent named Agent when
+// that is set (docs/adr/2026-10-09-agents-and-placement.md). An empty
+// Model leaves the choice to the server.
 type Spawn struct {
 	Prompt string `json:"prompt"`
 	Model  string `json:"model,omitempty"`
+	Agent  string `json:"agent,omitempty"`
 }
 
 // Spawned names the child task a Spawn started.

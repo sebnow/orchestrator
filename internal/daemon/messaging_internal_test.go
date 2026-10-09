@@ -141,3 +141,26 @@ func requireOnlyPauseAndPermissionTools(t *testing.T, proc *fakeProcess) {
 		}
 	}
 }
+
+func TestGivenAgentWhenAParentSpawnsAChildAsItThenTheChildRunsWithOnlyTheAgentsTools(t *testing.T) {
+	srv := startServer(t)
+	d := runDaemon(t, srv.url, t.TempDir())
+	srv.call(t, http.MethodPost, "/v1/agents", map[string]any{"name": "reviewer", "tools": []string{}}, nil)
+	parent := srv.createTask(t, testDaemon, protocol.StartTask{Prompt: "Spawn a reviewer.", PauseLimits: testPauseLimits})
+	parentProc := d.nextProcess(t)
+	parentProc.nextInput(t)
+
+	callTool(t, parentProc, SpawnTaskTool, map[string]any{"prompt": "Review.", "agent": "reviewer"})
+
+	childProc := d.nextProcess(t)
+	requireOnlyPauseAndPermissionTools(t, childProc)
+	type listed struct {
+		Agent    string           `json:"agent"`
+		ParentID *protocol.TaskID `json:"parent_id"`
+	}
+	var children []listed
+	srv.call(t, http.MethodGet, "/v1/tasks", nil, &children)
+	if !slices.ContainsFunc(children, func(c listed) bool { return c.ParentID != nil && *c.ParentID == parent && c.Agent == "reviewer" }) {
+		t.Errorf("tasks = %+v, want a reviewer child of %s", children, parent)
+	}
+}
