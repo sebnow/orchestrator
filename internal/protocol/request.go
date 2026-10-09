@@ -35,9 +35,12 @@ type Spawn struct {
 	Requires map[string]string `json:"requires,omitzero"`
 }
 
-// Spawned names the child task a Spawn started.
+// Spawned names the child task a Spawn started. Tools are the gateway
+// tools the child may call, as in StartTask.Tools: nil, as from a server
+// that predates the field, for every one of them, and empty for none.
 type Spawned struct {
-	TaskID TaskID `json:"task_id"`
+	TaskID TaskID   `json:"task_id"`
+	Tools  []string `json:"tools,omitzero"`
 }
 
 // Send sends Text to the task To.

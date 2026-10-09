@@ -49,3 +49,39 @@ func TestGivenDaemonWithoutAServerWhenAnAgentSpawnsThenItIsToldTheDaemonIsNotCon
 		t.Errorf("err = %v, want errNotConnected", err)
 	}
 }
+
+func TestGivenSpawnedChildWhenTheSpawnerIsToldThenSendMessageIsNamedOnlyIfTheChildMayCallIt(t *testing.T) {
+	cases := map[string]struct {
+		reply    string
+		named    bool
+		handBack bool
+	}{
+		"every tool":      {`{"task_id":"child-1"}`, true, false},
+		"send_message":    {`{"task_id":"child-1","tools":["send_message"]}`, true, false},
+		"no tools":        {`{"task_id":"child-1","tools":[]}`, false, true},
+		"only spawn_task": {`{"task_id":"child-1","tools":["spawn_task"]}`, false, true},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			d := New(t.TempDir(), newFakeHarness(), nil, nil)
+			d.forward = func(context.Context, protocol.TaskID, protocol.AgentRequest) (json.RawMessage, error) {
+				return json.RawMessage(tc.reply), nil
+			}
+
+			text, err := d.spawnTask("task-1")(t.Context(), spawnTaskInput{Prompt: "Say PEAR."})
+
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !strings.HasPrefix(text, "Started child task child-1.") {
+				t.Errorf("text = %q, want it to name the child", text)
+			}
+			if got := strings.Contains(text, protocol.ToolSendMessage); got != tc.named {
+				t.Errorf("text = %q, names send_message: %t, want %t", text, got, tc.named)
+			}
+			if got := strings.Contains(text, "final report is delivered to you"); got != tc.handBack {
+				t.Errorf("text = %q, tells of the hand-back: %t, want %t", text, got, tc.handBack)
+			}
+		})
+	}
+}

@@ -45,6 +45,25 @@ func TestGivenRunningTaskWhenItsAgentSpawnsThenTheReplyNamesANewChildOfTheTask(t
 	}
 }
 
+func TestGivenAgentWithoutAgentToolsWhenATaskSpawnsItThenTheReplyNamesNoTools(t *testing.T) {
+	srv := startTestServer(t)
+	taskIn(t, srv.store, "parent", TaskRunning)
+	createAgents(t, srv.store, Agent{Name: "worker", Tools: []string{}, Priority: PriorityNormal, Requires: Labels{}})
+
+	status, body := postAgentRequest(t, srv, "laptop", "parent", protocol.AgentSpawn, protocol.Spawn{Prompt: "Work.", Agent: "worker"})
+
+	if status != http.StatusOK {
+		t.Fatalf("status %d: %s", status, body)
+	}
+	var spawned protocol.Spawned
+	if err := json.Unmarshal([]byte(body), &spawned); err != nil {
+		t.Fatal(err)
+	}
+	if spawned.Tools == nil || len(spawned.Tools) != 0 {
+		t.Errorf("tools = %#v in %s, want none", spawned.Tools, body)
+	}
+}
+
 func TestGivenRunningTaskWhenItsAgentSendsToAFinishedTaskThenTheReplySaysItWasDelivered(t *testing.T) {
 	srv := startTestServer(t)
 	taskIn(t, srv.store, "sender", TaskRunning)

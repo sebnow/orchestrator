@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"slices"
 	"strings"
 	"time"
 
@@ -84,9 +85,20 @@ func (d *Daemon) spawnTask(task protocol.TaskID) func(context.Context, spawnTask
 		if err := d.request(ctx, task, protocol.AgentSpawn, protocol.Spawn{Prompt: in.Prompt, Model: in.Model, Agent: in.Agent, Requires: in.Requires}, &spawned); err != nil {
 			return "", err
 		}
-		return fmt.Sprintf("Started child task %s. It works on its own and sends its result with %s. "+
-			"To wait for it, end your turn; its message arrives as your next prompt.", spawned.TaskID, SendMessageTool), nil
+		return spawnedText(spawned), nil
 	}
+}
+
+// spawnedText tells the spawning agent how the child spawned reports: by
+// send_message when its tools include it, or else by the hand-back of its
+// final reply when its turn ends.
+func spawnedText(spawned protocol.Spawned) string {
+	if spawned.Tools == nil || slices.Contains(spawned.Tools, protocol.ToolSendMessage) {
+		return fmt.Sprintf("Started child task %s. It works on its own and sends its result with %s. "+
+			"To wait for it, end your turn; its message arrives as your next prompt.", spawned.TaskID, SendMessageTool)
+	}
+	return fmt.Sprintf("Started child task %s. It works on its own; when it finishes, its final report is delivered to you. "+
+		"To wait for it, end your turn; the report arrives as your next prompt.", spawned.TaskID)
 }
 
 // sendMessage serves the gateway's send_message tool for task.

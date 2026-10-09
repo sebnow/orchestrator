@@ -15,6 +15,7 @@ func TestGivenAgentRequestsWhenMarshallingThenTheyHaveTheWireFieldNames(t *testi
 		`{"prompt":"Train.","requires":{"gpu":"nvidia"}}`: protocol.Spawn{Prompt: "Train.", Requires: map[string]string{"gpu": "nvidia"}},
 		`{"prompt":"Anywhere.","requires":{}}`:            protocol.Spawn{Prompt: "Anywhere.", Requires: map[string]string{}},
 		`{"task_id":"child-1"}`:                           protocol.Spawned{TaskID: "child-1"},
+		`{"task_id":"child-1","tools":[]}`:                protocol.Spawned{TaskID: "child-1", Tools: []string{}},
 		`{"to":"parent-1","text":"PEAR"}`:                 protocol.Send{To: "parent-1", Text: "PEAR"},
 		`{"delivered":false}`:                             protocol.Sent{},
 	} {

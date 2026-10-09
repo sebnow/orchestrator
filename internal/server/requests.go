@@ -51,7 +51,11 @@ func (s *Server) postAgentRequest(w http.ResponseWriter, r *http.Request) {
 		// rand.Text uses only letters and digits, so the id is always valid.
 		var turn queuedTurn
 		turn, err = s.store.spawnTask(r.Context(), daemon, task, protocol.TaskID(rand.Text()), spawn)
-		reply = protocol.Spawned{TaskID: turn.TaskID}
+		if err == nil {
+			var child taskDetail
+			child, err = s.store.task(r.Context(), turn.TaskID)
+			reply = protocol.Spawned{TaskID: turn.TaskID, Tools: child.Start.Tools}
+		}
 	case protocol.AgentSend:
 		var send protocol.Send
 		if err := decodeStrict(bytes.NewReader(request.Payload), &send); err != nil {
