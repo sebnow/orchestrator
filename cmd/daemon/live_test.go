@@ -22,6 +22,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"slices"
 	"strings"
 	"sync"
@@ -342,16 +343,7 @@ func newLiveSystem(t *testing.T, serverFlags ...string) liveSystem {
 	}
 	sys.daemon = filepath.Join(bin, "daemon")
 	sys.daemonArgs = append([]string{"-server", sys.server, "-state-dir", t.TempDir(), "-claude", wrapper}, daemonCredentials(t)...)
-	t.Cleanup(func() {
-		data, _ := os.ReadFile(sys.invocations)
-		sessions := 0
-		for line := range strings.Lines(string(data)) {
-			if !strings.HasPrefix(line, "--version") {
-				sessions++
-			}
-		}
-		t.Logf("claude model sessions: %d", sessions)
-	})
+	t.Cleanup(func() { t.Logf("claude model sessions: %d", sys.sessions(t)) })
 	return sys
 }
 
@@ -1204,4 +1196,116 @@ func TestLiveGivenTaskWithARepositoryWhenTheAgentCommitsEachTurnThenTheDaemonPus
 	if detail.Branch == nil || *detail.Branch != last {
 		t.Errorf("the server's task holds branch %+v, want %+v", detail.Branch, last)
 	}
+}
+
+// Cost: `claude --version` and three claude sessions: the parent's turn
+// that spawns the child, the child's one turn, and the parent's turn that
+// the child's hand-back resumes. The test fails if the daemon starts
+// claude for more than four sessions.
+func TestLiveGivenParentAgentThatSpawnsAWorkerThatCannotMessageWhenTheWorkerFinishesThenItsReplyIsHandedBackAndTheParentAnswers(t *testing.T) {
+	ctx, cancel := context.WithTimeout(t.Context(), 8*time.Minute)
+	defer cancel()
+	sys := startLiveSystem(t)
+	t.Cleanup(func() {
+		if sessions := sys.sessions(t); sessions > 4 {
+			t.Errorf("the daemon ran %d claude sessions, over the budget of 4", sessions)
+		}
+	})
+	for _, agent := range []map[string]any{
+		{"name": "live-brain", "description": "Coordinates.", "tools": []string{"spawn_task"},
+			"system_prompt": "You coordinate other agents. You do no work yourself."},
+		{"name": "live-worker", "description": "Answers with one word.", "tools": []string{}, "requires": map[string]string{"live": "yes"},
+			"system_prompt": "You answer with exactly the one word you are asked for, and nothing else."},
+	} {
+		if status := call(t, http.MethodPost, sys.server+"/v1/agents", agent, nil); status != http.StatusCreated {
+			t.Fatalf("create agent %s: %d", agent["name"], status)
+		}
+	}
+	for {
+		status, _ := postForm(t, sys.server+"/daemons/live-daemon/labels", url.Values{"labels": {"live=yes"}})
+		if status == http.StatusSeeOther {
+			break
+		}
+		if ctx.Err() != nil {
+			t.Fatalf("label the daemon: %d", status)
+		}
+		time.Sleep(500 * time.Millisecond)
+	}
+
+	parent := sys.startTaskViaGUI(t, ctx, "Use the spawn_task tool once, with agent \"live-worker\" and exactly this prompt: "+
+		`"Reply with the single word PLUM." `+
+		"Then end your turn at once, without waiting for the child or checking on it. "+
+		"When the child's report arrives, reply with the word it reported.", "agent", "live-brain")
+
+	first := sys.waitForState(t, ctx, parent, "finished", 1, nil)
+	child := sys.childOf(t, parent)
+	if child == "" {
+		_, results := sessionsAndResults(t, first)
+		t.Fatalf("the parent spawned no child; called spawn_task: %v; results %q", callsTool(first, "spawn_task"), results)
+	}
+	events := sys.waitForStateEach(t, ctx, parent, "finished", 2, nil, func() {
+		sys.answerPermissions(t, child, sys.events(t, child), nil)
+	})
+
+	var detail struct {
+		Agent    string            `json:"agent"`
+		DaemonID string            `json:"daemon_id"`
+		Requires map[string]string `json:"requires"`
+		Start    struct {
+			Tools []string `json:"tools"`
+		} `json:"start"`
+	}
+	call(t, http.MethodGet, sys.server+"/v1/tasks/"+string(child), nil, &detail)
+	if detail.Agent != "live-worker" || detail.DaemonID != "live-daemon" || detail.Requires["live"] != "yes" || detail.Start.Tools == nil || len(detail.Start.Tools) != 0 {
+		t.Errorf("child = %+v, want a live-worker on live-daemon requiring live=yes with no tools", detail)
+	}
+	childEvents := sys.events(t, child)
+	if callsTool(childEvents, "send_message") || callsTool(childEvents, "spawn_task") {
+		t.Errorf("the child called a tool its agent forbids")
+	}
+	sessions, results := sessionsAndResults(t, events)
+	requireOneSession(t, sessions)
+	if len(results) < 2 || !strings.Contains(results[len(results)-1], "PLUM") {
+		t.Errorf("parent's results = %q, want the last to contain PLUM", results)
+	}
+	page := sys.page(t, "/tasks/"+string(parent))
+	report := `Report from child <a href="/tasks/` + string(child) + `">`
+	if !strings.Contains(page, report) {
+		t.Errorf("the parent's page lacks %s", report)
+	}
+	// The hand-back is the only prompt the parent received after its first.
+	if strings.Count(page, "Owner prompted") != 1 || strings.Count(page, "Message from task") != 0 || strings.Count(page, "Report from child") != 1 {
+		t.Errorf("the parent's page has other prompts than its first and the hand-back")
+	}
+	if daemonPage := sys.page(t, "/daemons/live-daemon"); !strings.Contains(daemonPage, "<code>os="+runtime.GOOS+"</code>") {
+		t.Errorf("the daemon's page lacks the os fact it reported")
+	}
+	_, childResults := sessionsAndResults(t, childEvents)
+	t.Logf("parent %s, child %s; child's results %q; parent's %q", parent, child, childResults, results)
+}
+
+// sessions counts the claude sessions the daemon has started: every
+// invocation but `claude --version`.
+func (sys liveSystem) sessions(t *testing.T) int {
+	t.Helper()
+	data, _ := os.ReadFile(sys.invocations)
+	sessions := 0
+	for line := range strings.Lines(string(data)) {
+		if !strings.HasPrefix(line, "--version") {
+			sessions++
+		}
+	}
+	return sessions
+}
+
+// page returns the body of the server's page at path.
+func (sys liveSystem) page(t *testing.T, path string) string {
+	t.Helper()
+	resp, err := http.Get(sys.server + path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	return string(body)
 }
