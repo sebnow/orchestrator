@@ -1,9 +1,11 @@
 package server
 
 import (
+	"encoding/json"
 	"net/url"
 	"testing"
 
+	"github.com/sebnow/orchestrator/internal/harness/claude"
 	"github.com/sebnow/orchestrator/internal/protocol"
 )
 
@@ -126,4 +128,65 @@ func TestGivenAskOwnerWhenAPermissionRequestIsStoredThenItWaitsForTheOwnerWhoseA
 	page := getPage(t, srv.url+"/tasks/"+string(task))
 	requireContains(t, page, "Owner allowed request toolu_01KYWDtRqQK6PRLSQzHm7bag")
 	requireLacks(t, page, "by policy", `<h2>Permission requested</h2>`)
+}
+
+const remoteAgentRequest = `{"request_id":"toolu_01RemoteAgentRequest","tool":"Agent",` +
+	`"input":{"description":"Count files","prompt":"Count the files in this directory.","isolation":"remote"}}`
+
+func lastAnswer(t *testing.T, srv testServer) (protocol.Command, protocol.AnswerPermission) {
+	t.Helper()
+	last := lastCommand(t, srv, "laptop")
+	var answer protocol.AnswerPermission
+	if last.Kind == protocol.CommandAnswerPermission {
+		if err := json.Unmarshal(last.Payload, &answer); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return last, answer
+}
+
+func TestGivenAnyPolicyWhenTheAgentAsksToRunASubagentRemotelyThenTheServerDeniesItAndSaysToRunItLocally(t *testing.T) {
+	for name, policy := range map[string]Policy{"allow all": AllowAll{}, "ask the owner": AskOwner{}, "no policy": nil} {
+		t.Run(name, func(t *testing.T) {
+			srv := startTestServerWith(t, Options{Permissions: policy})
+			task := startTaskViaForm(t, srv, "laptop", "Count the files")
+			events := &taskEvents{task: task}
+			events.add(protocol.KindHarnessStarted, `{"pid":7,"model":"haiku","workdir":"/w"}`)
+			events.add(protocol.KindPermissionRequested, remoteAgentRequest)
+
+			events.ingest(t, srv, "laptop")
+
+			last, answer := lastAnswer(t, srv)
+			want := protocol.AnswerPermission{RequestID: "toolu_01RemoteAgentRequest", Message: claude.RemoteSubagentDenial}
+			if last.Kind != protocol.CommandAnswerPermission || answer != want {
+				t.Errorf("last command = %s %s, want the denial %+v", last.Kind, last.Payload, want)
+			}
+			if p := readProgress(t, srv.store, task); p.State != TaskRunning {
+				t.Errorf("state = %s, want running", p.State)
+			}
+			requireContains(t, getPage(t, srv.url+"/tasks/"+string(task)), "Request toolu_01RemoteAgentRequest denied by policy")
+		})
+	}
+}
+
+func TestGivenAllowAllWhenTheAgentAsksToRunASubagentLocallyThenTheServerAllowsIt(t *testing.T) {
+	for name, input := range map[string]string{
+		"no isolation": `{"description":"Count files","prompt":"Count the files in this directory."}`,
+		"a worktree":   `{"description":"Count files","prompt":"Count the files in this directory.","isolation":"worktree"}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			srv := startTestServerWith(t, Options{Permissions: AllowAll{}})
+			task := startTaskViaForm(t, srv, "laptop", "Count the files")
+			events := &taskEvents{task: task}
+			events.add(protocol.KindHarnessStarted, `{"pid":7,"model":"haiku","workdir":"/w"}`)
+			events.add(protocol.KindPermissionRequested, `{"request_id":"toolu_01LocalAgentRequest","tool":"Agent","input":`+input+`}`)
+
+			events.ingest(t, srv, "laptop")
+
+			last, answer := lastAnswer(t, srv)
+			if want := (protocol.AnswerPermission{RequestID: "toolu_01LocalAgentRequest", Allow: true}); last.Kind != protocol.CommandAnswerPermission || answer != want {
+				t.Errorf("last command = %s %s, want the allowance %+v", last.Kind, last.Payload, want)
+			}
+		})
+	}
 }

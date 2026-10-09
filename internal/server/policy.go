@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 
+	"github.com/sebnow/orchestrator/internal/harness/claude"
 	"github.com/sebnow/orchestrator/internal/protocol"
 )
 
@@ -51,7 +52,35 @@ func (AskOwner) Decide(protocol.TaskID, protocol.PermissionRequested) Decision {
 	return Decision{Verdict: VerdictAsk}
 }
 
-// answerByPolicy asks policy about each request in requests, which were
+// offMachineRule recognises the permission requests of one harness that
+// would run the agent's work off the daemon's machine, and says what the
+// agent should do instead.
+type offMachineRule struct {
+	matches func(tool string, input json.RawMessage) bool
+	message string
+}
+
+// offMachine maps the harness name events carry to its offMachineRule.
+var offMachine = map[string]offMachineRule{
+	claude.Name: {matches: claude.IsRemoteSubagent, message: claude.RemoteSubagentDenial},
+}
+
+// decidePermission answers a request of task, run by the harness named harness. Work
+// must not leave the daemon's machine, so a request that would run it
+// elsewhere is denied whatever the policy, before policy is asked
+// (docs/design/2026-10-09-remote-subagents.md). A nil policy asks the
+// owner.
+func decidePermission(policy Policy, harness string, task protocol.TaskID, request protocol.PermissionRequested) Decision {
+	if rule, ok := offMachine[harness]; ok && rule.matches(request.Tool, request.Input) {
+		return Decision{Verdict: VerdictDeny, Message: rule.message}
+	}
+	if policy == nil {
+		return Decision{Verdict: VerdictAsk}
+	}
+	return policy.Decide(task, request)
+}
+
+// answerByPolicy decides each request in requests, which were
 // stored in tx and belong to tasks of daemon, and issues the answer of
 // each one it decides. A task that ended in the same batch is skipped, as
 // its process holds no request any more.
@@ -63,7 +92,7 @@ func answerByPolicy(ctx context.Context, tx *sql.Tx, policy Policy, daemon proto
 			// answer it either.
 			continue
 		}
-		decision := policy.Decide(event.TaskID, request)
+		decision := decidePermission(policy, event.Harness.Name, event.TaskID, request)
 		if decision.Verdict == VerdictAsk {
 			continue
 		}

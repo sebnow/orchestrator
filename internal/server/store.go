@@ -480,10 +480,8 @@ func (s *Store) appendEvents(ctx context.Context, daemon protocol.DaemonID, even
 			}
 		}
 	}
-	if s.permissions != nil {
-		if err := answerByPolicy(ctx, tx, s.permissions, daemon, requests, &fx); err != nil {
-			return nil, nil, err
-		}
+	if err := answerByPolicy(ctx, tx, s.permissions, daemon, requests, &fx); err != nil {
+		return nil, nil, err
 	}
 
 	held = make(map[protocol.TaskID]uint64, len(tasks))
