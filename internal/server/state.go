@@ -306,14 +306,16 @@ type taskSummary struct {
 	// or on its parent's unless that is full.
 	DaemonID protocol.DaemonID `json:"daemon_id"`
 	// ParentID names the task that spawned this one; nil for the owner's.
-	ParentID       *protocol.TaskID `json:"parent_id,omitempty"`
-	State          TaskState        `json:"state"`
-	Model          string           `json:"model"`
-	Priority       Priority         `json:"priority"`
-	Filler         bool             `json:"filler"`
-	CreatedAt      time.Time        `json:"created_at"`
-	LastActivityAt time.Time        `json:"last_activity_at"`
-	CostUSD        float64          `json:"cost_usd"`
+	ParentID *protocol.TaskID `json:"parent_id,omitempty"`
+	// Agent names the agent the task was started as; empty for none.
+	Agent          string    `json:"agent,omitempty"`
+	State          TaskState `json:"state"`
+	Model          string    `json:"model"`
+	Priority       Priority  `json:"priority"`
+	Filler         bool      `json:"filler"`
+	CreatedAt      time.Time `json:"created_at"`
+	LastActivityAt time.Time `json:"last_activity_at"`
+	CostUSD        float64   `json:"cost_usd"`
 	// Queue is where the task's first waiting turn stands; nil when none
 	// waits for the scheduler.
 	Queue *queuePlace `json:"queue,omitempty"`
@@ -332,14 +334,14 @@ type taskDetail struct {
 	Start protocol.StartTask `json:"start"`
 }
 
-const summaryColumns = `id, daemon_id, placement, parent_id, state, model, priority, filler, created_at, last_activity_at, cost_usd, dismissed_at`
+const summaryColumns = `id, daemon_id, placement, parent_id, coalesce(agent, ''), state, model, priority, filler, created_at, last_activity_at, cost_usd, dismissed_at`
 
 // scanSummary reads summaryColumns, followed by extra destinations.
 func scanSummary(row interface{ Scan(...any) error }, extra ...any) (taskSummary, error) {
 	var summary taskSummary
 	var id, daemon, placed, state, priority, created, lastActivity string
 	var parent, dismissed sql.NullString
-	dest := append([]any{&id, &daemon, &placed, &parent, &state, &summary.Model, &priority, &summary.Filler, &created, &lastActivity, &summary.CostUSD, &dismissed}, extra...)
+	dest := append([]any{&id, &daemon, &placed, &parent, &summary.Agent, &state, &summary.Model, &priority, &summary.Filler, &created, &lastActivity, &summary.CostUSD, &dismissed}, extra...)
 	if err := row.Scan(dest...); err != nil {
 		return taskSummary{}, err
 	}
@@ -423,12 +425,12 @@ func (s *Store) task(ctx context.Context, task protocol.TaskID) (taskDetail, err
 	}
 	defer tx.Rollback()
 	var detail taskDetail
-	var repo, ref sql.NullString
+	var repo, ref, tools sql.NullString
 	var acknowledge, cleanup int64
 	row := tx.QueryRowContext(ctx, `
-		SELECT `+summaryColumns+`, prompt, system_prompt, workspace_repo, workspace_ref, pause_acknowledge_ns, pause_cleanup_ns
+		SELECT `+summaryColumns+`, prompt, system_prompt, workspace_repo, workspace_ref, pause_acknowledge_ns, pause_cleanup_ns, tools
 		FROM tasks WHERE id = ?`, string(task))
-	summary, err := scanSummary(row, &detail.Start.Prompt, &detail.Start.SystemPrompt, &repo, &ref, &acknowledge, &cleanup)
+	summary, err := scanSummary(row, &detail.Start.Prompt, &detail.Start.SystemPrompt, &repo, &ref, &acknowledge, &cleanup, &tools)
 	if errors.Is(err, sql.ErrNoRows) {
 		return taskDetail{}, fmt.Errorf("%w: %q", errUnknownTask, task)
 	}
@@ -451,6 +453,11 @@ func (s *Store) task(ctx context.Context, task protocol.TaskID) (taskDetail, err
 		detail.Start.Workspace = &protocol.Workspace{Repo: repo.String, Ref: ref.String}
 	}
 	detail.Start.PauseLimits = protocol.PauseLimits{Acknowledge: time.Duration(acknowledge), Cleanup: time.Duration(cleanup)}
+	if tools.Valid {
+		if err := json.Unmarshal([]byte(tools.String), &detail.Start.Tools); err != nil {
+			return taskDetail{}, fmt.Errorf("read tools of task %q: %w", task, err)
+		}
+	}
 	return detail, nil
 }
 

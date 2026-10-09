@@ -128,10 +128,12 @@ type newTask struct {
 	// placementParent; it is ignored for placementAny.
 	Daemon    protocol.DaemonID
 	Placement placement
-	Priority  Priority
-	Filler    bool
-	Start     protocol.StartTask
-	Origin    turnOrigin
+	// Agent names the agent the task is started as; empty for none.
+	Agent    string
+	Priority Priority
+	Filler   bool
+	Start    protocol.StartTask
+	Origin   turnOrigin
 }
 
 // createTask records task, queued, with its start as a pending turn. Its
@@ -176,6 +178,14 @@ func (s *Store) createTask(ctx context.Context, task newTask) (queuedTurn, error
 	return turn, nil
 }
 
+// nullableAgent is an agent's name as a query argument: NULL for none.
+func nullableAgent(name string) any {
+	if name == "" {
+		return nil
+	}
+	return name
+}
+
 // insertTask records task, queued, and queues its start.
 func insertTask(ctx context.Context, tx *sql.Tx, task newTask, fx *effects) (queuedTurn, error) {
 	payload, err := json.Marshal(task.Start)
@@ -183,6 +193,14 @@ func insertTask(ctx context.Context, tx *sql.Tx, task newTask, fx *effects) (que
 		return queuedTurn{}, fmt.Errorf("encode start_task: %w", err)
 	}
 	start := task.Start
+	var tools any
+	if start.Tools != nil {
+		encoded, err := json.Marshal(start.Tools)
+		if err != nil {
+			return queuedTurn{}, fmt.Errorf("encode tools: %w", err)
+		}
+		tools = string(encoded)
+	}
 	var repo, ref any
 	if start.Workspace != nil {
 		repo, ref = start.Workspace.Repo, start.Workspace.Ref
@@ -190,10 +208,11 @@ func insertTask(ctx context.Context, tx *sql.Tx, task newTask, fx *effects) (que
 	created := formatTime(time.Now().UTC())
 	_, err = tx.ExecContext(ctx, `
 		INSERT INTO tasks (id, daemon_id, parent_id, state, created_at, last_activity_at, prompt, system_prompt, workspace_repo, workspace_ref, model,
-			pause_acknowledge_ns, pause_cleanup_ns, priority, filler, placement)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			pause_acknowledge_ns, pause_cleanup_ns, priority, filler, placement, agent, tools)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		string(task.ID), string(task.Daemon), nullableID(task.Parent), string(TaskQueued), created, created, start.Prompt, start.SystemPrompt, repo, ref,
-		start.Model, int64(start.PauseLimits.Acknowledge), int64(start.PauseLimits.Cleanup), string(task.Priority), task.Filler, string(task.Placement))
+		start.Model, int64(start.PauseLimits.Acknowledge), int64(start.PauseLimits.Cleanup), string(task.Priority), task.Filler, string(task.Placement),
+		nullableAgent(task.Agent), tools)
 	if err != nil {
 		return queuedTurn{}, fmt.Errorf("create task %q: %w", task.ID, err)
 	}

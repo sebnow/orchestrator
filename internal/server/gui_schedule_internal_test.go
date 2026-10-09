@@ -72,14 +72,14 @@ func TestGivenQueuedTasksAndAReadingWhenTheDashboardIsShownThenItShowsPlacesReas
 	page := getPage(t, srv.url+"/")
 
 	requireContains(t, page,
-		`<td><span class="badge state-queued">queued #1</span><span class="reason"> slots: daemon laptop has no free slot</span></td><td><a href="/tasks/`+string(waiting)+`">Count to three</a></td><td>low</td>`,
-		`<td><span class="badge state-queued">queued #2</span><span class="reason"> priority: non-filler turns are waiting for a slot</span></td><td><a href="/tasks/`+string(filler)+`">Tidy the docs</a></td><td>high, filler</td><td></td>`,
-		`<td><span class="badge state-running">running</span></td><td><a href="/tasks/`+string(running)+`">Touch two files</a></td><td>normal</td><td>laptop</td>`,
+		`<td><span class="badge state-queued">queued #1</span><span class="reason"> slots: daemon laptop has no free slot</span></td><td><a href="/tasks/`+string(waiting)+`">Count to three</a></td><td></td><td>low</td>`,
+		`<td><span class="badge state-queued">queued #2</span><span class="reason"> priority: non-filler turns are waiting for a slot</span></td><td><a href="/tasks/`+string(filler)+`">Tidy the docs</a></td><td></td><td>high, filler</td><td></td>`,
+		`<td><span class="badge state-running">running</span></td><td><a href="/tasks/`+string(running)+`">Touch two files</a></td><td></td><td>normal</td><td>laptop</td>`,
 		`<h2>Budget</h2>`, "42% used", "Taken 5 minutes ago",
 		"Filler runs while the five-hour window is below 50% used, low priority below 85%",
 		`<td>laptop</td><td>claude-code 2.1.289</td>`, `<td>yes</td><td>1 of 1 in use</td>`,
 		`<option value="" selected="">Any connected daemon</option>`,
-		`<option value="normal" selected="">normal</option>`,
+		`<option value="" selected="">The agent&#39;s, or normal</option>`,
 		`<input name="filler" type="checkbox" value="on">`,
 	)
 }

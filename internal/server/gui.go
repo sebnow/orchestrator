@@ -17,12 +17,6 @@ import (
 	"github.com/sebnow/orchestrator/internal/transcript"
 )
 
-// The pause limits the new-task form starts with.
-const (
-	defaultPauseAcknowledge = "1m"
-	defaultPauseCleanup     = "5m"
-)
-
 // routeGUI serves the owner's GUI: server-rendered pages whose forms POST
 // to the routes below and work with JavaScript off, and which htmx keeps
 // current when it is on.
@@ -64,6 +58,7 @@ func redirect(w http.ResponseWriter, r *http.Request, url string) {
 func guiTask(summary taskSummary, prompt string) component.Task {
 	task := component.Task{
 		ID:             string(summary.ID),
+		Agent:          summary.Agent,
 		State:          string(summary.State),
 		Daemon:         string(summary.DaemonID),
 		Model:          summary.Model,
@@ -104,7 +99,7 @@ func showsDismissed(r *http.Request) bool {
 }
 
 func (s *Server) getDashboard(w http.ResponseWriter, r *http.Request) {
-	s.writeDashboard(w, r, http.StatusOK, component.NewTask{Acknowledge: defaultPauseAcknowledge, Cleanup: defaultPauseCleanup, Priority: string(PriorityNormal)}, "")
+	s.writeDashboard(w, r, http.StatusOK, component.NewTask{}, "")
 }
 
 // writeDashboard writes the dashboard with input in the new-task form,
@@ -116,11 +111,29 @@ func (s *Server) writeDashboard(w http.ResponseWriter, r *http.Request, status i
 		s.internalError(w, err)
 		return
 	}
+	form, err := s.newTaskForm(r.Context(), input, daemons, problem, "")
+	if err != nil {
+		s.internalError(w, err)
+		return
+	}
 	s.writeHTML(w, status, component.Page("Tasks",
 		component.Refreshing(component.RegionDashboard, component.DashboardURL(shown), lists),
-		component.Section("New task", component.RegionOf(component.RegionNewTask,
-			component.NewTaskForm(input, daemons, s.defaultModel, problem, ""))),
+		component.Section("New task", component.RegionOf(component.RegionNewTask, form)),
 	))
+}
+
+// newTaskForm is the new-task form with input, offering daemons and
+// every agent.
+func (s *Server) newTaskForm(ctx context.Context, input component.NewTask, daemons []string, problem, created string) (html.Node, error) {
+	agents, err := s.store.agents(ctx)
+	if err != nil {
+		return nil, err
+	}
+	names := make([]string, len(agents))
+	for idx, a := range agents {
+		names[idx] = a.Name
+	}
+	return component.NewTaskForm(input, daemons, names, s.defaultModel, defaultPauseLimits.Acknowledge.String(), defaultPauseLimits.Cleanup.String(), problem, created), nil
 }
 
 // dashboardLists renders the tasks needing attention, every task, newest
@@ -283,6 +296,7 @@ func (s *Server) postTaskForm(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	input := component.NewTask{
+		Agent:       r.PostForm.Get("agent"),
 		Prompt:      r.PostForm.Get("prompt"),
 		Repo:        strings.TrimSpace(r.PostForm.Get("repo")),
 		Ref:         strings.TrimSpace(r.PostForm.Get("ref")),
@@ -305,8 +319,12 @@ func (s *Server) postTaskForm(w http.ResponseWriter, r *http.Request) {
 			s.internalError(w, err)
 			return
 		}
-		s.writeHTML(w, http.StatusUnprocessableEntity, component.OutOfBand(component.RegionNewTask,
-			component.NewTaskForm(input, daemons, s.defaultModel, problem, "")))
+		form, err := s.newTaskForm(r.Context(), input, daemons, problem, "")
+		if err != nil {
+			s.internalError(w, err)
+			return
+		}
+		s.writeHTML(w, http.StatusUnprocessableEntity, component.OutOfBand(component.RegionNewTask, form))
 	case problem != "":
 		s.writeDashboard(w, r, http.StatusUnprocessableEntity, input, problem)
 	case fromHTMX(r):
@@ -315,10 +333,14 @@ func (s *Server) postTaskForm(w http.ResponseWriter, r *http.Request) {
 			s.internalError(w, err)
 			return
 		}
-		fresh := component.NewTask{Daemon: input.Daemon, Acknowledge: input.Acknowledge, Cleanup: input.Cleanup, Priority: input.Priority, Filler: input.Filler}
+		fresh := component.NewTask{Agent: input.Agent, Daemon: input.Daemon, Acknowledge: input.Acknowledge, Cleanup: input.Cleanup, Priority: input.Priority, Filler: input.Filler}
+		form, err := s.newTaskForm(r.Context(), fresh, daemons, "", string(task))
+		if err != nil {
+			s.internalError(w, err)
+			return
+		}
 		s.writeHTML(w, http.StatusOK, html.Fragment(
-			component.OutOfBand(component.RegionNewTask,
-				component.NewTaskForm(fresh, daemons, s.defaultModel, "", string(task))),
+			component.OutOfBand(component.RegionNewTask, form),
 			component.OutOfBand(component.RegionDashboard, lists),
 		))
 	default:
@@ -337,22 +359,34 @@ func (s *Server) startTaskFromForm(ctx context.Context, input component.NewTask)
 			return "", "Choose a daemon to run the task on, or any.", nil
 		}
 	}
-	priority, err := ParsePriority(input.Priority)
-	if err != nil {
-		return "", "Choose low, normal or high priority.", nil
+	var priority Priority
+	if input.Priority != "" {
+		var err error
+		if priority, err = ParsePriority(input.Priority); err != nil {
+			return "", "Choose low, normal or high priority.", nil
+		}
 	}
-	acknowledge, err := time.ParseDuration(input.Acknowledge)
-	if err != nil {
-		return "", "The acknowledge limit is not a duration such as 1m or 90s.", nil
-	}
-	cleanup, err := time.ParseDuration(input.Cleanup)
-	if err != nil {
-		return "", "The cleanup limit is not a duration such as 5m.", nil
+	// Blank pause limits are the agent's, or else the defaults.
+	var limits protocol.PauseLimits
+	switch {
+	case input.Acknowledge == "" && input.Cleanup == "" && input.Agent != "":
+	case input.Acknowledge == "" && input.Cleanup == "":
+		limits = defaultPauseLimits
+	case input.Acknowledge == "" || input.Cleanup == "":
+		return "", "Give both pause limits, or neither for the agent's or the defaults.", nil
+	default:
+		var err error
+		if limits.Acknowledge, err = time.ParseDuration(input.Acknowledge); err != nil {
+			return "", "The acknowledge limit is not a duration such as 1m or 90s.", nil
+		}
+		if limits.Cleanup, err = time.ParseDuration(input.Cleanup); err != nil {
+			return "", "The cleanup limit is not a duration such as 5m.", nil
+		}
 	}
 	start := protocol.StartTask{
 		Prompt:      input.Prompt,
 		Model:       input.Model,
-		PauseLimits: protocol.PauseLimits{Acknowledge: acknowledge, Cleanup: cleanup},
+		PauseLimits: limits,
 	}
 	if input.Repo != "" || input.Ref != "" {
 		start.Workspace = &protocol.Workspace{Repo: input.Repo, Ref: input.Ref}
@@ -360,10 +394,19 @@ func (s *Server) startTaskFromForm(ctx context.Context, input component.NewTask)
 	if strings.TrimSpace(start.Prompt) == "" {
 		return "", "Write a prompt for the task.", nil
 	}
-	if err := validateStart(start); err != nil {
-		return "", "The task was not started: " + err.Error() + ".", nil
+	// An unticked box leaves the agent's choice.
+	var filler *bool
+	if input.Filler != "" {
+		on := true
+		filler = &on
 	}
-	turn, err := s.startTask(ctx, daemon, priority, input.Filler != "", start)
+	turn, err := s.startTask(ctx, taskRequest{Daemon: daemon, Agent: input.Agent, Priority: priority, Filler: filler, Start: start})
+	if errors.Is(err, errInvalidTask) {
+		return "", "The task was not started: " + strings.TrimPrefix(err.Error(), errInvalidTask.Error()+": ") + ".", nil
+	}
+	if errors.Is(err, errUnknownAgent) {
+		return "", "There is no agent " + input.Agent + ".", nil
+	}
 	if errors.Is(err, errUnknownDaemon) {
 		return "", "Daemon " + input.Daemon + " has not connected yet.", nil
 	}

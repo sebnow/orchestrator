@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/sebnow/orchestrator/internal/protocol"
@@ -104,7 +105,13 @@ func agentValues(a Agent) []any {
 
 // agents returns every agent, by name.
 func (s *Store) agents(ctx context.Context) ([]Agent, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT `+agentColumns+` FROM agents ORDER BY name`)
+	return queryAgents(ctx, s.db)
+}
+
+func queryAgents(ctx context.Context, db interface {
+	QueryContext(ctx context.Context, query string, args ...any) (*sql.Rows, error)
+}) ([]Agent, error) {
+	rows, err := db.QueryContext(ctx, `SELECT `+agentColumns+` FROM agents ORDER BY name`)
 	if err != nil {
 		return nil, fmt.Errorf("read agents: %w", err)
 	}
@@ -209,6 +216,23 @@ func (s *Store) deleteAgent(ctx context.Context, name string) error {
 		return fmt.Errorf("%w: %q", errUnknownAgent, name)
 	}
 	return tx.Commit()
+}
+
+// agentsPrompt lists agents for a task that may spawn them, or returns ""
+// when there are none.
+func agentsPrompt(agents []Agent) string {
+	if len(agents) == 0 {
+		return ""
+	}
+	lines := []string{"You can start a child task as one of these agents by giving its name as spawn_task's agent:"}
+	for _, a := range agents {
+		line := "- " + a.Name
+		if description := strings.Join(strings.Fields(a.Description), " "); description != "" {
+			line += ": " + description
+		}
+		lines = append(lines, line)
+	}
+	return strings.Join(lines, "\n")
 }
 
 // getAgents lists every agent, by name.

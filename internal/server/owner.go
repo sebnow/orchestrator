@@ -12,6 +12,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/sebnow/orchestrator/internal/protocol"
 )
@@ -21,11 +22,14 @@ import (
 const maxOwnerRequestBytes = 1 << 20
 
 // createTaskRequest is the body of POST /v1/tasks: the start_task payload,
-// the daemon to run it on, or none for any, and how it is scheduled.
+// the daemon to run it on, or none for any, how it is scheduled, and the
+// agent it is started as, if any. A field left out takes the agent's
+// value (docs/adr/2026-10-09-agents-and-placement.md).
 type createTaskRequest struct {
 	DaemonID protocol.DaemonID `json:"daemon_id"`
+	Agent    string            `json:"agent"`
 	Priority string            `json:"priority"`
-	Filler   bool              `json:"filler"`
+	Filler   *bool             `json:"filler"`
 	protocol.StartTask
 }
 
@@ -51,16 +55,23 @@ func (s *Server) postTask(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	priority, err := ParsePriority(request.Priority)
-	if err != nil {
+	var priority Priority
+	if request.Priority != "" {
+		var err error
+		if priority, err = ParsePriority(request.Priority); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+	}
+	turn, err := s.startTask(r.Context(), taskRequest{Daemon: daemon, Agent: request.Agent, Priority: priority, Filler: request.Filler, Start: request.StartTask})
+	if errors.Is(err, errInvalidTask) {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
-	if err := validateStart(request.StartTask); err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
+	if errors.Is(err, errUnknownAgent) {
+		http.Error(w, err.Error(), http.StatusUnprocessableEntity)
 		return
 	}
-	turn, err := s.startTask(r.Context(), daemon, priority, request.Filler, request.StartTask)
 	if errors.Is(err, errUnknownDaemon) {
 		http.Error(w, err.Error()+": it has not connected yet", http.StatusUnprocessableEntity)
 		return
@@ -76,28 +87,103 @@ func (s *Server) postTask(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusCreated, turn)
 }
 
-// startTask creates a task under a new id, on daemon or, when that is
-// empty, on any connected daemon, with the default model when start names
-// none and the composed system prompt, and returns its queued start.
-func (s *Server) startTask(ctx context.Context, daemon protocol.DaemonID, priority Priority, filler bool, start protocol.StartTask) (queuedTurn, error) {
+// taskRequest is a task the owner asks for. An empty Daemon is any
+// connected daemon. Agent names the agent the task is started as, if
+// any, whose values the task takes where the request leaves them out:
+// an empty Priority, a nil Filler, an empty Start.Model, a nil
+// Start.Tools and zero Start.PauseLimits.
+type taskRequest struct {
+	Daemon   protocol.DaemonID
+	Agent    string
+	Priority Priority
+	Filler   *bool
+	Start    protocol.StartTask
+}
+
+// defaultPauseLimits are the pause limits of a task started as an agent
+// that sets none, and the GUI's for a task it leaves them out of.
+var defaultPauseLimits = protocol.PauseLimits{Acknowledge: time.Minute, Cleanup: 5 * time.Minute}
+
+// errInvalidTask reports a task request that is refused as it stands.
+var errInvalidTask = errors.New("invalid task")
+
+// startTask creates the task request asks for under a new id, and
+// returns its queued start. What the request and its agent leave out is
+// the defaults: normal priority, not filler, the server's model, and
+// both gateway tools. The system prompt is composed from the server's
+// instructions, the agent's system prompt and the request's.
+func (s *Server) startTask(ctx context.Context, request taskRequest) (queuedTurn, error) {
+	start := request.Start
+	priority, filler := request.Priority, false
+	var agentPrompt string
+	if request.Agent != "" {
+		a, err := s.store.agent(ctx, request.Agent)
+		if err != nil {
+			return queuedTurn{}, err
+		}
+		applyAgent(&start, a)
+		if priority == "" {
+			priority = a.Priority
+		}
+		filler, agentPrompt = a.Filler, a.SystemPrompt
+	}
+	if request.Filler != nil {
+		filler = *request.Filler
+	}
+	if priority == "" {
+		priority = PriorityNormal
+	}
 	if start.Model == "" {
 		start.Model = s.defaultModel
 	}
-	start.SystemPrompt = systemPrompt(nil, start.Tools, start.SystemPrompt)
+	if err := validateStart(start); err != nil {
+		return queuedTurn{}, fmt.Errorf("%w: %v", errInvalidTask, err)
+	}
+	agents, err := s.store.agents(ctx)
+	if err != nil {
+		return queuedTurn{}, err
+	}
+	start.SystemPrompt = systemPrompt(nil, start.Tools, spawnable(start.Tools, agents), agentPrompt, start.SystemPrompt)
 	placed := placementBound
-	if daemon == "" {
+	if request.Daemon == "" {
 		placed = placementAny
 	}
 	return s.store.createTask(ctx, newTask{
 		// rand.Text uses only letters and digits, so the id is always valid.
 		ID:        protocol.TaskID(rand.Text()),
-		Daemon:    daemon,
+		Daemon:    request.Daemon,
 		Placement: placed,
+		Agent:     request.Agent,
 		Priority:  priority,
 		Filler:    filler,
 		Start:     start,
 		Origin:    originOwner,
 	})
+}
+
+// applyAgent fills in what start leaves out from agent a: its model, its
+// tools, and its pause limits, or the default ones when a has none.
+func applyAgent(start *protocol.StartTask, a Agent) {
+	if start.Model == "" {
+		start.Model = a.Model
+	}
+	if start.Tools == nil {
+		start.Tools = a.Tools
+	}
+	if start.PauseLimits == (protocol.PauseLimits{}) {
+		start.PauseLimits = defaultPauseLimits
+		if a.PauseLimits != nil {
+			start.PauseLimits = *a.PauseLimits
+		}
+	}
+}
+
+// spawnable lists agents for a task allowed tools, if those let it spawn.
+func spawnable(tools []string, agents []Agent) string {
+	if tools != nil && !slices.Contains(tools, protocol.ToolSpawnTask) {
+		return ""
+	}
+	return agentsPrompt(agents)
 }
 
 func validateStart(start protocol.StartTask) error {

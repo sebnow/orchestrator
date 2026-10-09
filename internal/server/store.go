@@ -122,6 +122,9 @@ var migrations = [...]string{
 	) STRICT;
 	ALTER TABLE tasks ADD COLUMN agent TEXT REFERENCES agents (name);
 	CREATE INDEX tasks_by_agent ON tasks (agent);`,
+	// Version 11 keeps the gateway tools each task's start allows, as a
+	// JSON array, NULL for every tool as before agents.
+	`ALTER TABLE tasks ADD COLUMN tools TEXT;`,
 }
 
 // schemaVersion is the version this server migrates databases to. A

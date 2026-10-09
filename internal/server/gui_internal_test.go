@@ -91,7 +91,7 @@ func requireLacks(t *testing.T, page string, unwanted ...string) {
 
 func startForm(daemon, prompt string) url.Values {
 	return url.Values{"prompt": {prompt}, "daemon": {daemon}, "repo": {""}, "ref": {""}, "model": {""},
-		"acknowledge": {defaultPauseAcknowledge}, "cleanup": {defaultPauseCleanup}}
+		"acknowledge": {"1m"}, "cleanup": {"5m"}}
 }
 
 // startTaskViaForm has daemon seen, starts a task on it through the
@@ -191,7 +191,7 @@ func TestGivenTasksAndAQuotaReadingWhenDashboardRequestedThenAttentionTasksDaemo
 		`hx-trigger="every 5s"`,
 		`<form method="post" action="/tasks"`,
 		`<option value="laptop">laptop</option>`,
-		`placeholder="default: `+testDefaultModel+`"`,
+		`placeholder="the agent&#39;s, or `+testDefaultModel+`"`,
 	)
 	if waitingAt, pausedAt := strings.Index(page, "Touch two files</a></td>"), strings.Index(page, "Run ping five times…</a></td>"); waitingAt < 0 || pausedAt < waitingAt {
 		t.Errorf("task table is not newest first")

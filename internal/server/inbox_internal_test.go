@@ -374,7 +374,7 @@ func TestGivenOwnersTaskAndChildWhenStartedThenEachSystemPromptExplainsMessaging
 		t.Fatal(err)
 	}
 	start := protocol.StartTask{Prompt: "Plan.", SystemPrompt: "Be brief.", PauseLimits: testStart.PauseLimits}
-	command, err := srv.startTask(t.Context(), "laptop", PriorityNormal, false, start)
+	command, err := srv.startTask(t.Context(), taskRequest{Daemon: "laptop", Start: start})
 	if err != nil {
 		t.Fatal(err)
 	}

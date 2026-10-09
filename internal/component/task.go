@@ -15,7 +15,9 @@ import (
 // Task is a task as the GUI shows it. State is the server's name for the
 // task's state.
 type Task struct {
-	ID             string
+	ID string
+	// Agent names the agent the task was started as; empty for none.
+	Agent          string
 	State          string
 	Daemon         string
 	Model          string
@@ -104,13 +106,14 @@ func priorityLabel(task Task) string {
 }
 
 // TaskColumns head a Table of TaskRows.
-var TaskColumns = []string{"State", "Prompt", "Priority", "Daemon", "Model", "Cost", "Last activity", "Branch"}
+var TaskColumns = []string{"State", "Prompt", "Agent", "Priority", "Daemon", "Model", "Cost", "Last activity", "Branch"}
 
 // TaskRow is a task in the task list, linking to its page.
 func TaskRow(task Task) html.Node {
 	return html.El("tr", nil,
 		cell(queueBadges(task), queueReason(task), dismissedMark(task)),
 		cell(link(taskURL(task.ID), excerpt(task.Prompt)), lineage(task.Parent)),
+		cell(agentLink(task.Agent)),
 		cell(html.Text(priorityLabel(task))),
 		cell(html.Text(task.Daemon)),
 		cell(html.Text(task.Model)),
@@ -118,6 +121,14 @@ func TaskRow(task Task) html.Node {
 		cell(timestamp(task.LastActivityAt)),
 		cell(branchCell(task.Branch)),
 	)
+}
+
+// agentLink links the agent name, or is empty for none.
+func agentLink(name string) html.Node {
+	if name == "" {
+		return nil
+	}
+	return link(agentURL(name), name)
 }
 
 // dismissedMark marks a dismissed task, or is empty.
@@ -166,7 +177,10 @@ func TaskHeader(task Task, controls html.Node) html.Node {
 	term := func(name string, value html.Node) html.Node {
 		return html.Fragment(html.El("dt", nil, html.Text(name)), html.El("dd", nil, value))
 	}
-	var parent, children, queue, dismissed html.Node
+	var parent, children, queue, dismissed, agent html.Node
+	if task.Agent != "" {
+		agent = term("Agent", agentLink(task.Agent))
+	}
 	var branch html.Node
 	if task.Branch != nil {
 		branch = term("Branch", branchDetail(*task.Branch))
@@ -195,6 +209,7 @@ func TaskHeader(task Task, controls html.Node) html.Node {
 		html.El("dl", nil,
 			term("State", queueBadges(task)),
 			queue,
+			agent,
 			term("Priority", html.Text(task.Priority)),
 			term("Filler", html.Text(yesNo(task.Filler))),
 			term("Daemon", html.Text(task.Daemon)),
@@ -340,9 +355,11 @@ func PromptSubmit(closed string) html.Node {
 	return Button("Send", VariantPrimary, "", "")
 }
 
-// NewTask is what the owner entered to start a task. An empty Daemon is
-// any connected daemon.
+// NewTask is what the owner entered to start a task. An empty Agent is
+// none, and an empty Daemon any connected daemon. What is left empty,
+// or Filler unticked, takes the agent's value, or the default.
 type NewTask struct {
+	Agent                            string
 	Prompt, Repo, Ref, Model, Daemon string
 	// Acknowledge and Cleanup are the pause limits as Go durations.
 	Acknowledge, Cleanup string
@@ -354,9 +371,11 @@ type NewTask struct {
 // Priorities are the priorities a task can have, lowest first.
 var Priorities = []string{"low", "normal", "high"}
 
-// NewTaskForm starts a task on one of daemons, or on any. created, when
-// set, is the id of the task the last submission started.
-func NewTaskForm(input NewTask, daemons []string, defaultModel, problem, created string) html.Node {
+// NewTaskForm starts a task, as one of agents or none, on one of
+// daemons, or on any. The defaults are what a field left empty without
+// an agent gives. created, when set, is the id of the task the last
+// submission started.
+func NewTaskForm(input NewTask, daemons, agents []string, defaultModel, defaultAcknowledge, defaultCleanup, problem, created string) html.Node {
 	var notice, noDaemons html.Node
 	if created != "" {
 		notice = html.El("p", attrs("class", "notice"), html.Text("Started task "), link(taskURL(created), created), html.Text("."))
@@ -368,22 +387,27 @@ func NewTaskForm(input NewTask, daemons []string, defaultModel, problem, created
 	for _, daemon := range daemons {
 		daemonOptions = append(daemonOptions, Option{Value: daemon, Label: daemon})
 	}
-	priorityOptions := make([]Option, len(Priorities))
-	for idx, priority := range Priorities {
-		priorityOptions[idx] = Option{Value: priority, Label: priority}
+	agentOptions := []Option{{Value: "", Label: "None"}}
+	for _, agent := range agents {
+		agentOptions = append(agentOptions, Option{Value: agent, Label: agent})
+	}
+	priorityOptions := []Option{{Value: "", Label: "The agent's, or normal"}}
+	for _, priority := range Priorities {
+		priorityOptions = append(priorityOptions, Option{Value: priority, Label: priority})
 	}
 	return html.Fragment(notice, Form("/tasks", problem,
+		Field(FieldSpec{Kind: FieldSelect, Name: "agent", Label: "Agent", Value: input.Agent, Options: agentOptions}),
 		Field(FieldSpec{Kind: FieldTextarea, Name: "prompt", Label: "Prompt", Value: input.Prompt, Required: true}),
 		Field(FieldSpec{Name: "repo", Label: "Repository (https:// only)", Value: input.Repo, Placeholder: "none: an empty directory"}),
 		Field(FieldSpec{Name: "ref", Label: "Ref", Value: input.Ref}),
-		Field(FieldSpec{Name: "model", Label: "Model", Value: input.Model, Placeholder: "default: " + defaultModel}),
+		Field(FieldSpec{Name: "model", Label: "Model", Value: input.Model, Placeholder: "the agent's, or " + defaultModel}),
 		Field(FieldSpec{Kind: FieldSelect, Name: "daemon", Label: "Daemon", Value: input.Daemon, Options: daemonOptions}),
 		noDaemons,
 		Field(FieldSpec{Kind: FieldSelect, Name: "priority", Label: "Priority", Value: input.Priority, Options: priorityOptions}),
-		Field(FieldSpec{Kind: FieldCheckbox, Name: "filler", Label: "Filler: runs only on spare budget, and yields to other work", Value: input.Filler}),
+		Field(FieldSpec{Kind: FieldCheckbox, Name: "filler", Label: "Filler: runs only on spare budget, and yields to other work; unticked leaves the agent's choice", Value: input.Filler}),
 		Details("Pause limits",
-			Field(FieldSpec{Name: "acknowledge", Label: "Acknowledge within", Value: input.Acknowledge, Required: true}),
-			Field(FieldSpec{Name: "cleanup", Label: "Clean up within", Value: input.Cleanup, Required: true}),
+			Field(FieldSpec{Name: "acknowledge", Label: "Acknowledge within", Value: input.Acknowledge, Placeholder: "the agent's, or " + defaultAcknowledge}),
+			Field(FieldSpec{Name: "cleanup", Label: "Clean up within", Value: input.Cleanup, Placeholder: "the agent's, or " + defaultCleanup}),
 		),
 		Button("Start task", VariantPrimary, "", ""),
 	))
