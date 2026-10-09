@@ -50,10 +50,13 @@ func systemPrompt(parent *protocol.TaskID, tools []string, extra ...string) stri
 	parts := []string{toolsPrompt(tools)}
 	if parent != nil {
 		report := fmt.Sprintf("You are a child task of task %[1]s, which waits for your result. "+
-			"When you have it, send it to task %[1]s with the orchestrator's send_message tool before you end your turn; "+
-			"task %[1]s does not see your replies otherwise.", *parent)
+			"When you have it, either send it to task %[1]s with the orchestrator's send_message tool, "+
+			"or end your turn with it as your final reply: if you end a turn without having sent a message during it, "+
+			"your final reply is handed back to task %[1]s as your report.", *parent)
 		if tools != nil && !slices.Contains(tools, protocol.ToolSendMessage) {
-			report = fmt.Sprintf("You are a child task of task %s, which waits for your result.", *parent)
+			report = fmt.Sprintf("You are a child task of task %[1]s, which waits for your result. "+
+				"When you end your turn, your final reply is handed back to task %[1]s as your report, "+
+				"so end it with your result.", *parent)
 		}
 		parts = append(parts, report)
 	}

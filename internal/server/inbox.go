@@ -283,7 +283,7 @@ func queueDelivery(ctx context.Context, tx *sql.Tx, task protocol.TaskID, fx *ef
 // ID when none waits.
 func deliverWaiting(ctx context.Context, tx *sql.Tx, daemon protocol.DaemonID, task protocol.TaskID, fx *effects) (protocol.Command, error) {
 	rows, err := tx.QueryContext(ctx, `
-		SELECT id, from_task, about_task, text FROM messages
+		SELECT id, from_task, about_task, text, hand_back FROM messages
 		WHERE to_task = ? AND delivered_command_id IS NULL ORDER BY id`, string(task))
 	if err != nil {
 		return protocol.Command{}, fmt.Errorf("read inbox of task %q: %w", task, err)
@@ -292,7 +292,7 @@ func deliverWaiting(ctx context.Context, tx *sql.Tx, daemon protocol.DaemonID, t
 	var last int64
 	for rows.Next() {
 		var message inboxMessage
-		if err := rows.Scan(&last, &message.from, &message.about, &message.text); err != nil {
+		if err := rows.Scan(&last, &message.from, &message.about, &message.text, &message.handBack); err != nil {
 			rows.Close()
 			return protocol.Command{}, fmt.Errorf("read inbox of task %q: %w", task, err)
 		}
@@ -324,10 +324,12 @@ func deliverWaiting(ctx context.Context, tx *sql.Tx, daemon protocol.DaemonID, t
 
 // inboxMessage is a message waiting to be delivered. Exactly one of from
 // and about is set: from for an agent's message, about for the server's
-// notice that a task ended.
+// notice that a task ended. handBack marks a child's final reply that the
+// server sent for it.
 type inboxMessage struct {
 	from, about sql.NullString
 	text        string
+	handBack    bool
 }
 
 // deliveryPrompt words messages, oldest first, as one prompt from the
@@ -335,9 +337,12 @@ type inboxMessage struct {
 func deliveryPrompt(messages []inboxMessage) protocol.Prompt {
 	parts := make([]string, len(messages))
 	for idx, message := range messages {
-		if message.from.Valid {
+		switch {
+		case message.from.Valid && message.handBack:
+			parts[idx] = "Report from child task " + message.from.String + ", its final reply as it ended its turn: " + message.text
+		case message.from.Valid:
 			parts[idx] = "Message from task " + message.from.String + ": " + message.text
-		} else {
+		default:
 			parts[idx] = "Notice from the orchestrator: " + message.text
 		}
 	}

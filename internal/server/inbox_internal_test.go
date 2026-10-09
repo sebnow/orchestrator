@@ -345,23 +345,13 @@ func TestGivenChildWhenTheOwnerStopsItWhileItsParentRunsThenTheNoticeWaitsForThe
 		t.Fatalf("prompts to the running parent = %+v", got)
 	}
 	parent.event(protocol.KindHarnessExited, cleanly, TaskRunning)
+	// The child finished a turn without sending before it was stopped, so
+	// its hand-back comes first.
 	requirePrompts(t, prompts(t, store, "parent"), []protocol.Prompt{{
-		Text: "Notice from the orchestrator: Your child task child has ended as stopped. It will send no more messages.",
+		Text: "Report from child task child, its final reply as it ended its turn: (Task child finished its turn without writing any text.)\n\n" +
+			"Notice from the orchestrator: Your child task child has ended as stopped. It will send no more messages.",
 		From: fromTask("child"),
 	}})
-}
-
-func TestGivenChildWhenItFinishesItsTurnThenItsParentIsNotTold(t *testing.T) {
-	store, _ := openTestStore(t)
-	parent := taskIn(t, store, "parent", TaskRunning)
-	child := spawned(t, store, "parent", "child")
-	parent.event(protocol.KindHarnessExited, cleanly, TaskFinished)
-
-	child.drive(TaskFinished)
-
-	if got := prompts(t, store, "parent"); len(got) != 0 {
-		t.Errorf("prompts to the parent = %+v", got)
-	}
 }
 
 func TestGivenStoppedParentWhenItsChildFailsThenNoNoticeIsKept(t *testing.T) {
@@ -405,9 +395,11 @@ func TestGivenOwnersTaskAndChildWhenStartedThenEachSystemPromptExplainsMessaging
 	if want := messagingPrompt + "\n\nBe brief."; owners.Start.SystemPrompt != want {
 		t.Errorf("owner's task system prompt = %q, want %q", owners.Start.SystemPrompt, want)
 	}
-	wantChild := messagingPrompt + "\n\nYou are a child task of task " + string(command.TaskID) + ", which waits for your result. " +
-		"When you have it, send it to task " + string(command.TaskID) + " with the orchestrator's send_message tool before you end your turn; " +
-		"task " + string(command.TaskID) + " does not see your replies otherwise."
+	spawner := string(command.TaskID)
+	wantChild := messagingPrompt + "\n\nYou are a child task of task " + spawner + ", which waits for your result. " +
+		"When you have it, either send it to task " + spawner + " with the orchestrator's send_message tool, " +
+		"or end your turn with it as your final reply: if you end a turn without having sent a message during it, " +
+		"your final reply is handed back to task " + spawner + " as your report."
 	if spawnedChild.Start.SystemPrompt != wantChild {
 		t.Errorf("child's system prompt = %q\nwant %q", spawnedChild.Start.SystemPrompt, wantChild)
 	}

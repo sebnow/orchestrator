@@ -96,6 +96,10 @@ var migrations = [...]string{
 	// permission policy issued rather than the owner
 	// (docs/adr/2026-10-08-permission-policy.md).
 	`ALTER TABLE commands ADD COLUMN by_policy INTEGER NOT NULL DEFAULT 0 CHECK (by_policy IN (0, 1));`,
+	// Version 9 marks the messages the server sent for a child that ended
+	// its turn without sending one: its final reply, handed back to its
+	// parent (docs/adr/2026-10-09-agents-and-placement.md).
+	`ALTER TABLE messages ADD COLUMN hand_back INTEGER NOT NULL DEFAULT 0 CHECK (hand_back IN (0, 1));`,
 }
 
 // schemaVersion is the version this server migrates databases to. A
@@ -301,8 +305,10 @@ const heldSeqColumn = `CASE WHEN EXISTS (SELECT 1 FROM events WHERE task_id = t.
 // daemon with a *foreignTaskError. Each event is stored at its seq plus
 // its task's seq base.
 //
-// A task the batch leaves finished has the messages waiting in its inbox
-// queued for delivery, a task the batch leaves yielded has its resume
+// A child the batch leaves finished hands its final reply back to its
+// parent unless it sent a message during the turn, a task the batch
+// leaves finished has the messages waiting in its inbox queued for
+// delivery, a task the batch leaves yielded has its resume
 // queued, and the parent of a task the batch ends is told, as are the
 // senders of the messages left undelivered in its inbox. Each permission
 // request the batch stores is put to the permission policy, if any, and
@@ -418,6 +424,11 @@ func (s *Store) appendEvents(ctx context.Context, daemon protocol.DaemonID, even
 		state := progresses[task].State
 		if !before[task].Terminal() && state.Terminal() {
 			if err := taskEnded(ctx, tx, task, state, &fx); err != nil {
+				return nil, nil, err
+			}
+		}
+		if before[task] != TaskFinished && state == TaskFinished {
+			if err := handBack(ctx, tx, task, &fx); err != nil {
 				return nil, nil, err
 			}
 		}
@@ -683,7 +694,10 @@ type storedMessage struct {
 	// AboutChild says About is a child of the recipient, so that the
 	// notice says the child ended rather than that messages to it were
 	// not delivered.
-	AboutChild  bool
+	AboutChild bool
+	// HandBack says the server sent the message for From, handing back
+	// From's final reply of a turn to its parent.
+	HandBack    bool
 	Text        string
 	CreatedAt   time.Time
 	DeliveredBy uint64
@@ -755,7 +769,7 @@ func (s *Store) taskHistory(ctx context.Context, task protocol.TaskID) (history,
 // queryMessages returns the messages task sent or was sent, in id order.
 func queryMessages(ctx context.Context, tx *sql.Tx, task protocol.TaskID) ([]storedMessage, error) {
 	rows, err := tx.QueryContext(ctx, `
-		SELECT m.id, m.from_task, m.to_task, m.about_task, coalesce(a.state, ''), coalesce(a.parent_id = m.to_task, 0), m.text, m.created_at, coalesce(m.delivered_command_id, 0)
+		SELECT m.id, m.from_task, m.to_task, m.about_task, coalesce(a.state, ''), coalesce(a.parent_id = m.to_task, 0), m.hand_back, m.text, m.created_at, coalesce(m.delivered_command_id, 0)
 		FROM messages m LEFT JOIN tasks a ON a.id = m.about_task
 		WHERE m.from_task = ?1 OR m.to_task = ?1 ORDER BY m.id`, string(task))
 	if err != nil {
@@ -768,7 +782,7 @@ func queryMessages(ctx context.Context, tx *sql.Tx, task protocol.TaskID) ([]sto
 		var id, delivered int64
 		var from, about sql.NullString
 		var to, state, created string
-		if err := rows.Scan(&id, &from, &to, &about, &state, &message.AboutChild, &message.Text, &created, &delivered); err != nil {
+		if err := rows.Scan(&id, &from, &to, &about, &state, &message.AboutChild, &message.HandBack, &message.Text, &created, &delivered); err != nil {
 			return nil, fmt.Errorf("read messages of task %q: %w", task, err)
 		}
 		message.ID, message.To, message.AboutState, message.DeliveredBy = uint64(id), protocol.TaskID(to), TaskState(state), uint64(delivered)

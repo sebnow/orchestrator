@@ -215,18 +215,23 @@ type HarnessExited struct {
 }
 
 // MessageSent is the agent sending Text to the task To through its
-// inbox (docs/adr/2026-10-08-inbox-delivery.md).
+// inbox (docs/adr/2026-10-08-inbox-delivery.md). HandBack is set when
+// the server sent the agent's final reply of a turn to its parent for it
+// (docs/adr/2026-10-09-agents-and-placement.md).
 type MessageSent struct {
-	To   protocol.TaskID
-	Text string
+	To       protocol.TaskID
+	Text     string
+	HandBack bool
 }
 
 // MessageReceived is a message delivered to the agent as a prompt. From
 // names the task that sent it, and is nil for the server's notice that
-// a child ended.
+// a child ended. HandBack is set when the message is a child's final
+// reply of a turn, handed back to it as the child's report.
 type MessageReceived struct {
-	From *protocol.TaskID
-	Text string
+	From     *protocol.TaskID
+	Text     string
+	HandBack bool
 }
 
 // ChildSpawned is the agent starting the task Child with Prompt.

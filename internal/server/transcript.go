@@ -50,7 +50,7 @@ func assemble(task protocol.TaskID, h history) []transcript.Entry {
 		switch {
 		case message.From != nil && *message.From == task:
 			fromMessages = append(fromMessages, transcript.Entry{Time: message.CreatedAt, Source: source,
-				Body: transcript.MessageSent{To: message.To, Text: message.Text}})
+				Body: transcript.MessageSent{To: message.To, Text: message.Text, HandBack: message.HandBack}})
 		case message.About != nil && message.AboutChild:
 			fromMessages = append(fromMessages, transcript.Entry{Time: message.CreatedAt, Source: source,
 				Body: transcript.ChildEnded{Child: *message.About, State: string(message.AboutState)}})
@@ -195,7 +195,7 @@ func commandBodies(task protocol.TaskID, parent *protocol.TaskID, command protoc
 		}
 		bodies := make([]transcript.Body, len(delivered))
 		for idx, message := range delivered {
-			bodies[idx] = transcript.MessageReceived{From: message.From, Text: message.Text}
+			bodies[idx] = transcript.MessageReceived{From: message.From, Text: message.Text, HandBack: message.HandBack}
 		}
 		return bodies
 	case protocol.CommandResume:

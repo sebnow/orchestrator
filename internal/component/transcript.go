@@ -219,10 +219,16 @@ func transcriptEntry(entry transcript.Entry, nested html.Node) html.Node {
 		}
 	case transcript.MessageSent:
 		from, label = "agent", "Agent sent a message to task "
+		if b.HandBack {
+			label = "Agent's final reply was handed back to parent task "
+		}
 		subject, body = link(taskURL(string(b.To)), string(b.To)), preformatted(b.Text)
 	case transcript.MessageReceived:
 		from, label, body = "task", "Notice from the orchestrator", preformatted(b.Text)
-		if b.From != nil {
+		switch {
+		case b.From != nil && b.HandBack:
+			label, subject = "Report from child ", link(taskURL(string(*b.From)), string(*b.From))
+		case b.From != nil:
 			label, subject = "Message from task ", link(taskURL(string(*b.From)), string(*b.From))
 		}
 	case transcript.ChildSpawned:
