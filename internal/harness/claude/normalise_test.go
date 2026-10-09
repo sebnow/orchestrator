@@ -205,8 +205,10 @@ func TestGivenLinesTheFixturesLackWhenNormalisingThenEachHasItsBody(t *testing.T
 	}
 }
 
-// The subagent fixture is written by hand from the documented shape; see
-// testdata/README.md.
+// The subagent fixture follows a recorded run; see testdata/README.md.
+// The subagent runs in the background: the turn that started it ends
+// before the subagent's messages arrive, and the harness starts a turn of
+// its own to report the subagent's result.
 func TestGivenSubagentRunWhenNormalisingThenTheSubagentsBodiesCarryTheSpawningCallAndTheMainConversationsDoNot(t *testing.T) {
 	var bodies []transcript.Body
 	for _, line := range fixtureLines(t, "testdata/subagent.jsonl") {
@@ -223,13 +225,18 @@ func TestGivenSubagentRunWhenNormalisingThenTheSubagentsBodiesCarryTheSpawningCa
 	}
 	const agent = "toolu_fixture_agent"
 	want := []entry{
+		{transcript.KindAgentThinking, ""},
 		{transcript.KindToolCall, ""},
-		{transcript.KindUnknown, agent},
+		{transcript.KindUnknown, ""},
+		{transcript.KindToolResult, ""},
+		{transcript.KindAgentText, ""},
+		{transcript.KindTurnEnded, ""},
 		{transcript.KindAgentThinking, agent},
 		{transcript.KindToolCall, agent},
+		{transcript.KindUnknown, ""},
 		{transcript.KindToolResult, agent},
 		{transcript.KindAgentText, agent},
-		{transcript.KindToolResult, ""},
+		{transcript.KindUnknown, ""},
 		{transcript.KindAgentText, ""},
 		{transcript.KindTurnEnded, ""},
 	}
@@ -237,8 +244,8 @@ func TestGivenSubagentRunWhenNormalisingThenTheSubagentsBodiesCarryTheSpawningCa
 		t.Errorf("bodies = %+v\nwant     %+v", got, want)
 	}
 	texts := bodiesOf[transcript.AgentText](bodies)
-	if len(texts) != 2 || texts[0] != (transcript.AgentText{Text: "There are 3 files.", ParentToolUseID: agent}) ||
-		texts[1] != (transcript.AgentText{Text: "The workspace holds 3 files."}) {
+	if len(texts) != 3 || texts[0].ParentToolUseID != "" ||
+		texts[1] != (transcript.AgentText{Text: "3", ParentToolUseID: agent}) || texts[2] != (transcript.AgentText{Text: "3"}) {
 		t.Errorf("texts = %+v", texts)
 	}
 }

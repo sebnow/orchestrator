@@ -44,8 +44,8 @@ type contentBlock struct {
 // An assistant or user message that a subagent wrote carries the id of
 // the tool call that started the subagent in parent_tool_use_id
 // (https://code.claude.com/docs/en/headless.md, "Follow subagent
-// messages"); every body made from it carries that id as its
-// ParentToolUseID.
+// messages"; docs/design/2026-10-09-subagent-stream.md records a run);
+// every body made from it carries that id as its ParentToolUseID.
 func Normalise(payload json.RawMessage) []transcript.Body {
 	msg, err := Parse(payload)
 	if err != nil {

@@ -23,6 +23,7 @@ import (
 	"github.com/sebnow/orchestrator/internal/harness"
 	"github.com/sebnow/orchestrator/internal/harness/claude"
 	"github.com/sebnow/orchestrator/internal/protocol"
+	"github.com/sebnow/orchestrator/internal/transcript"
 )
 
 const liveModel = "haiku"
@@ -512,5 +513,72 @@ func TestLiveGivenPermissionRequestUnansweredForSixMinutesWhenTheOwnerAllowsItTh
 	t.Logf("result %s after %s: %q", res[0].msg.Subtype, res[0].event.Time.Sub(requestedAt).Round(time.Second), result.Result)
 	if res[0].msg.Subtype != "success" || !strings.Contains(result.Result, "DONE") {
 		t.Errorf("result %s: %q", res[0].msg.Subtype, result.Result)
+	}
+}
+
+// Cost: one claude process, one turn in which the agent starts one of
+// Claude Code's own subagents with its Agent tool. Every stream-json line
+// is logged, prefixed "raw:", so that the subagent's messages can be
+// compared with internal/harness/claude/testdata/subagent.jsonl.
+func TestLiveGivenPromptToUseASubagentWhenItRunsThenTheSubagentsMessagesCarryTheAgentCallAsTheirParent(t *testing.T) {
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Minute)
+	defer cancel()
+	lt := startLiveTask(t, ctx, "Use a subagent to count the files in this directory and then reply with the number only.",
+		daemon.PauseLimits{Acknowledge: time.Minute, Cleanup: time.Minute})
+	for _, name := range []string{"a.txt", "b.txt", "c.txt"} {
+		if err := os.WriteFile(filepath.Join(lt.workdir, name), []byte(name), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	answerPermissions(t, ctx, lt.task, func(protocol.PermissionRequested) harness.Decision {
+		return harness.Decision{Allow: true}
+	})
+
+	waitFor(t, ctx, lt.task, "the turn to end", turnsSettled(1))
+	lt.task.Stop(ctx, nil)
+
+	events := lt.journal(t)
+	var agentCall string
+	children := map[string]int{}
+	var childText bool
+	for _, o := range outputs(t, events) {
+		t.Logf("raw: %s", o.event.Payload)
+		var line struct {
+			ParentToolUseID *string `json:"parent_tool_use_id"`
+			Message         struct {
+				Content []struct {
+					Type string `json:"type"`
+					ID   string `json:"id"`
+					Name string `json:"name"`
+				} `json:"content"`
+			} `json:"message"`
+		}
+		json.Unmarshal(o.event.Payload, &line)
+		if line.ParentToolUseID == nil {
+			for _, block := range line.Message.Content {
+				if block.Type == "tool_use" && (block.Name == "Agent" || block.Name == "Task") && agentCall == "" {
+					agentCall = block.ID
+				}
+			}
+			continue
+		}
+		children[o.msg.Type+"/"+o.msg.Subtype]++
+		for _, block := range line.Message.Content {
+			if o.msg.Type == "assistant" && block.Type == "text" {
+				childText = true
+			}
+		}
+		for _, body := range claude.Normalise(o.event.Payload) {
+			if transcript.ParentToolUseID(body) != *line.ParentToolUseID {
+				t.Errorf("seq %d: body %T has parent %q, want %q", o.event.Seq, body, transcript.ParentToolUseID(body), *line.ParentToolUseID)
+			}
+		}
+	}
+	t.Logf("agent call %q; lines with a parent, by type: %v; subagent assistant text: %v", agentCall, children, childText)
+	if agentCall == "" {
+		t.Fatal("the agent started no subagent")
+	}
+	if len(children) == 0 {
+		t.Error("no line carries a parent_tool_use_id")
 	}
 }
