@@ -81,10 +81,14 @@ type Process interface {
 // about it. Only Line is always set.
 type Output struct {
 	Line []byte
-	// TurnEnded marks the line that ends a turn.
+	// TurnEnded marks the line that ends a turn: the harness does nothing
+	// more until it is sent input. While work the turn started runs on in
+	// the background, the turn has not ended, whatever the harness
+	// reports in between.
 	TurnEnded bool
 	// Answering lists the ids of the prompts this line shows the harness
-	// answering.
+	// answering. A line that ends a turn lists every prompt the turn
+	// answered.
 	Answering []string
 	// SessionID names the harness session the line reports, when it
 	// reports one; Spec.Resume continues that session in a new process.

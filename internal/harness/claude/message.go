@@ -25,6 +25,11 @@ const (
 	TypeResult         = "result"
 	TypeRateLimitEvent = "rate_limit_event"
 	SubtypeInit        = "init"
+
+	SubtypeTaskStarted            = "task_started"
+	SubtypeTaskNotification       = "task_notification"
+	SubtypeTaskUpdated            = "task_updated"
+	SubtypeBackgroundTasksChanged = "background_tasks_changed"
 )
 
 // ErrMalformed reports a line that is not a stream-json message, or whose
@@ -91,6 +96,14 @@ func Parse(line []byte) (Message, error) {
 		msg.body, err = decode[Init](line)
 	case msg.Type == TypeResult:
 		msg.body, err = decode[Result](line)
+	case msg.Type == TypeSystem && msg.Subtype == SubtypeTaskStarted:
+		msg.body, err = decode[TaskStarted](line)
+	case msg.Type == TypeSystem && msg.Subtype == SubtypeTaskNotification:
+		msg.body, err = decode[TaskNotification](line)
+	case msg.Type == TypeSystem && msg.Subtype == SubtypeTaskUpdated:
+		msg.body, err = decode[TaskUpdated](line)
+	case msg.Type == TypeSystem && msg.Subtype == SubtypeBackgroundTasksChanged:
+		msg.body, err = decode[BackgroundTasksChanged](line)
 	case msg.Type == TypeRateLimitEvent:
 		var event struct {
 			Info *RateLimitInfo `json:"rate_limit_info"`
@@ -138,7 +151,9 @@ func (m Message) Init() (Init, bool) {
 	return v, ok
 }
 
-// Result returns the result message, which ends a turn.
+// Result returns the result message, which Claude Code writes when the
+// model stops. It ends the turn unless a subagent runs on in the
+// background (see turn in process.go).
 func (m Message) Result() (Result, bool) {
 	v, ok := m.body.(Result)
 	return v, ok
@@ -147,6 +162,31 @@ func (m Message) Result() (Result, bool) {
 // RateLimit returns the rate_limit_info of a rate_limit_event.
 func (m Message) RateLimit() (RateLimitInfo, bool) {
 	v, ok := m.body.(RateLimitInfo)
+	return v, ok
+}
+
+// TaskStarted returns the system/task_started message.
+func (m Message) TaskStarted() (TaskStarted, bool) {
+	v, ok := m.body.(TaskStarted)
+	return v, ok
+}
+
+// TaskNotification returns the system/task_notification message.
+func (m Message) TaskNotification() (TaskNotification, bool) {
+	v, ok := m.body.(TaskNotification)
+	return v, ok
+}
+
+// TaskUpdated returns the system/task_updated message.
+func (m Message) TaskUpdated() (TaskUpdated, bool) {
+	v, ok := m.body.(TaskUpdated)
+	return v, ok
+}
+
+// BackgroundTasksChanged returns the system/background_tasks_changed
+// message.
+func (m Message) BackgroundTasksChanged() (BackgroundTasksChanged, bool) {
+	v, ok := m.body.(BackgroundTasksChanged)
 	return v, ok
 }
 
@@ -228,4 +268,61 @@ type RateLimitWindow struct {
 	Utilization float64 `json:"utilization"`
 	// ResetsAt is in Unix seconds.
 	ResetsAt int64 `json:"resetsAt"`
+}
+
+// Task types of TaskStarted.TaskType.
+const TaskTypeLocalAgent = "local_agent"
+
+// The task_* and background_tasks_changed shapes follow the SDK
+// TypeScript reference and the runs recorded in
+// docs/design/2026-10-09-subagent-stream.md and
+// spikes/mod-vs-stdout/runs.
+
+// TaskStarted reports a task Claude Code started: a Bash command or
+// Monitor watch ("local_bash"), a subagent ("local_agent") or a
+// "remote_agent". Every task_* message names the task by TaskID;
+// ToolUseID, when set, is the tool call that started it.
+type TaskStarted struct {
+	TaskID         string `json:"task_id"`
+	ToolUseID      string `json:"tool_use_id"`
+	TaskType       string `json:"task_type"`
+	IsBackgrounded bool   `json:"is_backgrounded"`
+	// Ambient marks a task that is not part of the session's work.
+	Ambient bool `json:"ambient"`
+}
+
+// TaskNotification reports that a task completed, failed or was stopped.
+type TaskNotification struct {
+	TaskID    string `json:"task_id"`
+	ToolUseID string `json:"tool_use_id"`
+	Status    string `json:"status"`
+}
+
+// TaskUpdated reports a change to a task; Patch holds only what changed.
+type TaskUpdated struct {
+	TaskID string `json:"task_id"`
+	Patch  struct {
+		// Status is one of "pending", "running", "completed", "failed"
+		// and "killed".
+		Status string `json:"status"`
+	} `json:"patch"`
+}
+
+// Ended reports whether the update gives the task a terminal status.
+func (u TaskUpdated) Ended() bool {
+	switch u.Patch.Status {
+	case "completed", "failed", "killed":
+		return true
+	}
+	return false
+}
+
+// BackgroundTasksChanged lists every live background task.
+type BackgroundTasksChanged struct {
+	Tasks []BackgroundTask `json:"tasks"`
+}
+
+type BackgroundTask struct {
+	TaskID   string `json:"task_id"`
+	TaskType string `json:"task_type"`
 }

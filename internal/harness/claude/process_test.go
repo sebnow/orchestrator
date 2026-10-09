@@ -33,6 +33,10 @@ func fakeClaude() {
 		fmt.Println("2.1.289 (Claude Code)")
 		os.Exit(0)
 	}
+	if path := os.Getenv("FAKE_CLAUDE_REPLAY"); path != "" {
+		replayFile(path)
+		return
+	}
 	out := json.NewEncoder(os.Stdout)
 	cwd, _ := os.Getwd()
 	_, inherited := os.LookupEnv("CLAUDECODE")
@@ -82,6 +86,19 @@ func fakeClaude() {
 	}
 	fmt.Fprint(os.Stderr, "fake claude: stdin closed")
 	os.Exit(3)
+}
+
+// replayFile writes the file at path to stdout and exits once stdin is
+// closed.
+func replayFile(path string) {
+	f, err := os.Open(path)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "fake claude:", err)
+		os.Exit(2)
+	}
+	io.Copy(os.Stdout, f)
+	io.Copy(io.Discard, os.Stdin)
+	os.Exit(0)
 }
 
 func fakeHarness(t *testing.T) *claude.Harness {

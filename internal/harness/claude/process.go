@@ -250,6 +250,9 @@ type process struct {
 	stdinMu    sync.Mutex
 	stdin      io.WriteCloser
 	interrupts int
+
+	// turn is touched only by Read.
+	turn turn
 }
 
 func (p *process) PID() int {
@@ -261,7 +264,7 @@ func (p *process) Read() (harness.Output, error) {
 		line, err := p.stdout.ReadBytes('\n')
 		line = bytes.TrimRight(line, "\r\n")
 		if len(line) > 0 {
-			return classify(line), nil
+			return p.turn.classify(line), nil
 		}
 		if err != nil {
 			return harness.Output{}, err
@@ -269,22 +272,88 @@ func (p *process) Read() (harness.Output, error) {
 	}
 }
 
+// turn decides which result ends a turn as the daemon sees it.
+//
+// Claude Code writes a result when the model stops, even while a
+// subagent it started runs on in the background; when the subagent
+// finishes, Claude Code starts a turn of its own to report it, and
+// writes another result (docs/design/2026-10-09-subagent-stream.md). The
+// turn ends at the first result written while no subagent is running
+// (docs/design/2026-10-09-background-subagent-turn.md).
+type turn struct {
+	// subagents holds the task_id of each subagent reported started and
+	// not yet reported finished.
+	subagents map[string]bool
+	// answering collects the prompt ids echoed by results that did not
+	// end the turn, for the result that does.
+	answering []string
+}
+
 // classify keeps a line that does not parse as opaque output: it is still
 // the harness's record, and the server sees the same line.
-func classify(line []byte) harness.Output {
+func (t *turn) classify(line []byte) harness.Output {
 	out := harness.Output{Line: line}
 	msg, err := Parse(line)
 	if err != nil {
 		return out
 	}
-	_, out.TurnEnded = msg.Result()
-	if _, isInit := msg.Init(); isInit || out.TurnEnded {
+	t.track(msg)
+	_, isInit := msg.Init()
+	_, isResult := msg.Result()
+	if isInit || isResult {
 		out.SessionID = msg.SessionID
 	}
 	out.Answering = msg.Answering()
+	if isResult {
+		if len(t.subagents) > 0 {
+			t.answering = append(t.answering, out.Answering...)
+		} else {
+			out.TurnEnded = true
+			out.Answering = union(t.answering, out.Answering)
+			t.answering = nil
+		}
+	}
 	if info, ok := msg.RateLimit(); ok {
 		quota := quotaObserved(info)
 		out.Quota = &quota
+	}
+	return out
+}
+
+// track follows the subagents running in the process. Only subagents
+// count: a background Bash command or Monitor watch may never end, and
+// Claude Code killed a background Bash command itself once its input was
+// closed (docs/design/2026-10-07-mod-vs-stdout-spike.md). Each signal
+// that a subagent finished is enough, since a release may not send all
+// of them.
+func (t *turn) track(msg Message) {
+	if started, ok := msg.TaskStarted(); ok && started.TaskType == TaskTypeLocalAgent && !started.Ambient && started.TaskID != "" {
+		if t.subagents == nil {
+			t.subagents = map[string]bool{}
+		}
+		t.subagents[started.TaskID] = true
+	}
+	if done, ok := msg.TaskNotification(); ok {
+		delete(t.subagents, done.TaskID)
+	}
+	if updated, ok := msg.TaskUpdated(); ok && updated.Ended() {
+		delete(t.subagents, updated.TaskID)
+	}
+	if changed, ok := msg.BackgroundTasksChanged(); ok && len(changed.Tasks) == 0 {
+		clear(t.subagents)
+	}
+}
+
+// union returns the ids of a followed by those of b not in a.
+func union(a, b []string) []string {
+	if len(a) == 0 {
+		return b
+	}
+	out := slices.Clone(a)
+	for _, id := range b {
+		if !slices.Contains(out, id) {
+			out = append(out, id)
+		}
 	}
 	return out
 }
