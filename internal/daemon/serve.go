@@ -457,7 +457,7 @@ func (s *service) startTask(command protocol.Command) *Task {
 	}
 	// The settings make the task resumable, so they are recorded once its
 	// workspace is ready.
-	settings := taskSettings{Prompt: start.Prompt, Model: start.Model, SystemPrompt: start.SystemPrompt, Acknowledge: limits.Acknowledge, Cleanup: limits.Cleanup}
+	settings := taskSettings{Prompt: start.Prompt, Model: start.Model, SystemPrompt: start.SystemPrompt, Acknowledge: limits.Acknowledge, Cleanup: limits.Cleanup, Tools: start.Tools}
 	if err := s.state.updateTask(task, func(rec *taskRecord) { rec.Settings = &settings }); err != nil {
 		return s.failStart(task, j, fmt.Errorf("record task settings: %w", err))
 	}
@@ -468,6 +468,7 @@ func (s *service) startTask(command protocol.Command) *Task {
 		Model:        start.Model,
 		SystemPrompt: start.SystemPrompt,
 		Pause:        limits,
+		Tools:        start.Tools,
 	})
 }
 
@@ -512,6 +513,7 @@ func (s *service) resume(task protocol.TaskID, followUp string) (*Task, error) {
 		SystemPrompt: rec.Settings.SystemPrompt,
 		Pause:        rec.Settings.limits(),
 		Session:      rec.Session,
+		Tools:        rec.Settings.Tools,
 	})
 	if t == nil {
 		return nil, errors.New("the harness did not start")

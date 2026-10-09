@@ -64,7 +64,7 @@ var unusedTask = gatewayTask{
 
 func TestGivenRegisteredTaskWhenListingToolsThenEveryGatewayToolIsOffered(t *testing.T) {
 	g := startTestGateway(t)
-	url, _, err := g.register("task-1", unusedTask)
+	url, _, err := g.register("task-1", nil, unusedTask)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -87,6 +87,39 @@ func TestGivenRegisteredTaskWhenListingToolsThenEveryGatewayToolIsOffered(t *tes
 	}
 }
 
+func TestGivenTaskAllowedSomeToolsWhenListingToolsThenOnlyThoseAndThePermissionAndPauseToolsAreOffered(t *testing.T) {
+	for _, tc := range []struct {
+		allowed []string
+		want    []string
+	}{
+		{[]string{}, []string{AcknowledgePauseTool, PermissionTool}},
+		{[]string{SendMessageTool}, []string{AcknowledgePauseTool, PermissionTool, SendMessageTool}},
+	} {
+		g := startTestGateway(t)
+		url, _, err := g.register("task-1", tc.allowed, unusedTask)
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		tools, err := mustConnect(t, url).ListTools(t.Context(), nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		var names []string
+		for _, tool := range tools.Tools {
+			names = append(names, tool.Name)
+		}
+		slices.Sort(names)
+		if !slices.Equal(names, tc.want) {
+			t.Errorf("allowed %q: tools = %q, want %q", tc.allowed, names, tc.want)
+		}
+		if got, want := gatewayTools(tc.allowed), slices.DeleteFunc(slices.Clone(tc.want), func(tool string) bool { return tool == PermissionTool }); !slices.Equal(got, want) {
+			t.Errorf("allowed %q: harness allows %q without asking, want %q", tc.allowed, got, want)
+		}
+	}
+}
+
 func TestGivenAcknowledgePauseCallWhenItArrivesThenTheTaskGetsTheNoteAndTheAgentTheConfirmation(t *testing.T) {
 	g := startTestGateway(t)
 	notes := make(chan string, 1)
@@ -95,7 +128,7 @@ func TestGivenAcknowledgePauseCallWhenItArrivesThenTheTaskGetsTheNoteAndTheAgent
 		notes <- note
 		return "Pause acknowledged.", nil
 	}
-	url, _, _ := g.register("task-1", task)
+	url, _, _ := g.register("task-1", nil, task)
 
 	result, err := mustConnect(t, url).CallTool(t.Context(), &mcp.CallToolParams{
 		Name:      AcknowledgePauseTool,
@@ -115,7 +148,7 @@ func TestGivenAcknowledgePauseCallWhenItArrivesThenTheTaskGetsTheNoteAndTheAgent
 
 func TestGivenAcknowledgePauseWithoutNoteWhenCalledThenTheTaskIsNotTold(t *testing.T) {
 	g := startTestGateway(t)
-	url, _, _ := g.register("task-1", unusedTask)
+	url, _, _ := g.register("task-1", nil, unusedTask)
 
 	result, err := mustConnect(t, url).CallTool(t.Context(), &mcp.CallToolParams{
 		Name:      AcknowledgePauseTool,
@@ -141,7 +174,7 @@ func TestGivenPermissionCallWhenTheTaskAnswersLaterThenTheCallBlocksAndReturnsTh
 			return "", ctx.Err()
 		}
 	}
-	url, _, _ := g.register("task-1", task)
+	url, _, _ := g.register("task-1", nil, task)
 	session := mustConnect(t, url)
 
 	type callResult struct {
@@ -185,7 +218,7 @@ func TestGivenPermissionHandlerErrorWhenCalledThenTheReplyIsAToolError(t *testin
 	task.permission = func(context.Context, json.RawMessage) (string, error) {
 		return "", errors.New("task has ended")
 	}
-	url, _, _ := g.register("task-1", task)
+	url, _, _ := g.register("task-1", nil, task)
 
 	result, err := mustConnect(t, url).CallTool(t.Context(), &mcp.CallToolParams{Name: PermissionTool, Arguments: map[string]any{}})
 	if err != nil {
@@ -207,7 +240,7 @@ func TestGivenTwoTasksWhenEachCallsThenEachCallReachesItsOwnTask(t *testing.T) {
 			acknowledgedBy <- name
 			return "ok", nil
 		}
-		url, _, err := g.register(protocol.TaskID(name), task)
+		url, _, err := g.register(protocol.TaskID(name), nil, task)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -224,7 +257,7 @@ func TestGivenTwoTasksWhenEachCallsThenEachCallReachesItsOwnTask(t *testing.T) {
 
 func TestGivenUnknownOrUnregisteredTaskWhenConnectingThenTheGatewayRefuses(t *testing.T) {
 	g := startTestGateway(t)
-	url, unregister, _ := g.register("task-1", unusedTask)
+	url, unregister, _ := g.register("task-1", nil, unusedTask)
 	unregister()
 
 	if _, err := connect(t, url); err == nil {
@@ -237,9 +270,9 @@ func TestGivenUnknownOrUnregisteredTaskWhenConnectingThenTheGatewayRefuses(t *te
 
 func TestGivenRegisteredTaskWhenRegisteringItAgainThenError(t *testing.T) {
 	g := startTestGateway(t)
-	g.register("task-1", unusedTask)
+	g.register("task-1", nil, unusedTask)
 
-	if _, _, err := g.register("task-1", unusedTask); err == nil {
+	if _, _, err := g.register("task-1", nil, unusedTask); err == nil {
 		t.Error("registered twice")
 	}
 }
@@ -253,7 +286,7 @@ func TestGivenSpawnAndSendCallsWhenTheyArriveThenTheTaskGetsTheArgumentsAndTheAg
 	task.sendMessage = func(_ context.Context, in sendMessageInput) (string, error) {
 		return "", errors.New("refused: task " + in.To + " has ended")
 	}
-	url, _, _ := g.register("task-1", task)
+	url, _, _ := g.register("task-1", nil, task)
 	session := mustConnect(t, url)
 
 	spawned, err := session.CallTool(t.Context(), &mcp.CallToolParams{Name: SpawnTaskTool, Arguments: map[string]any{"prompt": "Say PEAR.", "model": "haiku"}})

@@ -72,7 +72,7 @@ func (s *Store) spawnTask(ctx context.Context, daemon protocol.DaemonID, parent,
 	}
 	start := protocol.StartTask{
 		Prompt:       spawn.Prompt,
-		SystemPrompt: systemPrompt(&parent, ""),
+		SystemPrompt: systemPrompt(&parent, nil),
 		Model:        model,
 		PauseLimits:  protocol.PauseLimits{Acknowledge: time.Duration(acknowledge), Cleanup: time.Duration(cleanup)},
 	}

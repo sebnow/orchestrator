@@ -108,3 +108,36 @@ func TestGivenParentWhoseAgentSpawnsAChildWhenTheChildSendsToTheFinishedParentTh
 		t.Errorf("senders of the parent's prompts = %q, want %s", from, child)
 	}
 }
+
+func TestGivenStartAllowingNoGatewayToolsWhenTheTaskRunsThenNeitherItsFirstNorItsNextProcessIsOfferedThem(t *testing.T) {
+	srv := startServer(t)
+	d := runDaemon(t, srv.url, t.TempDir())
+	task := srv.createTask(t, testDaemon, protocol.StartTask{Prompt: "Work alone.", PauseLimits: testPauseLimits, Tools: []string{}})
+	first := d.nextProcess(t)
+	in := first.nextInput(t)
+
+	requireOnlyPauseAndPermissionTools(t, first)
+	first.emit(harness.Output{Line: []byte(`{"type":"result"}`), TurnEnded: true, Answering: []string{in.id}, SessionID: "alone"})
+	expectExit(t, first)
+	srv.waitForState(t, task, "finished")
+	srv.command(t, task, protocol.CommandPrompt, protocol.Prompt{Text: "Again."})
+	next := d.nextProcess(t)
+
+	requireOnlyPauseAndPermissionTools(t, next)
+}
+
+func requireOnlyPauseAndPermissionTools(t *testing.T, proc *fakeProcess) {
+	t.Helper()
+	if tools := proc.spec.Gateway.Tools; !slices.Equal(tools, []string{AcknowledgePauseTool}) {
+		t.Errorf("tools allowed without asking = %q", tools)
+	}
+	listed, err := mustConnect(t, proc.spec.Gateway.URL).ListTools(t.Context(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tool := range listed.Tools {
+		if tool.Name == SpawnTaskTool || tool.Name == SendMessageTool {
+			t.Errorf("the gateway offers %s", tool.Name)
+		}
+	}
+}

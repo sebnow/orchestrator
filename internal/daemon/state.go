@@ -80,6 +80,9 @@ type taskSettings struct {
 	SystemPrompt string        `json:"system_prompt,omitempty"`
 	Acknowledge  time.Duration `json:"pause_acknowledge"`
 	Cleanup      time.Duration `json:"pause_cleanup"`
+	// Tools are the start's gateway tools; nil, as in the record of a task
+	// started before starts carried them, allows every one.
+	Tools []string `json:"tools,omitzero"`
 }
 
 func (s taskSettings) limits() PauseLimits {

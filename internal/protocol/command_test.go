@@ -123,3 +123,26 @@ func TestGivenPromptWhenMarshallingThenFromAppearsOnlyWhenSet(t *testing.T) {
 		}
 	}
 }
+
+func TestGivenStartTaskToolsWhenMarshallingThenNilIsOmittedAndEmptyIsKept(t *testing.T) {
+	for want, start := range map[string]protocol.StartTask{
+		`{"prompt":"p","pause_limits":{"acknowledge":"0s","cleanup":"0s"}}`:                          {Prompt: "p"},
+		`{"prompt":"p","pause_limits":{"acknowledge":"0s","cleanup":"0s"},"tools":[]}`:               {Prompt: "p", Tools: []string{}},
+		`{"prompt":"p","pause_limits":{"acknowledge":"0s","cleanup":"0s"},"tools":["send_message"]}`: {Prompt: "p", Tools: []string{protocol.ToolSendMessage}},
+	} {
+		got, err := json.Marshal(start)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if string(got) != want {
+			t.Errorf("got  %s\nwant %s", got, want)
+		}
+		var back protocol.StartTask
+		if err := json.Unmarshal(got, &back); err != nil {
+			t.Fatal(err)
+		}
+		if (back.Tools == nil) != (start.Tools == nil) || len(back.Tools) != len(start.Tools) {
+			t.Errorf("%s decodes to tools %#v, want %#v", got, back.Tools, start.Tools)
+		}
+	}
+}

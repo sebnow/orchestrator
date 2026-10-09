@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"slices"
 	"sync"
 	"time"
 
@@ -19,8 +20,8 @@ import (
 const (
 	PermissionTool       = "permission"
 	AcknowledgePauseTool = "acknowledge_pause"
-	SpawnTaskTool        = "spawn_task"
-	SendMessageTool      = "send_message"
+	SpawnTaskTool        = protocol.ToolSpawnTask
+	SendMessageTool      = protocol.ToolSendMessage
 )
 
 // Gateway is the MCP server the daemon hosts for its agents, over
@@ -79,7 +80,11 @@ func (g *Gateway) Close() error {
 	return err
 }
 
-func (g *Gateway) register(task protocol.TaskID, handlers gatewayTask) (url string, unregister func(), err error) {
+// register serves task's gateway tools: the permission and pause tools,
+// and of spawn_task and send_message those in allowed, or both when
+// allowed is nil. A tool the task may not call is not advertised to it.
+func (g *Gateway) register(task protocol.TaskID, allowed []string, handlers gatewayTask) (url string, unregister func(), err error) {
+	allows := func(tool string) bool { return allowed == nil || slices.Contains(allowed, tool) }
 	server := mcp.NewServer(&mcp.Implementation{Name: "orchestrator", Version: "0.1.0"}, nil)
 	server.AddTool(&mcp.Tool{
 		Name:        PermissionTool,
@@ -103,29 +108,33 @@ func (g *Gateway) register(task protocol.TaskID, handlers gatewayTask) (url stri
 		}
 		return toolText(text), nil, nil
 	})
-	mcp.AddTool(server, &mcp.Tool{
-		Name: SpawnTaskTool,
-		Description: "Starts a child task: another agent that works on its own on the prompt you give it, " +
-			"and reports back to you with " + SendMessageTool + ". Returns the child's task id. " +
-			"You are not blocked; to wait for the child, end your turn, and its message arrives as your next prompt.",
-	}, func(ctx context.Context, req *mcp.CallToolRequest, in spawnTaskInput) (*mcp.CallToolResult, any, error) {
-		text, err := handlers.spawnTask(ctx, in)
-		if err != nil {
-			return toolError(err), nil, nil
-		}
-		return toolText(text), nil, nil
-	})
-	mcp.AddTool(server, &mcp.Tool{
-		Name: SendMessageTool,
-		Description: "Sends a message to another task by its task id, such as your parent or a child you started. " +
-			"The recipient reads it as its next prompt once its current turn has ended.",
-	}, func(ctx context.Context, req *mcp.CallToolRequest, in sendMessageInput) (*mcp.CallToolResult, any, error) {
-		text, err := handlers.sendMessage(ctx, in)
-		if err != nil {
-			return toolError(err), nil, nil
-		}
-		return toolText(text), nil, nil
-	})
+	if allows(SpawnTaskTool) {
+		mcp.AddTool(server, &mcp.Tool{
+			Name: SpawnTaskTool,
+			Description: "Starts a child task: another agent that works on its own on the prompt you give it, " +
+				"and reports back to you with " + SendMessageTool + ". Returns the child's task id. " +
+				"You are not blocked; to wait for the child, end your turn, and its message arrives as your next prompt.",
+		}, func(ctx context.Context, req *mcp.CallToolRequest, in spawnTaskInput) (*mcp.CallToolResult, any, error) {
+			text, err := handlers.spawnTask(ctx, in)
+			if err != nil {
+				return toolError(err), nil, nil
+			}
+			return toolText(text), nil, nil
+		})
+	}
+	if allows(SendMessageTool) {
+		mcp.AddTool(server, &mcp.Tool{
+			Name: SendMessageTool,
+			Description: "Sends a message to another task by its task id, such as your parent or a child you started. " +
+				"The recipient reads it as its next prompt once its current turn has ended.",
+		}, func(ctx context.Context, req *mcp.CallToolRequest, in sendMessageInput) (*mcp.CallToolResult, any, error) {
+			text, err := handlers.sendMessage(ctx, in)
+			if err != nil {
+				return toolError(err), nil, nil
+			}
+			return toolText(text), nil, nil
+		})
+	}
 
 	g.mu.Lock()
 	defer g.mu.Unlock()

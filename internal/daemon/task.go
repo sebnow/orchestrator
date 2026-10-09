@@ -89,6 +89,10 @@ type TaskSpec struct {
 	Pause        PauseLimits
 	// Session, when set, is the harness session the process resumes.
 	Session string
+	// Tools are the gateway tools the agent may call besides the
+	// permission and pause tools, as protocol.StartTask.Tools has them:
+	// nil allows every one.
+	Tools []string
 }
 
 // State is a snapshot of a task.
@@ -196,7 +200,7 @@ func (d *Daemon) start(ctx context.Context, j *journal, spec TaskSpec) (*Task, e
 	if d.sessionSeen != nil {
 		t.sessionSeen = func(session string) { d.sessionSeen(spec.ID, session) }
 	}
-	url, unregister, err := d.gateway.register(spec.ID, gatewayTask{
+	url, unregister, err := d.gateway.register(spec.ID, spec.Tools, gatewayTask{
 		permission:       t.askPermission,
 		acknowledgePause: t.acknowledgePause,
 		spawnTask:        d.spawnTask(spec.ID),
@@ -216,7 +220,7 @@ func (d *Daemon) start(ctx context.Context, j *journal, spec TaskSpec) (*Task, e
 		Gateway: harness.Gateway{
 			URL:            url,
 			PermissionTool: PermissionTool,
-			Tools:          []string{AcknowledgePauseTool, SpawnTaskTool, SendMessageTool},
+			Tools:          gatewayTools(spec.Tools),
 		},
 	})
 	if err != nil {
@@ -243,6 +247,19 @@ func (d *Daemon) start(ctx context.Context, j *journal, spec TaskSpec) (*Task, e
 		return t, fmt.Errorf("send task prompt: %w", promptErr)
 	}
 	return t, nil
+}
+
+// gatewayTools are the gateway tools the harness lets the agent call
+// without asking: the pause tool, and those of allowed, as
+// TaskSpec.Tools has them.
+func gatewayTools(allowed []string) []string {
+	tools := []string{AcknowledgePauseTool}
+	for _, tool := range []string{SpawnTaskTool, SendMessageTool} {
+		if allowed == nil || slices.Contains(allowed, tool) {
+			tools = append(tools, tool)
+		}
+	}
+	return tools
 }
 
 func (t *Task) ID() protocol.TaskID {

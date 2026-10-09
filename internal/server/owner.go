@@ -9,7 +9,9 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"slices"
 	"strconv"
+	"strings"
 
 	"github.com/sebnow/orchestrator/internal/protocol"
 )
@@ -81,7 +83,7 @@ func (s *Server) startTask(ctx context.Context, daemon protocol.DaemonID, priori
 	if start.Model == "" {
 		start.Model = s.defaultModel
 	}
-	start.SystemPrompt = systemPrompt(nil, start.SystemPrompt)
+	start.SystemPrompt = systemPrompt(nil, start.Tools, start.SystemPrompt)
 	placed := placementBound
 	if daemon == "" {
 		placed = placementAny
@@ -107,6 +109,20 @@ func validateStart(start protocol.StartTask) error {
 	}
 	if start.PauseLimits.Acknowledge <= 0 || start.PauseLimits.Cleanup <= 0 {
 		return errors.New("pause_limits.acknowledge and pause_limits.cleanup must be positive")
+	}
+	return validateTools(start.Tools)
+}
+
+// validateTools checks that tools names gateway tools an agent may be
+// allowed, each once.
+func validateTools(tools []string) error {
+	for idx, tool := range tools {
+		if !slices.Contains(protocol.AgentTools, tool) {
+			return fmt.Errorf("tools: %q is not one of %s", tool, strings.Join(protocol.AgentTools, ", "))
+		}
+		if slices.Contains(tools[:idx], tool) {
+			return fmt.Errorf("tools: %q is named twice", tool)
+		}
 	}
 	return nil
 }

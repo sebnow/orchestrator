@@ -43,13 +43,31 @@ type Command struct {
 // StartTask starts a task on the daemon
 // (docs/adr/2026-10-07-task-interface.md). Without a Workspace the daemon
 // prepares an empty directory. An empty Model names no model.
+//
+// Tools names the gateway tools, of ToolSpawnTask and ToolSendMessage,
+// that the task's agent may call
+// (docs/adr/2026-10-09-agents-and-placement.md); the daemon's permission
+// and pause tools are always available. A nil Tools, as in every start
+// issued before the field existed, allows every gateway tool; an empty
+// one allows none of them.
 type StartTask struct {
 	Prompt       string      `json:"prompt"`
 	SystemPrompt string      `json:"system_prompt,omitempty"`
 	Workspace    *Workspace  `json:"workspace,omitempty"`
 	Model        string      `json:"model,omitempty"`
 	PauseLimits  PauseLimits `json:"pause_limits"`
+	Tools        []string    `json:"tools,omitzero"`
 }
+
+// The gateway tools a task's agent may be allowed, by the names the
+// agent calls them.
+const (
+	ToolSpawnTask   = "spawn_task"
+	ToolSendMessage = "send_message"
+)
+
+// AgentTools are the gateway tools StartTask.Tools chooses among.
+var AgentTools = []string{ToolSpawnTask, ToolSendMessage}
 
 // Workspace names the repository and ref a task works in.
 type Workspace struct {
