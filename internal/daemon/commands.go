@@ -69,10 +69,15 @@ func (s *service) receive(ctx context.Context) {
 	}
 }
 
-// streamCommands opens the command stream, sending the id of the last
-// command applied as Last-Event-ID, and applies each command the stream
-// carries. It resets b once the server has accepted the stream.
+// streamCommands reports the daemon's facts, then opens the command
+// stream, sending the id of the last command applied as Last-Event-ID,
+// and applies each command the stream carries. It resets b once the
+// server has accepted the stream. Facts the server does not take are
+// logged and do not hold up the stream: placement only lacks them.
 func (s *service) streamCommands(ctx context.Context, b *backoff) error {
+	if err := s.reportFacts(ctx); err != nil {
+		s.log.Warn("report facts", "error", err)
+	}
 	ctx, cancel := context.WithCancelCause(ctx)
 	defer cancel(nil)
 	idle := time.AfterFunc(streamIdleTimeout, func() { cancel(errors.New("command stream idle")) })

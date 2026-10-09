@@ -1,11 +1,14 @@
 package daemon
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"runtime"
 	"slices"
 	"strings"
 	"sync"
@@ -93,10 +96,24 @@ type scriptedStream struct {
 	mu          sync.Mutex
 	scripts     []string
 	lastEventID []string
+	// order lists "facts" for each report of facts and "commands" for
+	// each connection, as they arrive; facts holds the latest report.
+	order []string
+	facts protocol.Facts
 }
 
 func (s *scriptedStream) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	switch {
+	case strings.HasSuffix(r.URL.Path, "/facts"):
+		var facts protocol.Facts
+		if r.Method != http.MethodPut || json.NewDecoder(r.Body).Decode(&facts) != nil {
+			http.Error(w, "not facts", http.StatusBadRequest)
+			return
+		}
+		s.mu.Lock()
+		s.order, s.facts = append(s.order, "facts"), facts
+		s.mu.Unlock()
+		w.WriteHeader(http.StatusNoContent)
 	case strings.HasSuffix(r.URL.Path, "/acks"):
 		fmt.Fprint(w, "{}")
 	case strings.HasSuffix(r.URL.Path, "/events"):
@@ -104,6 +121,7 @@ func (s *scriptedStream) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "not stored", http.StatusServiceUnavailable)
 	case strings.HasSuffix(r.URL.Path, "/commands"):
 		s.mu.Lock()
+		s.order = append(s.order, "commands")
 		s.lastEventID = append(s.lastEventID, r.Header.Get("Last-Event-ID"))
 		var script string
 		if len(s.scripts) > 0 {
@@ -168,5 +186,37 @@ func TestGivenCommandsSentAgainWhenReconnectingThenLastEventIDIsTheLastAppliedAn
 	}
 	if len(d.harness.started) != 0 {
 		t.Error("the start_task sent again started a second harness")
+	}
+}
+
+func TestGivenDaemonWhenItOpensItsCommandStreamThenItReportsItsFactsFirstAndAgainOnEachReconnect(t *testing.T) {
+	stream := &scriptedStream{scripts: []string{": the server ends this stream at once\n\n"}}
+	httpServer := httptest.NewServer(stream)
+	t.Cleanup(httpServer.Close)
+	serverURL, _ := url.Parse(httpServer.URL)
+
+	runDaemon(t, serverURL, t.TempDir())
+
+	eventually(t, "a second connection", func() bool { return len(stream.connections()) >= 2 })
+	stream.mu.Lock()
+	order, facts := slices.Clone(stream.order[:4]), stream.facts
+	stream.mu.Unlock()
+	if !slices.Equal(order, []string{"facts", "commands", "facts", "commands"}) {
+		t.Errorf("requests = %q, want facts before each connection", order)
+	}
+	want := detectFacts(newFakeHarness().Info())
+	if !maps.Equal(facts, want) || facts[protocol.FactOS] != runtime.GOOS || facts[protocol.FactCPUs] == "" || facts[protocol.FactHarness] == "" {
+		t.Errorf("facts = %v, want %v", facts, want)
+	}
+}
+
+func TestGivenMeminfoWhenReadingMemTotalThenItIsInBytes(t *testing.T) {
+	got, ok := memTotal(strings.NewReader("MemTotal:       16314208 kB\nMemFree:          1048576 kB\n"))
+
+	if !ok || got != 16314208*1024 {
+		t.Errorf("memTotal = %d, %v", got, ok)
+	}
+	if _, ok := memTotal(strings.NewReader("MemFree: 1 kB\n")); ok {
+		t.Error("memTotal found a total in meminfo without one")
 	}
 }

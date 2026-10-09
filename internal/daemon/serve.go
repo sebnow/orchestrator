@@ -97,6 +97,9 @@ type service struct {
 	// applied is the id of the last command applied. It leads the state's
 	// copy when saving that failed.
 	applied uint64
+	// facts are what the daemon reports about its machine each time it
+	// opens its command stream.
+	facts protocol.Facts
 }
 
 // worker applies one task's commands in order, on its own goroutine, so
@@ -195,6 +198,7 @@ func Serve(ctx context.Context, cfg Config) error {
 		stopping: stopping,
 		running:  map[protocol.TaskID]*worker{},
 		applied:  st.lastCommand(),
+		facts:    detectFacts(cfg.Harness.Info()),
 	}
 	snd.moved = s.dropMoved
 
@@ -211,7 +215,7 @@ func Serve(ctx context.Context, cfg Config) error {
 		defer close(received)
 		s.receive(ctx)
 	}()
-	cfg.Log.Info("serving", "server", cfg.Server.String(), "daemon", cfg.ID, "state_dir", stateDir)
+	cfg.Log.Info("serving", "server", cfg.Server.String(), "daemon", cfg.ID, "state_dir", stateDir, "facts", s.facts)
 
 	<-ctx.Done()
 	<-received
