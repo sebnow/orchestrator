@@ -14,10 +14,12 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/sebnow/orchestrator/internal/harness"
 	"github.com/sebnow/orchestrator/internal/protocol"
+	"github.com/sebnow/orchestrator/internal/runas"
 )
 
 // Name identifies Claude Code in event envelopes.
@@ -66,8 +68,14 @@ type Harness struct {
 
 // New finds the version of the claude executable at path.
 func New(ctx context.Context, path string) (*Harness, error) {
-	cmd := exec.CommandContext(ctx, path, "--version")
-	cmd.Env = childEnv(os.Environ())
+	return NewAs(ctx, path, runas.User{})
+}
+
+// NewAs finds the version of the claude executable at path, running it
+// as user, so that a harness user who cannot run it fails here rather
+// than at a task's start.
+func NewAs(ctx context.Context, path string, user runas.User) (*Harness, error) {
+	cmd := user.Command(ctx, "", path, []string{"--version"}, childEnv(os.Environ()), nil)
 	out, err := cmd.Output()
 	if err != nil {
 		return nil, fmt.Errorf("run %s --version: %w", path, err)
@@ -85,13 +93,10 @@ func (h *Harness) Info() protocol.Harness {
 }
 
 func (h *Harness) Start(ctx context.Context, spec harness.Spec) (harness.Process, error) {
-	args, err := arguments(spec)
+	cmd, err := h.command(ctx, spec)
 	if err != nil {
 		return nil, err
 	}
-	cmd := exec.CommandContext(ctx, h.path, args...)
-	cmd.Dir = spec.Workdir
-	cmd.Env = childEnv(os.Environ())
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
 		return nil, err
@@ -106,7 +111,16 @@ func (h *Harness) Start(ctx context.Context, spec harness.Spec) (harness.Process
 	if err := cmd.Start(); err != nil {
 		return nil, fmt.Errorf("start %s: %w", h.path, err)
 	}
-	return &process{cmd: cmd, stdin: stdin, stdout: bufio.NewReader(stdout), stderr: stderr}, nil
+	return &process{cmd: cmd, stdin: stdin, stdout: bufio.NewReader(stdout), stderr: stderr, viaSudo: spec.RunAs.Other()}, nil
+}
+
+// command returns the command that runs the harness spec describes.
+func (h *Harness) command(ctx context.Context, spec harness.Spec) (*exec.Cmd, error) {
+	args, err := arguments(spec)
+	if err != nil {
+		return nil, err
+	}
+	return spec.RunAs.Command(ctx, spec.Workdir, h.path, args, childEnv(os.Environ()), nil), nil
 }
 
 func arguments(spec harness.Spec) ([]string, error) {
@@ -224,6 +238,9 @@ type process struct {
 	cmd    *exec.Cmd
 	stdout *bufio.Reader
 	stderr *tail
+	// viaSudo is set when sudo runs the harness as another user; the
+	// process is then sudo's.
+	viaSudo bool
 
 	stdinMu    sync.Mutex
 	stdin      io.WriteCloser
@@ -322,7 +339,15 @@ func (p *process) CloseInput() error {
 }
 
 func (p *process) Kill() error {
-	return p.cmd.Process.Kill()
+	if !p.viaSudo {
+		return p.cmd.Process.Kill()
+	}
+	// sudo relays SIGTERM to the harness but not SIGKILL, and the daemon
+	// may not signal another user's process. Closed input ends the
+	// harness too, should it outlast SIGTERM.
+	err := p.cmd.Process.Signal(syscall.SIGTERM)
+	p.CloseInput()
+	return err
 }
 
 func (p *process) Wait() protocol.HarnessExited {

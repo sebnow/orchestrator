@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 
 	"github.com/sebnow/orchestrator/internal/protocol"
+	"github.com/sebnow/orchestrator/internal/runas"
 )
 
 // Harness starts harness processes and translates the harness's side of
@@ -36,6 +37,9 @@ type Spec struct {
 	// new session.
 	Resume  string
 	Gateway Gateway
+	// RunAs is the OS user the process runs as; the zero User is the
+	// daemon's own (docs/adr/2026-10-08-harness-user.md).
+	RunAs runas.User
 }
 
 // Gateway is the daemon's MCP endpoint for one task.
@@ -65,6 +69,9 @@ type Process interface {
 	Interrupt() error
 	// CloseInput tells the harness no more input will come, which ends it.
 	CloseInput() error
+	// Kill ends the process at once. A process run as another user is
+	// sent SIGTERM and has its input closed instead, since the daemon
+	// cannot kill it (docs/adr/2026-10-08-harness-user.md).
 	Kill() error
 	// Wait reaps the process once Read has returned io.EOF.
 	Wait() protocol.HarnessExited
