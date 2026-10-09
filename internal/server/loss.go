@@ -197,6 +197,7 @@ func moveTask(ctx context.Context, tx *sql.Tx, task protocol.TaskID, from protoc
 		return err
 	}
 	p.State, p.PausedBy = TaskQueued, ""
+	p.newSession()
 	p.see(now)
 	if err := saveProgress(ctx, tx, task, p); err != nil {
 		return err

@@ -422,3 +422,30 @@ func TestGivenMovedTaskWhenNotingTheMoveThenOnlyATaskWithARepositoryIsToldItsPus
 		t.Errorf("note without a repository = %q", without)
 	}
 }
+
+func TestGivenTaskThatCostSomethingWhenItMovesAndItsNewSessionReportsThenItsCostIsTheSumOfBothSessions(t *testing.T) {
+	clock := newTestClock()
+	srv := startLossServer(t, clock)
+	vps := connectDaemon(t, srv, "vps")
+	task := runningOn(t, srv, vps, "count to three")
+	status, body := postEvents(t, srv, "vps", event(task, 3, `{"type":"result","subtype":"success","total_cost_usd":0.5}`))
+	requireAcks(t, status, body, map[protocol.TaskID]uint64{task: 3})
+	laptop := connectDaemon(t, srv, "laptop")
+	vps.vanish()
+	clock.advance(lossTimeout)
+	srv.pass(t)
+	laptop.nextCommand(t, task, protocol.CommandStartTask)
+	if got := taskState(t, srv, task).CostUSD; got != 0.5 {
+		t.Fatalf("cost after the move = %v, want the first session's 0.5", got)
+	}
+
+	status, body = postEvents(t, srv, "laptop",
+		taskControlEvent(task, 1, protocol.KindHarnessStarted, started),
+		event(task, 2, `{"type":"result","subtype":"success","total_cost_usd":0.125}`),
+		event(task, 3, `{"type":"result","subtype":"success","total_cost_usd":0.25}`))
+	requireAcks(t, status, body, map[protocol.TaskID]uint64{task: 3})
+
+	if got := taskState(t, srv, task).CostUSD; got != 0.75 {
+		t.Errorf("cost = %v, want 0.5 from the first session and 0.25 from the second", got)
+	}
+}

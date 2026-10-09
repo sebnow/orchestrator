@@ -354,8 +354,8 @@ func TestGivenVersionOneDatabaseWhenOpeningStoreThenItIsMigratedAndItsTasksKeepP
 	if err := store.db.QueryRowContext(t.Context(), `SELECT version FROM schema_version`).Scan(&version); err != nil {
 		t.Fatal(err)
 	}
-	if version != schemaVersion || schemaVersion != 13 {
-		t.Errorf("schema version = %d (server knows %d), want 13", version, schemaVersion)
+	if version != schemaVersion || schemaVersion != 14 {
+		t.Errorf("schema version = %d (server knows %d), want 14", version, schemaVersion)
 	}
 	if has, err := store.HasOwnerToken(t.Context()); err != nil || has {
 		t.Errorf("migrated HasOwnerToken = %v, %v; want false", has, err)
@@ -506,6 +506,36 @@ func TestGivenTheSchedulersPauseWhenTheOwnerPausesTooThenTheTaskEndsUpPausedForT
 
 			if p := readProgress(t, store, "task-1"); p.PausedBy != pauseByOwner {
 				t.Errorf("paused by %q, want the owner", p.PausedBy)
+			}
+		})
+	}
+}
+
+func TestGivenTurnCutShortWhenResumingStartsANewSessionThenItsCostAddsToTheEarlierSessionsAndOtherwiseItDoesNot(t *testing.T) {
+	for name, tc := range map[string]struct {
+		exitError string
+		want      float64
+	}{
+		"new session":       {exitError: exitRestartedNoSession, want: 0.75},
+		"session continues": {exitError: exitRestarted, want: 0.5},
+	} {
+		t.Run(name, func(t *testing.T) {
+			store, _ := openTestStore(t)
+			seedTask(t, store, "laptop", "task-1")
+			exited := `{"exit_code":-1,"error":"` + tc.exitError + `"}`
+			events := []protocol.Event{
+				taskControlEvent("task-1", 1, protocol.KindHarnessStarted, started),
+				event("task-1", 2, `{"type":"result","subtype":"success","total_cost_usd":0.5}`),
+				taskControlEvent("task-1", 3, protocol.KindHarnessExited, exited),
+				taskControlEvent("task-1", 4, protocol.KindHarnessStarted, started),
+				event("task-1", 5, `{"type":"result","subtype":"success","total_cost_usd":0.25}`),
+			}
+			if _, _, err := store.appendEvents(t.Context(), "laptop", events); err != nil {
+				t.Fatal(err)
+			}
+
+			if p := readProgress(t, store, "task-1"); p.CostUSD != tc.want {
+				t.Errorf("cost = %v, want %v", p.CostUSD, tc.want)
 			}
 		})
 	}

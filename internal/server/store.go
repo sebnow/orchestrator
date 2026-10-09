@@ -133,6 +133,10 @@ var migrations = [...]string{
 	// Version 13 keeps the labels each task requires of its daemon, a JSON
 	// object of strings.
 	`ALTER TABLE tasks ADD COLUMN requires TEXT NOT NULL DEFAULT '{}';`,
+	// Version 14 keeps the cost of each task's earlier harness sessions,
+	// to which the current session's running total is added. A task that
+	// moved before it keeps the highest total it had.
+	`ALTER TABLE tasks ADD COLUMN cost_base REAL NOT NULL DEFAULT 0;`,
 }
 
 // schemaVersion is the version this server migrates databases to. A

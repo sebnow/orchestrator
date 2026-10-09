@@ -204,8 +204,18 @@ func cutShortOf(exit protocol.HarnessExited) (by string, newSession bool) {
 type progress struct {
 	State        TaskState
 	LastActivity time.Time
-	// CostUSD is the highest running total the harness has reported.
+	// CostUSD is what the task has cost over all its harness sessions:
+	// CostBase plus the highest running total the current session has
+	// reported.
 	CostUSD float64
+	// CostBase is the sum of the final totals of the task's earlier
+	// harness sessions. A harness's running total covers one session and
+	// starts again from zero in the next, so CostBase is set to CostUSD
+	// whenever the task's next turn starts a new session: when the task
+	// moves off a lost daemon (docs/adr/2026-10-08-daemon-loss.md), and
+	// when a turn cut short before the harness reported a session leaves
+	// its resume to start one.
+	CostBase float64
 	// PausedBy names who asked for the pause while the task is pausing,
 	// paused or yielded; it is empty otherwise.
 	PausedBy pauseOrigin
@@ -221,6 +231,15 @@ func (p *progress) seeEvent(event protocol.Event, stopIssued bool) {
 	}
 	p.forgetPause()
 	p.see(event.Time)
+	if event.Kind == protocol.KindHarnessExited {
+		var exit protocol.HarnessExited
+		if json.Unmarshal(event.Payload, &exit) == nil {
+			if _, newSession := cutShortOf(exit); newSession {
+				p.newSession()
+			}
+		}
+		return
+	}
 	if event.Kind != protocol.KindHarnessOutput {
 		return
 	}
@@ -229,10 +248,16 @@ func (p *progress) seeEvent(event protocol.Event, stopIssued bool) {
 		return
 	}
 	for _, body := range normalise(event.Payload) {
-		if turn, ok := body.(transcript.TurnEnded); ok && turn.TotalCostUSD > p.CostUSD {
-			p.CostUSD = turn.TotalCostUSD
+		if turn, ok := body.(transcript.TurnEnded); ok && p.CostBase+turn.TotalCostUSD > p.CostUSD {
+			p.CostUSD = p.CostBase + turn.TotalCostUSD
 		}
 	}
+}
+
+// newSession records that the task's next turn starts a new harness
+// session, whose running total starts from zero.
+func (p *progress) newSession() {
+	p.CostBase = p.CostUSD
 }
 
 // seeCommand folds an issued command into p. A pause the command puts
@@ -263,8 +288,8 @@ func loadProgress(ctx context.Context, tx *sql.Tx, task protocol.TaskID) (progre
 	var state, lastActivity string
 	var pausedBy sql.NullString
 	var p progress
-	err := tx.QueryRowContext(ctx, `SELECT state, last_activity_at, cost_usd, pause_origin FROM tasks WHERE id = ?`, string(task)).
-		Scan(&state, &lastActivity, &p.CostUSD, &pausedBy)
+	err := tx.QueryRowContext(ctx, `SELECT state, last_activity_at, cost_usd, cost_base, pause_origin FROM tasks WHERE id = ?`, string(task)).
+		Scan(&state, &lastActivity, &p.CostUSD, &p.CostBase, &pausedBy)
 	if err != nil {
 		return progress{}, fmt.Errorf("read progress of task %q: %w", task, err)
 	}
@@ -280,8 +305,8 @@ func saveProgress(ctx context.Context, tx *sql.Tx, task protocol.TaskID, p progr
 	if p.PausedBy != "" {
 		pausedBy = string(p.PausedBy)
 	}
-	_, err := tx.ExecContext(ctx, `UPDATE tasks SET state = ?, last_activity_at = ?, cost_usd = ?, pause_origin = ? WHERE id = ?`,
-		string(p.State), formatTime(p.LastActivity), p.CostUSD, pausedBy, string(task))
+	_, err := tx.ExecContext(ctx, `UPDATE tasks SET state = ?, last_activity_at = ?, cost_usd = ?, cost_base = ?, pause_origin = ? WHERE id = ?`,
+		string(p.State), formatTime(p.LastActivity), p.CostUSD, p.CostBase, pausedBy, string(task))
 	if err != nil {
 		return fmt.Errorf("record progress of task %q: %w", task, err)
 	}
