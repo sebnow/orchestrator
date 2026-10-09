@@ -186,6 +186,12 @@ no_daemon() {
 	! pgrep -f "^$BIN/daemon " >/dev/null
 }
 
+# lock_wait_logged succeeds once a daemon has logged that it is waiting
+# for another daemon to release the state directory's lock.
+lock_wait_logged() {
+	grep -q 'state directory held by another daemon; waiting' "$DAEMON_LOG"
+}
+
 # restart_reported TASK checks what the server holds of TASK, whose turn
 # a daemon restart cut short, once the restarted daemon has sent its
 # events: one harness_exited, the restart's, and the task paused for the
@@ -457,5 +463,16 @@ check "restart: the daemon logs that it killed the harness its previous run left
 check "restart: task E's harness exit is reported" wait_for "$E" 'any(.[]; .kind == "harness_exited")' 30
 echo "# harness_exited: $(payload "$E" harness_exited)"
 restart_reported "$E"
+
+# --- A second daemon on the restarted daemon's state directory waits for
+# the lock rather than starting beside it; checking the full wait would
+# take its default timeout (the 30 s shutdown timeout plus 30 s), so this
+# only catches the Info log of the wait, then kills the second daemon.
+start_daemon
+lock_daemon_pid=$daemon_pid
+check "lock: a second daemon on the same state directory waits for the first to release it" \
+	wait_until 2 lock_wait_logged
+kill -KILL "$lock_daemon_pid"
+wait "$lock_daemon_pid" 2>/dev/null
 
 finish

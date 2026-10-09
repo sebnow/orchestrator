@@ -452,6 +452,8 @@ Daemon flags:
   working directory under `workspaces/<task>/`. Claude Code keeps its sessions outside it:
   Claude Code 2.1.289 on macOS kept them under `~/.claude/projects/` of
   the user running it ([resume spike](docs/design/2026-10-08-resume-spike.md)).
+  The daemon holds a lock file in the state directory; it waits up to the
+  timeout for another daemon to release it, then refuses to start.
 - `-workspace-dir`: the directory holding each task's workspace,
   `<task>/`; `workspaces/` under `-state-dir` by default. Required
   with `-harness-user`; it must then exist, be owned by the harness
