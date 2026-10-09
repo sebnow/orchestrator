@@ -213,6 +213,16 @@ func TestGivenSpecWhenStartingThenClaudeRunsInStreamJSONModeWiredToTheGateway(t 
 			t.Errorf("%s = %q, want %q", flag, got, want)
 		}
 	}
+	rawSettings, _ := argValue(argv, "--settings")
+	var settings struct {
+		Permissions map[string][]string `json:"permissions"`
+	}
+	if err := json.Unmarshal([]byte(rawSettings), &settings); err != nil {
+		t.Fatalf("--settings %q: %v", rawSettings, err)
+	}
+	if want := []string{"Agent(isolation:remote)", "Task(isolation:remote)"}; !slices.Equal(settings.Permissions["ask"], want) || len(settings.Permissions) != 1 {
+		t.Errorf("--settings permissions = %v, want only ask rules %q", settings.Permissions, want)
+	}
 	raw, _ := argValue(argv, "--mcp-config")
 	var config struct {
 		MCPServers map[string]struct {

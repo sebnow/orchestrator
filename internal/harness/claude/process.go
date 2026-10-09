@@ -136,6 +136,10 @@ func arguments(spec harness.Spec) ([]string, error) {
 	if err != nil {
 		return nil, err
 	}
+	settings, err := remoteSubagentSettings()
+	if err != nil {
+		return nil, err
+	}
 	args := []string{
 		"-p",
 		"--input-format", "stream-json",
@@ -153,6 +157,10 @@ func arguments(spec harness.Spec) ([]string, error) {
 		// Keep the machine owner's user settings, plugins and MCP servers
 		// out of the task.
 		"--setting-sources", "project",
+		// Send remote subagent calls to the gateway. Claude Code 2.1.289
+		// applied these flag settings alongside --setting-sources project
+		// (docs/design/2026-10-09-remote-subagents.md).
+		"--settings", settings,
 		"--strict-mcp-config",
 		"--mcp-config", string(config),
 		"--permission-prompt-tool", gatewayTool(spec.Gateway.PermissionTool),
