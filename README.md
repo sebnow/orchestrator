@@ -226,10 +226,8 @@ user's `~/.ssh` or in the system's.
 
 The harness user logs in to Claude Code once on each machine, and tasks
 spend that account's quota; the daemon does not manage the login. On
-Linux Claude Code keeps it under the user's home, in `~/.claude`.
-**UNVERIFIED:** on macOS Claude Code keeps it in the user's login
-Keychain, which a process started through sudo may not be able to
-open.
+Linux Claude Code keeps it under the user's home, in `~/.claude`. On
+macOS, see step 5 of the checklist below.
 
 sudo relays SIGTERM to the command it runs but not SIGKILL (sudo(8),
 "Signal handling"), and the daemon's user cannot signal the harness
@@ -257,34 +255,73 @@ user `orch-agent`. It has not been run.
    key to `~/.ssh/known_hosts`, such as with `ssh-keyscan HOST >>
    ~/.ssh/known_hosts`, after comparing its fingerprint with the one
    the host publishes.
-5. As `orchestrator`, with its ssh agent running, start the daemon with
+5. On macOS, confirm where Claude Code keeps its login and that a
+   process started through sudo can read it. As `orchestrator`,
+   `sudo -n -u orch-agent -D / -- /usr/local/bin/claude -p 'Reply OK'`
+   replies rather than asking to log in.
+6. As `orchestrator`, with its ssh agent running, start the daemon with
    `-harness-user orch-agent -workspace-dir
    /srv/orchestrator/workspaces -claude /usr/local/bin/claude` and the
    usual flags. The log has a line "running tasks as the harness user"
    with the user, the git and rm paths, and `ssh_agent=true`.
-6. Start a task with a repository and a prompt that commits a file.
+7. Start a task with a repository and a prompt that commits a file.
    The task page shows the branch pushed.
-7. `ps -o user,pid,ppid,command -ax | grep claude` shows `claude` run
+8. `ps -o user,pid,ppid,command -ax | grep claude` shows `claude` run
    by `orch-agent`, its parent a `sudo` process.
-8. In `sudo -u orch-agent -i`, `cat` the daemon's key and `ls` its
+9. In `sudo -u orch-agent -i`, `cat` the daemon's key and `ls` its
    state directory fail with "Permission denied". Ask the agent to run
    `ssh-add -l`: it lists the daemon's keys.
-9. With a task running, `sudo -u orch-agent kill -TERM <claude pid>`
-   ends `claude`, and the task page shows the harness's exit.
-10. With another task running, `kill -TERM <sudo pid>` as
+10. With a task running, `sudo -u orch-agent kill -TERM <claude pid>`
+    ends `claude`, and the task page shows the harness's exit.
+11. With another task running, `kill -TERM <sudo pid>` as
     `orchestrator` ends both sudo and `claude`.
 
 ### Using the GUI
 
-The dashboard lists the tasks that need attention, every task, the
-account's quota reading and the daemons, and has the form that starts a
-task: its prompt, an optional repository and ref, the model, the daemon
-to run it on or any connected daemon, its priority, whether it is filler
-(see [Scheduling](#scheduling)), and its pause limits. Each task page shows the transcript, asks for permission when
-the agent wants to run a tool and the server runs with
-`-permissions ask`, shows the branch the daemon pushed the task's work
-to (see [Tasks](#tasks)), and has buttons to pause, resume, interrupt
-or stop the task.
+The dashboard lists the tasks that need attention, every task with the
+agent it was started as, the account's quota reading, and the daemons
+with their labels. Its form starts a task with:
+
+- the agent to start it as, if any (see [Agents](#agents));
+- its prompt, and an optional repository and ref;
+- the model;
+- the daemon to run it on, or any connected daemon, and the labels its
+  daemon must have (see [Placement](#placement));
+- its priority, and whether it is filler (see [Scheduling](#scheduling));
+- its pause limits, to acknowledge and to clean up.
+
+A field left blank takes the agent's value, or else the default: the
+server's model, no labels, `normal` priority, and pause limits of 1
+minute to acknowledge and 5 to clean up. The filler box can only make a
+task filler; an agent whose tasks are filler makes the task filler
+whether it is ticked or not, and only the owner API's `"filler": false`
+overrides that.
+
+Each task page:
+
+- shows the transcript;
+- asks for permission when the agent wants to run a tool and the server
+  runs with `-permissions ask`;
+- shows the branch the daemon pushed the task's work to (see
+  [Tasks](#tasks));
+- lists the tasks it spawned, with each one's agent, state and latest
+  report, and links its parent;
+- has buttons to pause, resume, interrupt or stop the task.
+
+Claude Code can run subagents of its own within a task's turn, with its
+`Agent` tool, which Claude Code 2.1.289 listed as `Task`. The daemon runs `claude` with `--forward-subagent-text`,
+so a subagent's text and thinking reach the transcript as well as its
+tool calls, and the task page nests them under the tool call that
+started the subagent, in a list titled by the call's description that
+can be folded away. Such subagents run inside the task's own process:
+the scheduler does not see them, and they share the task's slot and
+daemon (see the [agent model](docs/design/2026-10-09-agent-model.md)
+note).
+
+The Agents page, linked from the top of every page, lists the agents
+and creates, edits and deletes them. Each daemon's row on the dashboard
+links to the daemon's page, which shows the facts it reported and sets
+the labels the owner gives it (see [Placement](#placement)).
 
 A `stopped` or `failed` task's page, and a `failed` task among those
 that need attention, have a Dismiss button. A dismissed task no longer
@@ -456,23 +493,72 @@ commits the repository lacks; if that push fails, the daemon keeps the
 clone, logs the failure, and tries again the next time it starts.
 
 An agent can start child tasks and message other tasks with two tools
-the daemon gives it, `spawn_task` and `send_message`
-([inbox delivery](docs/adr/2026-10-08-inbox-delivery.md)). The server
-explains them in a system prompt it gives every task, ahead of any
-system prompt given through the owner API. A child runs on its parent's
-daemon, in a fresh clone of the parent's repository if it has one,
-with the parent's priority and filler flag, and the parent's model
-unless the agent names another, and is told to send its result to its
-parent. When the parent's daemon has no free slot, the child goes to the
-connected daemon with the most free slots instead. A message to a
-`finished` task becomes its next turn; one to a running task waits until
-its turn ends, and one to a `paused` task until the owner resumes it and
-that turn ends. Messages to `stopped` or `failed` tasks are refused, and
-a parent is told when its child stops or fails. When a task stops or
-fails with messages still waiting in its inbox, each sender's next
-prompt is a notice that those messages were not delivered. The
-task page links a task's parent and children and shows the messages it
-sent and received.
+the daemon gives it, `spawn_task(prompt, agent?, model?, requires?)`
+and `send_message(to, text)`
+([inbox delivery](docs/adr/2026-10-08-inbox-delivery.md)), unless its
+agent allows it fewer (see [Agents](#agents)). The server explains the
+tools a task may use in a system prompt it gives the task, ahead of the
+agent's system prompt and any given through the owner API; a task that
+may spawn is also told the name and description of every agent. A child
+runs on its parent's daemon when that has a free slot and the labels
+the child requires (see [Placement](#placement)), in a fresh clone of
+the parent's repository if it has one. A child started as an agent has
+that agent's tools, priority, filler flag and labels, and its model and
+pause limits, or else the parent's. A child started as no agent may
+call both `spawn_task` and `send_message`, whatever its parent may
+call, requires no labels, and takes its parent's model, pause limits,
+priority and filler flag. A model or labels given to
+`spawn_task` win over both. A message to a `finished` task becomes its
+next turn; one to a running task waits until its turn ends, and one to
+a `paused` task until the owner resumes it and that turn ends. Messages
+to `stopped` or `failed` tasks are refused, and a parent is told when
+its child stops or fails. When a task stops or fails with messages
+still waiting in its inbox, each sender's next prompt is a notice that
+those messages were not delivered. The task page links a task's parent
+and children and shows the messages it sent and received.
+
+A child reports to its parent with `send_message`, or by ending its
+turn: when a child's turn ends with the task `finished` and the child
+sent no message during that turn, the server sends the turn's last
+text, from the child's main conversation rather than a subagent's, to
+the parent as a hand-back
+([agents and placement](docs/adr/2026-10-09-agents-and-placement.md)).
+A turn that wrote no text hands back a notice that it wrote none. The
+parent receives it as a prompt like any message, marked as a hand-back,
+and its transcript shows it as "Report from child" with the child's
+id. A
+child that did send a message during the turn hands back nothing, and
+the owner's tasks, which have no parent, never do.
+
+### Agents
+
+An agent is a named definition that tasks are started as: its
+description, system prompt, model, which of the agent tools
+`spawn_task` and `send_message` it allows, pause limits, priority, filler flag,
+and the labels its daemon must have
+([agents and placement](docs/adr/2026-10-09-agents-and-placement.md)).
+The permission and pause tools are always available. An agent created
+without tools allows neither agent tool, and an agent without pause
+limits gives its tasks the default limits. The owner creates and edits agents on
+the Agents page; an existing instructions file becomes an agent by
+pasting it into the system prompt field. Agents cannot be renamed,
+and the server refuses to delete an agent that any task names. Editing an agent changes only the tasks started afterwards.
+
+Scripts use the owner API: `GET /v1/agents` lists them, `POST
+/v1/agents` creates one (409 when the name is taken), `GET` and `PUT
+/v1/agents/{agent}` read and replace one, and `DELETE
+/v1/agents/{agent}` deletes one (409 while a task names it). An agent
+is JSON such as:
+
+    {"name": "reviewer", "description": "Reviews a change.",
+     "system_prompt": "You review code.", "model": "sonnet",
+     "tools": ["send_message"],
+     "pause_limits": {"acknowledge": "1m", "cleanup": "5m"},
+     "priority": "normal", "filler": false, "requires": {"os": "linux"}}
+
+`POST /v1/tasks` takes `agent`, and `requires` as such an object; a
+field left out takes the agent's value. It also takes `tools`, a list
+that replaces the agent's.
 
 SIGINT or SIGTERM shuts either program down. The daemon first
 interrupts each running turn and closes the input of the task's
@@ -542,6 +628,30 @@ without queueing.
 
 A task whose turn waits shows a `queued` badge with its place in the
 queue and the reason it waits.
+
+### Placement
+
+A daemon has labels, `key=value` pairs, from two sources
+([agents and placement](docs/adr/2026-10-09-agents-and-placement.md)).
+Each time it opens its command stream the daemon reports facts about
+its machine with `PUT /v1/daemons/{daemon}/facts`: `os` and `arch` as
+Go names them, such as `darwin` and `arm64`; `cpus`; `memory` in bytes,
+on Linux and macOS; `harness` and `harness_version`, such as
+`claude-code` and `2.1.289`; and `gpu`, `nvidia` when `nvidia-smi` is
+on its `PATH` or `apple` on darwin/arm64, and absent otherwise. The
+owner sets labels on the daemon's page; where a label and a fact share
+a key, the label wins. Keys are letters, digits, `.`, `_` and `-`;
+values are printable characters other than space, `,` and `=`.
+
+A task requires the labels of its agent, or those given when it is
+created or spawned, which replace the agent's. A task starts only on a
+connected daemon whose labels hold every required pair, even when the
+owner named the daemon, and a child goes to its parent's daemon only
+when that one has them. Matching is exact, so `memory=34359738368`
+matches only that size; set a label such as `size=large` to place by
+size. If no connected daemon qualifies, the task waits with the reason "no
+daemon has" followed by the pairs that no connected daemon has. A task
+bound to a daemon that lacks them says what that daemon lacks.
 
 ### Lost daemons
 
