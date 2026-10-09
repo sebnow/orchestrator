@@ -331,6 +331,13 @@ started the subagent, in a list titled by the call's description that
 can be folded away. Such subagents run inside the task's own process:
 the scheduler does not see them, and they share the task's slot and
 daemon (see the [agent model](docs/design/2026-10-09-agent-model.md)
+note). When Claude Code starts a subagent in the background, it writes
+a `result` at once; the daemon does not treat that as the end of the
+turn, which ends when the subagent finishes and Claude Code's follow-up
+turn ends. Until then the task is busy and holds its slot. If Claude
+Code reports a subagent started and never reports it finished, the task
+runs until the owner stops it (see the
+[background subagent](docs/design/2026-10-09-background-subagent-turn.md)
 note).
 
 The Agents page, linked from the top of every page, lists the agents
