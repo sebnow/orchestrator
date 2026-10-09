@@ -100,6 +100,28 @@ var migrations = [...]string{
 	// its turn without sending one: its final reply, handed back to its
 	// parent (docs/adr/2026-10-09-agents-and-placement.md).
 	`ALTER TABLE messages ADD COLUMN hand_back INTEGER NOT NULL DEFAULT 0 CHECK (hand_back IN (0, 1));`,
+	// Version 10 keeps the owner's agent definitions, and the agent each
+	// task was started as, NULL for none
+	// (docs/adr/2026-10-09-agents-and-placement.md). An agent's tools are a
+	// JSON array and its requires a JSON object; its pause limits are both
+	// NULL when it leaves them to the task defaults.
+	`CREATE TABLE agents (
+		name TEXT PRIMARY KEY,
+		description TEXT NOT NULL,
+		system_prompt TEXT NOT NULL,
+		model TEXT NOT NULL,
+		tools TEXT NOT NULL,
+		pause_acknowledge_ns INTEGER CHECK (pause_acknowledge_ns > 0),
+		pause_cleanup_ns INTEGER CHECK (pause_cleanup_ns > 0),
+		priority TEXT NOT NULL CHECK (priority IN ('low', 'normal', 'high')),
+		filler INTEGER NOT NULL CHECK (filler IN (0, 1)),
+		requires TEXT NOT NULL,
+		created_at TEXT NOT NULL,
+		updated_at TEXT NOT NULL,
+		CHECK ((pause_acknowledge_ns IS NULL) = (pause_cleanup_ns IS NULL))
+	) STRICT;
+	ALTER TABLE tasks ADD COLUMN agent TEXT REFERENCES agents (name);
+	CREATE INDEX tasks_by_agent ON tasks (agent);`,
 }
 
 // schemaVersion is the version this server migrates databases to. A
