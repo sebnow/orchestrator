@@ -48,10 +48,13 @@ func attrs(pairs ...string) []html.Attribute {
 }
 
 // Page is a whole document titled title, with children as its content,
-// under a navigation bar that links to the dashboard and logs out.
+// under a navigation bar that links to the dashboard and the agents, and
+// logs out.
 func Page(title string, children ...html.Node) html.Node {
 	return document(title, html.El("nav", nil,
-		html.El("a", attrs("href", "/"), html.Text("Orchestrator")),
+		html.El("div", attrs("class", "links"),
+			html.El("a", attrs("href", "/"), html.Text("Orchestrator")),
+			html.El("a", attrs("href", AgentsURL), html.Text("Agents"))),
 		html.El("form", attrs("method", "post", "action", "/logout"), Button("Log out", VariantPlain, "", "")),
 	), children...)
 }
@@ -141,6 +144,13 @@ func badge(label, class string) html.Node {
 	return html.El("span", attrs("class", "badge "+class), html.Text(label))
 }
 
+// PlainForm POSTs its fields to action and lets the browser follow the
+// response, with or without JavaScript. problem, when set, is shown
+// above them.
+func PlainForm(action, problem string, children ...html.Node) html.Node {
+	return html.El("form", attrs("method", "post", "action", action), problemNote(problem), html.Fragment(children...))
+}
+
 // Form POSTs its fields to action. problem, when set, is shown above
 // them. With htmx the response is only out-of-band swaps, so the form
 // swaps nothing itself.
@@ -182,6 +192,8 @@ type FieldSpec struct {
 	Placeholder string
 	Options     []Option
 	Required    bool
+	// Rows is a FieldTextarea's height in lines; zero is four.
+	Rows int
 }
 
 // Option is one choice of a FieldSelect: Value is sent, Label shown.
@@ -213,7 +225,11 @@ func Field(spec FieldSpec) html.Node {
 	case FieldTextarea:
 		// A newline right after <textarea> is dropped by the parser, so
 		// one is written to keep a value's own leading newline.
-		control = html.El("textarea", append(list, html.Attr("rows", "4")), html.Text("\n"+spec.Value))
+		rows := spec.Rows
+		if rows == 0 {
+			rows = 4
+		}
+		control = html.El("textarea", append(list, html.Attr("rows", strconv.Itoa(rows))), html.Text("\n"+spec.Value))
 	case FieldSelect:
 		options := make([]html.Node, len(spec.Options))
 		for idx, option := range spec.Options {

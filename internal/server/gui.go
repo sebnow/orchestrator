@@ -35,6 +35,7 @@ func (s *Server) routeGUI(mux *http.ServeMux) {
 	mux.HandleFunc("GET /tasks/{task}/raw", s.getRawPage)
 	mux.HandleFunc("GET /tasks/{task}/stream", s.streamTask)
 	mux.HandleFunc("GET /tasks/{task}/updates", s.getTaskUpdates)
+	s.routeAgentsGUI(mux)
 }
 
 // fromHTMX reports whether htmx made the request, in which case the

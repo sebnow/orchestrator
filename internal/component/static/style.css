@@ -31,6 +31,7 @@ body {
   background: var(--background);
 }
 
+nav .links { display: flex; gap: var(--space); }
 nav { display: flex; justify-content: space-between; align-items: center; padding-bottom: var(--space); border-bottom: 1px solid var(--border); }
 a { color: var(--state-running); }
 h1 { font-size: 1.4rem; overflow-wrap: anywhere; }
