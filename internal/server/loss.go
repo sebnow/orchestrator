@@ -4,8 +4,8 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
-	"errors"
 	"fmt"
+	"strconv"
 	"time"
 
 	"github.com/sebnow/orchestrator/internal/protocol"
@@ -163,12 +163,19 @@ func moveLostTasks(ctx context.Context, tx *sql.Tx, lost map[protocol.DaemonID]b
 // session are gone with that daemon, so its next turn is a new start,
 // placed by again, carrying its first prompt and a note saying so. The
 // owner's queued prompts and every queued resume give way to that start;
-// the note quotes the owner's latest prompt. Queued deliveries stay
+// the note carries every queued prompt, oldest first, or, when none is
+// queued, quotes the owner's latest prompt. Queued deliveries stay
 // queued.
 func moveTask(ctx context.Context, tx *sql.Tx, task protocol.TaskID, from protocol.DaemonID, again placement, now time.Time, fx *effects) error {
-	latest, err := latestOwnerPrompt(ctx, tx, task)
+	queued, err := queuedOwnerPrompts(ctx, tx, task)
 	if err != nil {
 		return err
+	}
+	var latest string
+	if len(queued) == 0 {
+		if latest, err = latestOwnerPrompt(ctx, tx, task); err != nil {
+			return err
+		}
 	}
 	var prompt, payload string
 	var filler bool
@@ -182,7 +189,7 @@ func moveTask(ctx context.Context, tx *sql.Tx, task protocol.TaskID, from protoc
 	if err := json.Unmarshal([]byte(payload), &start); err != nil {
 		return fmt.Errorf("read the start of task %q: %w", task, err)
 	}
-	start.Prompt = prompt + "\n\n" + movedNote(from, start.Workspace != nil, latest)
+	start.Prompt = prompt + "\n\n" + movedNote(from, start.Workspace != nil, queued, latest)
 	restart, err := json.Marshal(start)
 	if err != nil {
 		return fmt.Errorf("encode the new start of task %q: %w", task, err)
@@ -209,23 +216,36 @@ func moveTask(ctx context.Context, tx *sql.Tx, task protocol.TaskID, from protoc
 	return err
 }
 
-// latestOwnerPrompt returns the text of the owner's newest prompt to
-// task: the newest queued one, or else the newest issued; "" when there
-// is none.
-func latestOwnerPrompt(ctx context.Context, tx *sql.Tx, task protocol.TaskID) (string, error) {
-	var payload string
-	err := tx.QueryRowContext(ctx, `
-		SELECT payload FROM turns WHERE task_id = ? AND kind = ? AND admitted_command_id IS NULL ORDER BY id DESC LIMIT 1`,
-		string(task), string(turnPrompt)).Scan(&payload)
-	if err == nil {
+// queuedOwnerPrompts returns the texts of the owner's prompts queued for
+// task and not yet admitted, oldest first.
+func queuedOwnerPrompts(ctx context.Context, tx *sql.Tx, task protocol.TaskID) ([]string, error) {
+	rows, err := tx.QueryContext(ctx, `
+		SELECT payload FROM turns WHERE task_id = ? AND kind = ? AND admitted_command_id IS NULL ORDER BY id`,
+		string(task), string(turnPrompt))
+	if err != nil {
+		return nil, fmt.Errorf("read the queued prompts of task %q: %w", task, err)
+	}
+	defer rows.Close()
+	var queued []string
+	for rows.Next() {
+		var payload string
+		if err := rows.Scan(&payload); err != nil {
+			return nil, fmt.Errorf("read the queued prompts of task %q: %w", task, err)
+		}
 		var prompt protocol.Prompt
 		if json.Unmarshal([]byte(payload), &prompt) == nil {
-			return prompt.Text, nil
+			queued = append(queued, prompt.Text)
 		}
 	}
-	if err != nil && !errors.Is(err, sql.ErrNoRows) {
-		return "", fmt.Errorf("read the queued prompts of task %q: %w", task, err)
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("read the queued prompts of task %q: %w", task, err)
 	}
+	return queued, nil
+}
+
+// latestOwnerPrompt returns the text of the owner's newest prompt issued
+// to task; "" when there is none.
+func latestOwnerPrompt(ctx context.Context, tx *sql.Tx, task protocol.TaskID) (string, error) {
 	rows, err := tx.QueryContext(ctx, `SELECT payload FROM commands WHERE task_id = ? AND kind = ? ORDER BY id DESC`,
 		string(task), string(protocol.CommandPrompt))
 	if err != nil {
@@ -249,11 +269,13 @@ func latestOwnerPrompt(ctx context.Context, tx *sql.Tx, task protocol.TaskID) (s
 }
 
 // movedNote tells the agent of a task moved off the lost daemon from what
-// of its earlier work is gone, and what the owner last asked, when latest
-// is not empty. For a task with a repository, the commits the lost daemon
-// pushed survive on the task's branch, which the new daemon checks out
+// of its earlier work is gone. It carries each of the owner's queued
+// prompts, oldest first and labelled, or, when none is queued, quotes
+// latest, the owner's latest prompt, when that is not empty. For a task
+// with a repository, the commits the lost daemon pushed survive on the
+// task's branch, which the new daemon checks out
 // (docs/adr/2026-10-08-work-delivery.md).
-func movedNote(from protocol.DaemonID, repository bool, latest string) string {
+func movedNote(from protocol.DaemonID, repository bool, queued []string, latest string) string {
 	note := "Note from the orchestrator: you worked on this task before on daemon " + string(from) +
 		", which has been lost. Everything you did there is gone, your workspace and your conversation alike, " +
 		"so you are starting again in a fresh workspace."
@@ -263,7 +285,13 @@ func movedNote(from protocol.DaemonID, repository bool, latest string) string {
 			"The commits pushed from there are on your task's branch, which your clone has checked out; " +
 			"only the work that was not pushed is gone, along with your earlier conversation."
 	}
-	if latest != "" {
+	switch {
+	case len(queued) > 0:
+		note += " The owner sent you these prompts, which you had not been given yet, oldest first:"
+		for idx, text := range queued {
+			note += "\n\nOwner's prompt " + strconv.Itoa(idx+1) + " of " + strconv.Itoa(len(queued)) + ":\n\n" + text
+		}
+	case latest != "":
 		note += " The owner's latest prompt to you was:\n\n" + latest
 	}
 	return note

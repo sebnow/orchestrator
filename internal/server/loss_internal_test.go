@@ -354,8 +354,8 @@ func TestGivenFinishedTaskOnALostDaemonWhenTheOwnerPromptsItThenItStartsAfreshWi
 	srv.pass(t)
 
 	prompt := decodeStart(t, laptop.nextCommand(t, task, protocol.CommandStartTask)).Prompt
-	if !strings.HasPrefix(prompt, "count to three\n\n") || !strings.HasSuffix(prompt, "The owner's latest prompt to you was:\n\nnow count to four") {
-		t.Errorf("new start's prompt = %q, want the first prompt and a note quoting the owner's latest", prompt)
+	if !strings.HasPrefix(prompt, "count to three\n\n") || !strings.HasSuffix(prompt, "Owner's prompt 1 of 1:\n\nnow count to four") {
+		t.Errorf("new start's prompt = %q, want the first prompt and a note carrying the owner's queued prompt", prompt)
 	}
 	laptop.noCommand(t, task, protocol.CommandPrompt)
 }
@@ -411,8 +411,8 @@ func lastCommandID(t *testing.T, srv testServer, daemon protocol.DaemonID) uint6
 }
 
 func TestGivenMovedTaskWhenNotingTheMoveThenOnlyATaskWithARepositoryIsToldItsPushedCommitsSurvive(t *testing.T) {
-	withRepository := movedNote("vps", true, "")
-	without := movedNote("vps", false, "")
+	withRepository := movedNote("vps", true, nil, "")
+	without := movedNote("vps", false, nil, "")
 
 	if !strings.Contains(withRepository, "The commits pushed from there are on your task's branch") ||
 		!strings.Contains(withRepository, "only the work that was not pushed is gone") {
@@ -447,5 +447,44 @@ func TestGivenTaskThatCostSomethingWhenItMovesAndItsNewSessionReportsThenItsCost
 
 	if got := taskState(t, srv, task).CostUSD; got != 0.75 {
 		t.Errorf("cost = %v, want 0.5 from the first session and 0.25 from the second", got)
+	}
+}
+
+func TestGivenTwoPromptsQueuedForAFinishedTaskWhileItsDaemonIsAwayWhenItIsLostThenTheNewStartCarriesBothInOrderAndTheMoveEntryListsThem(t *testing.T) {
+	clock := newTestClock()
+	srv := startLossServer(t, clock)
+	vps := connectDaemon(t, srv, "vps")
+	task := runningOn(t, srv, vps, "count to three")
+	status, body := postEvents(t, srv, "vps", taskControlEvent(task, 3, protocol.KindHarnessExited, cleanly))
+	requireAcks(t, status, body, map[protocol.TaskID]uint64{task: 3})
+	vps.vanish()
+	waitConnected(t, srv, "vps", false)
+	for _, text := range []string{"now count to four", "then count to five"} {
+		status, body := doRequest(t, http.MethodPost, srv.url+"/v1/tasks/"+string(task)+"/commands", `{"kind":"prompt","payload":{"text":"`+text+`"}}`)
+		if status != http.StatusAccepted {
+			t.Fatalf("prompt: %d %s", status, body)
+		}
+	}
+	srv.pass(t)
+	laptop := connectDaemon(t, srv, "laptop")
+	clock.advance(lossTimeout)
+	srv.pass(t)
+
+	prompt := decodeStart(t, laptop.nextCommand(t, task, protocol.CommandStartTask)).Prompt
+	want := "oldest first:\n\nOwner's prompt 1 of 2:\n\nnow count to four\n\nOwner's prompt 2 of 2:\n\nthen count to five"
+	if !strings.HasPrefix(prompt, "count to three\n\n") || !strings.HasSuffix(prompt, want) {
+		t.Errorf("new start's prompt = %q, want the first prompt and a note carrying both queued prompts in order", prompt)
+	}
+	laptop.noCommand(t, task, protocol.CommandPrompt)
+	entries, err := srv.Transcript(t.Context(), task)
+	if err != nil {
+		t.Fatal(err)
+	}
+	listed := slices.ContainsFunc(entries, func(entry transcript.Entry) bool {
+		body, ok := entry.Body.(transcript.TaskMoved)
+		return ok && strings.HasSuffix(body.Prompt, want)
+	})
+	if !listed {
+		t.Errorf("transcript's move entry does not list both queued prompts: %+v", entries)
 	}
 }

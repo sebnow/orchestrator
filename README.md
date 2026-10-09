@@ -665,7 +665,8 @@ lost, until it connects again.
 A task on a lost daemon moves to another daemon: its workspace and its
 Claude Code session stay on the lost machine, so the task starts again
 in a fresh clone and a new session, with its first prompt and a note
-that its earlier work is gone, quoting the owner's latest prompt to it.
+that its earlier work is gone, carrying the owner's queued prompts or,
+with none queued, quoting the owner's latest prompt to it.
 For a task with a repository, the fresh clone checks out the task's
 branch as the lost daemon last pushed it, and the note says that only
 the work not pushed is gone
@@ -677,8 +678,11 @@ nothing waiting moves when its next turn is queued, so a daemon that
 returns first keeps it. A moved task goes to the connected daemon with
 the most free slots, or a child to its parent's daemon if that has one
 free, and never to a daemon it ran on before; while only such daemons
-are connected it waits. Its page shows the move. Of the prompts the
-owner queued for it, only the latest is quoted; the others are dropped.
+are connected it waits. Its page shows the move. Every prompt the owner
+queued for it is carried in the note, oldest first, each labelled with
+its place, so none is dropped. Prompts already sent to the lost daemon,
+as those to a running task are, are not carried; the note quotes the
+latest of them only when none is queued.
 A task waiting for its start on a lost daemon the owner named is placed
 as if the owner had named none.
 
