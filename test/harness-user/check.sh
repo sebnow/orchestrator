@@ -69,11 +69,13 @@ evidence() {
 	sed 's/^/#   /'
 }
 
-# as_orch runs a command as the daemon's user, with Debian's default PATH
-# and nothing else of root's environment.
+# ORCH runs the command that follows it as the daemon's user, with
+# Debian's default PATH and nothing else of root's environment.
+ORCH=(setpriv --reuid=orchestrator --regid=orchestrator --init-groups
+	env -i PATH=$DAEMON_PATH HOME=$OHOME USER=orchestrator LOGNAME=orchestrator)
+
 as_orch() {
-	setpriv --reuid=orchestrator --regid=orchestrator --init-groups \
-		env -i PATH=$DAEMON_PATH HOME=$OHOME USER=orchestrator LOGNAME=orchestrator "$@"
+	"${ORCH[@]}" "$@"
 }
 
 as_user() {
@@ -161,8 +163,12 @@ not_running() {
 	! kill -0 "$1" 2>/dev/null
 }
 
+# start_daemon starts the daemon in the background and sets daemon_pid
+# to its pid. It runs ORCH as a simple command rather than as_orch: a
+# function run in the background gets a subshell, $! would name that
+# subshell, and SIGKILL to it would leave the daemon running.
 start_daemon() {
-	as_orch env SSH_AUTH_SOCK=$AGENT_SOCK $BIN/daemon \
+	"${ORCH[@]}" env SSH_AUTH_SOCK=$AGENT_SOCK $BIN/daemon \
 		-server $API -cert $PKI/daemon.crt -key $PKI/daemon.key -state-dir $STATE \
 		-harness-user orch-agent -workspace-dir $WS -claude $CLAUDE \
 		>>"$DAEMON_LOG" 2>&1 &
