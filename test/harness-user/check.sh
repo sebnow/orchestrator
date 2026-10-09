@@ -6,7 +6,17 @@
 # Code login, with the claude stub at /usr/local/bin/claude. Each check
 # prints "ok" or "not ok"; lines starting with "#" are evidence. It exits
 # 1 when a check failed. Logs go to /out when it is mounted.
+#
+# With --real-claude, in the image's target real, /usr/local/bin/claude
+# is Claude Code itself, standard input carries the login, and after the
+# shared steps 1 to 3 and 6 the checks of real-claude.sh run instead of
+# the stub's.
 set -u
+
+REAL=false
+if [ "${1:-}" = --real-claude ]; then
+	REAL=true
+fi
 
 BIN=/opt/orchestrator/bin
 DAEMON_PATH=/usr/local/bin:/usr/bin:/bin
@@ -79,6 +89,10 @@ die() {
 }
 
 finish() {
+	if [ "$REAL" = true ]; then
+		print_costs
+		remove_credentials
+	fi
 	if [ -d /out ]; then
 		cp "$DAEMON_LOG" "$SERVER_LOG" /out/ 2>/dev/null
 	fi
@@ -158,6 +172,11 @@ start_daemon() {
 daemon_connected() {
 	[ "$(grep -c 'msg=connecting' "$DAEMON_LOG")" -ge "$1" ]
 }
+
+if [ "$REAL" = true ]; then
+	. /usr/local/bin/real-claude.sh
+	install_credentials
+fi
 
 echo "# image: $(. /etc/os-release && echo "$PRETTY_NAME"), $(uname -m), kernel $(uname -r)"
 echo "# $(sudo -V | head -1)"
@@ -255,6 +274,11 @@ out=$(sudo -u orch-agent -i env SSH_AUTH_SOCK=$AGENT_SOCK ssh-add -l 2>&1)
 echo "# as orch-agent: SSH_AUTH_SOCK=$AGENT_SOCK ssh-add -l"
 evidence <<<"$out"
 check "ssh agent relay: orch-agent cannot open the daemon user's own agent socket" grep -q 'Permission denied' <<<"$out"
+
+if [ "$REAL" = true ]; then
+	real_checks
+	finish
+fi
 
 # --- Checklist step 7: a task with a repository whose turn commits a file.
 A=$(create_task "report and commit") || die "create task A"
