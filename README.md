@@ -38,7 +38,9 @@ Chromium only for Linux. A failing step saves a screenshot, which
 
 The server stores daemons, tasks and their events, and serves the GUI.
 The daemon runs the tasks with Claude Code, so `claude` must be
-installed and logged in for the user who starts the daemon. The daemon
+installed and logged in for the user who runs it: the user who starts
+the daemon, or the harness user with `-harness-user` (see [Running the
+harness as another user](#running-the-harness-as-another-user)). The daemon
 clones a task's repository, and pushes the task's branch to it, with
 the `git` on the daemon's `PATH`, so
 `git` must be installed on every daemon's machine. A missing `git`
@@ -124,6 +126,154 @@ can start tasks that run commands on the daemon's machine. It refuses to
 start unless `-listen` is a loopback IP address. The daemon still needs
 its certificate, which names it, but not `-ca`.
 
+### Running the harness as another user
+
+By default the daemon runs `claude`, and with it the agent's tools, as
+its own OS user, so the agent can read the daemon's key, its state and
+its journals. With `-harness-user NAME` the daemon runs `claude`, and
+every command that touches a workspace, as the unprivileged user NAME
+through `sudo`, and file permissions keep the agent from reading the
+daemon's key, state and journals
+([harness user](docs/adr/2026-10-08-harness-user.md)). The agent can
+still read its own Claude Code login, and every task's workspace on
+that daemon, since all tasks share the one harness user. It can also
+see in the process list the URL of the daemon's MCP gateway, which
+serves every task's `spawn_task`, `send_message` and permission tools
+on loopback without authentication.
+
+The daemon starts each command as `sudo -n -u NAME -D DIR VAR=value...
+-- COMMAND ARG...`, in a session of its own so that sudo has no
+terminal. As the harness user it runs:
+
+- `claude`, in the task's workspace;
+- `git`, to clone, to set up the task's branch, its pre-push hook and
+  the clone's local configuration, to read the clone's status and
+  history and the remote's branches, and to push;
+- `rm -rf`, to delete a workspace.
+
+The daemon does not run git in a workspace as itself, because git runs
+commands that a repository's configuration and hooks name (`git help
+git`, section SECURITY), and the agent can write every workspace. The
+harness user creates and owns the workspaces.
+
+`-workspace-dir` is required with `-harness-user`, because the harness
+user cannot enter the state directory, where workspaces go by default.
+The directory must exist and be owned by the harness user. When it
+starts, the daemon lists this directory and deletes the workspaces of
+tasks it does not know, so the daemon's user needs permission to read
+it. `-claude` must be an absolute path that the harness user can run;
+the daemon runs `claude --version` as that user through sudo when it
+starts, so a missing sudoers rule stops it there. When it starts, the
+daemon also looks up `git` and `rm` on its `PATH`, logs their absolute
+paths, and runs them by those paths.
+
+The sudoers rule lets the daemon's user run those three paths as the
+harness user only, without a password, and nothing as root. With the
+daemon running as `orchestrator`, the harness user `orch-agent`, and
+the paths below, write it with `sudo visudo -f
+/etc/sudoers.d/orchestrator`:
+
+    Cmnd_Alias ORCH_CLAUDE = /usr/local/bin/claude
+    Cmnd_Alias ORCH_GIT = /usr/bin/git
+    Cmnd_Alias ORCH_RM = /bin/rm
+    Cmnd_Alias ORCH_HARNESS = ORCH_CLAUDE, ORCH_GIT, ORCH_RM
+    Defaults!ORCH_HARNESS !requiretty, umask=0077
+    Defaults!ORCH_CLAUDE env_keep += "PATH SSH_AUTH_SOCK"
+    Defaults!ORCH_GIT env_keep += "PATH SSH_AUTH_SOCK GIT_TERMINAL_PROMPT GIT_CONFIG_GLOBAL GIT_CONFIG_NOSYSTEM GIT_SSH_COMMAND"
+    orchestrator ALL = (orch-agent) CWD=* NOPASSWD: ORCH_HARNESS
+
+Replace the three paths with the value of `-claude` and the output of
+`command -v git rm` run as the daemon's user. `CWD=*` lets the daemon
+choose the directory with `-D`, since the daemon's user may not be able
+to enter a workspace the harness user owns; it needs sudo 1.9.3 or
+later (sudoers(5), "Chdir_Spec"). `umask=0077` makes the workspaces
+readable by the harness user only: sudo runs the command with the union
+of the daemon's umask and this one (sudoers(5), "umask"). sudo
+1.9.17p2's `visudo -c` accepted these lines; they have not been tried
+on a machine with a harness user.
+
+sudo resets the environment and sets `HOME`, `MAIL`, `SHELL`, `LOGNAME`
+and `USER` for the harness user (sudoers(5), "Command environment"). The
+daemon passes the rest as follows:
+
+- `PATH`: the daemon's, in sudo's own environment. sudo keeps it
+  because `env_keep` lists it, unless sudoers sets `secure_path`, whose
+  value then replaces it (sudoers(5), "env_reset").
+- `SSH_AUTH_SOCK`: when the daemon has an ssh agent, the path of the
+  socket the daemon relays to it (below), in sudo's own environment.
+  sudo keeps it because `env_keep` lists it.
+- `GIT_TERMINAL_PROMPT=0`, `GIT_CONFIG_GLOBAL=/dev/null`,
+  `GIT_CONFIG_NOSYSTEM=1` and `GIT_SSH_COMMAND=ssh -o BatchMode=yes`,
+  for `git` only: on sudo's command line, as `VAR=value` before `--`.
+  sudo refuses to run a command given a variable that sudoers does not
+  allow, with "sorry, you are not allowed to set the following
+  environment variables" (sudoers(5), "Denied command log entries"),
+  so `env_keep` lists them for `git`, and a rule without them stops
+  git rather than letting it read the harness user's git
+  configuration.
+
+The daemon's ssh agent socket is open only to the daemon's user. When
+the daemon has `SSH_AUTH_SOCK`, it listens on a socket of its own,
+`/tmp/orchestrator-agent-*/agent-*.sock`, for as long as it runs, and
+relays each connection to its agent byte for byte. The socket has mode
+0666 and a random name, in a directory of mode 0711, so the harness
+user can connect without a group in common with the daemon's user. Any
+local user who learns the socket's path can use the daemon's ssh keys;
+the directory's mode keeps others from listing it to learn the name.
+Without `SSH_AUTH_SOCK` the harness gets no ssh agent. ssh runs as the
+harness user, so `known_hosts` must list the repository's host in that
+user's `~/.ssh` or in the system's.
+
+The harness user logs in to Claude Code once on each machine, and tasks
+spend that account's quota; the daemon does not manage the login. On
+Linux Claude Code keeps it under the user's home, in `~/.claude`.
+**UNVERIFIED:** on macOS Claude Code keeps it in the user's login
+Keychain, which a process started through sudo may not be able to
+open.
+
+sudo relays SIGTERM to the command it runs but not SIGKILL (sudo(8),
+"Signal handling"), and the daemon's user cannot signal the harness
+user's processes. When the daemon kills a harness in this mode, as it
+does when a stopping harness has not exited within 30 seconds, it sends
+sudo SIGTERM and closes the harness's input instead; a harness that
+ignores both keeps running. A daemon that restarts and finds a harness
+its previous run left sends that harness's sudo SIGTERM.
+
+Checklist for a machine with a daemon user `orchestrator` and a harness
+user `orch-agent`. It has not been run.
+
+1. Create the harness user, such as with `sudo useradd --create-home
+   orch-agent` on Linux or `sudo sysadminctl -addUser orch-agent` on
+   macOS.
+2. Install `claude` where `orch-agent` can run it, write the sudoers
+   rule above with that path, and check it as `orchestrator` with
+   `sudo -n -u orch-agent -D / -- /usr/local/bin/claude --version`.
+3. Create the workspace directory, such as with `sudo install -d -o
+   orch-agent -m 0755 /srv/orchestrator/workspaces` on Linux. macOS's
+   system volume is read-only; use a directory such as
+   `/Users/Shared/orchestrator-workspaces` there.
+4. Log `orch-agent` in to Claude Code: `sudo -u orch-agent -i`, then
+   `claude` and `/login`. In the same shell, add the repository host's
+   key to `~/.ssh/known_hosts`, such as with `ssh-keyscan HOST >>
+   ~/.ssh/known_hosts`, after comparing its fingerprint with the one
+   the host publishes.
+5. As `orchestrator`, with its ssh agent running, start the daemon with
+   `-harness-user orch-agent -workspace-dir
+   /srv/orchestrator/workspaces -claude /usr/local/bin/claude` and the
+   usual flags. The log has a line "running tasks as the harness user"
+   with the user, the git and rm paths, and `ssh_agent=true`.
+6. Start a task with a repository and a prompt that commits a file.
+   The task page shows the branch pushed.
+7. `ps -o user,pid,ppid,command -ax | grep claude` shows `claude` run
+   by `orch-agent`, its parent a `sudo` process.
+8. In `sudo -u orch-agent -i`, `cat` the daemon's key and `ls` its
+   state directory fail with "Permission denied". Ask the agent to run
+   `ssh-add -l`: it lists the daemon's keys.
+9. With a task running, `sudo -u orch-agent kill -TERM <claude pid>`
+   ends `claude`, and the task page shows the harness's exit.
+10. With another task running, `kill -TERM <sudo pid>` as
+    `orchestrator` ends both sudo and `claude`.
+
 ### Using the GUI
 
 The dashboard lists the tasks that need attention, every task, the
@@ -207,14 +357,24 @@ Daemon flags:
   server with.
 - `-state-dir` (required): created when missing. It holds `state.json`,
   which records what each task needs to be resumed, one journal per task
-  under `journal/`, and each task's working directory under
-  `workspaces/<task>/`. Claude Code keeps its sessions outside it:
+  under `journal/`, and, unless `-workspace-dir` is given, each task's
+  working directory under `workspaces/<task>/`. Claude Code keeps its sessions outside it:
   Claude Code 2.1.289 on macOS kept them under `~/.claude/projects/` of
   the user running it ([resume spike](docs/design/2026-10-08-resume-spike.md)).
-- `-claude`: the `claude` executable, `claude` on `PATH` by default.
-  The daemon runs `claude --version` when it starts and exits if that
-  fails. Tasks use the Claude Code login of the OS user who starts the
-  daemon and spend that account's quota.
+- `-workspace-dir`: the directory holding each task's workspace,
+  `<task>/`; `workspaces/` under `-state-dir` by default. Required
+  with `-harness-user`; it must then exist, be owned by the harness
+  user, and be readable by the daemon's user.
+- `-harness-user`: the OS user that runs `claude` and every workspace
+  command, through `sudo`. Empty, the default, runs them as the
+  daemon's own user (see [Running the harness as another
+  user](#running-the-harness-as-another-user)).
+- `-claude`: the `claude` executable, `claude` on `PATH` by default;
+  with `-harness-user`, the absolute path the sudoers rule names.
+  The daemon runs `claude --version` when it starts, as the user who
+  runs tasks, and exits if that fails. Tasks use the Claude Code login
+  of that user, the daemon's own or the harness user, and spend that
+  account's quota.
 - `-git-identity`: name and email for the commits an agent makes, as
   `Name <email>`; `orchestrator <orchestrator@localhost>` by default.
 
@@ -257,7 +417,10 @@ needs those credentials on every daemon's machine, with write access to
 the repository; a repository over https that needs credentials fails
 to clone, as no credential helper applies. The harness and the agent it
 runs inherit the daemon's environment, the ssh agent included, so the
-agent's own `git` can authenticate over ssh the same way; the agent is
+agent's own `git` can authenticate over ssh the same way, or, with
+`-harness-user`, get the daemon's ssh agent through a socket the
+daemon relays (see [Running the harness as another
+user](#running-the-harness-as-another-user)); the agent is
 told not to push, and a `pre-push` hook in the clone refuses any ref
 but the task branch, so the daemon pushes for it. The agent's own `git
 commit` uses the clone's local configuration instead of the daemon
