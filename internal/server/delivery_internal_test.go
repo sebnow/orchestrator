@@ -55,3 +55,21 @@ func TestGivenAFailedPushAfterASuccessfulOneWhenTheTaskIsShownThenTheFailureIsSh
 	)
 	requireContains(t, getPage(t, srv.url+"/"), `<td><code>`+branch+`</code> <span class="badge state-failed">push failed</span></td>`)
 }
+
+func TestGivenBranchReportedWithOnlyUncommittedFilesWhenTheTaskIsShownThenThePageSaysSoAndNothingWasPushed(t *testing.T) {
+	srv := startTestServer(t)
+	task := startTaskViaForm(t, srv, "laptop", "Write the parser")
+	branch := "orchestrator/" + string(task)
+	events := &taskEvents{task: task}
+	events.add(protocol.KindHarnessStarted, `{"pid":7,"model":"haiku","workdir":"/w"}`)
+	events.add(protocol.KindBranchPushed, `{"branch":"`+branch+`","commit":"`+pushedCommit+`","ahead":0,"uncommitted":2,"error":""}`)
+	events.ingest(t, srv, "laptop")
+
+	page := getPage(t, srv.url+"/tasks/"+string(task))
+
+	requireContains(t, page,
+		`<dt>Branch</dt><dd><code>`+branch+`</code> at <code>0123456789ab</code>, 0 commits beyond the start; 2 files left uncommitted in the workspace</dd>`,
+		"Nothing to push on branch "+branch+" at 0123456789ab",
+	)
+	requireLacks(t, page, "Pushed branch")
+}

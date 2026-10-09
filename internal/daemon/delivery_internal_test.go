@@ -107,7 +107,7 @@ func TestGivenRemoteWithTheTaskBranchWhenPreparingThenItIsCheckedOutFromTheRemot
 	}
 }
 
-func TestGivenCommitsOnTheTaskBranchWhenDeliveringThenTheBranchIsPushedAndReportedOnce(t *testing.T) {
+func TestGivenCommitsOnTheTaskBranchWhenDeliveringThenTheBranchIsPushedOnceAndReportedWhileFilesStayUncommitted(t *testing.T) {
 	repo := makeTestRepo(t)
 	dir := cloneForTask(t, repo, "main")
 	commit := commitFile(t, dir, "work.txt", "done")
@@ -127,8 +127,43 @@ func TestGivenCommitsOnTheTaskBranchWhenDeliveringThenTheBranchIsPushedAndReport
 	if got := remoteRef(t, repo, "refs/heads/main"); got != repo.second {
 		t.Errorf("remote main = %s, want it untouched at %s", got, repo.second)
 	}
+	if again := deliver(t.Context(), dir, deliveryTask); again == nil || *again != want {
+		t.Errorf("delivered %+v again with a file still uncommitted, want %+v", again, want)
+	}
+	if err := os.Remove(filepath.Join(dir, "notes.txt")); err != nil {
+		t.Fatal(err)
+	}
 	if again := deliver(t.Context(), dir, deliveryTask); again != nil {
-		t.Errorf("delivered %+v again with nothing new", *again)
+		t.Errorf("delivered %+v again with nothing new and nothing uncommitted", *again)
+	}
+}
+
+func TestGivenUncommittedFilesButNoCommitsWhenDeliveringThenTheBranchIsReportedAsItStandsWithoutReachingTheRemote(t *testing.T) {
+	repo := makeTestRepo(t)
+	dir := cloneForTask(t, repo, "main")
+	if err := os.WriteFile(filepath.Join(dir, "file.txt"), []byte("changed"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "new.txt"), []byte("new"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	// With the remote gone, any attempt to read or push it fails.
+	hidden := repo.bare + ".hidden"
+	if err := os.Rename(repo.bare, hidden); err != nil {
+		t.Fatal(err)
+	}
+
+	pushed := deliver(t.Context(), dir, deliveryTask)
+
+	want := protocol.BranchPushed{Branch: "orchestrator/task-1", Commit: repo.second, Ahead: 0, Uncommitted: 2}
+	if pushed == nil || *pushed != want {
+		t.Fatalf("delivered %+v, want %+v", pushed, want)
+	}
+	if err := os.Rename(hidden, repo.bare); err != nil {
+		t.Fatal(err)
+	}
+	if got := remoteRef(t, repo, "refs/heads/orchestrator/task-1"); got != "" {
+		t.Errorf("remote branch = %s, want none pushed", got)
 	}
 }
 
@@ -270,6 +305,36 @@ func TestGivenTaskWithAWorkspaceWhenItsTurnEndsWithACommitThenTheBranchIsPushedB
 	}
 	if got := remoteRef(t, repo, "refs/heads/"+taskBranch(task)); got != commit {
 		t.Errorf("remote branch = %s, want %s", got, commit)
+	}
+}
+
+func TestGivenTaskWithAWorkspaceWhenItsTurnEndsWithFilesUncommittedAndNoCommitThenTheBranchIsReportedBeforeTheExit(t *testing.T) {
+	repo := makeTestRepo(t)
+	srv := startServer(t)
+	d := runDaemon(t, srv.url, t.TempDir())
+	task := srv.createTask(t, testDaemon, protocol.StartTask{
+		Prompt: "Do the work.", Workspace: &protocol.Workspace{Repo: repo.url, Ref: "main"}, PauseLimits: testPauseLimits,
+	})
+	proc := d.nextProcess(t)
+	if err := os.WriteFile(filepath.Join(proc.spec.Workdir, "draft.txt"), []byte("half done"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	finishTurn(t, proc, "session-1")
+	expectExit(t, proc)
+
+	events := srv.waitForEvent(t, task, "harness_exited", isKind(protocol.KindHarnessExited))
+	beforeLast := events[len(events)-2]
+	var pushed protocol.BranchPushed
+	if beforeLast.Kind != protocol.KindBranchPushed || json.Unmarshal(beforeLast.Payload, &pushed) != nil {
+		t.Fatalf("events: %s; want branch_pushed right before harness_exited", describe(events))
+	}
+	want := protocol.BranchPushed{Branch: taskBranch(task), Commit: repo.second, Uncommitted: 1}
+	if pushed != want {
+		t.Errorf("branch_pushed = %+v, want %+v", pushed, want)
+	}
+	if got := remoteRef(t, repo, "refs/heads/"+taskBranch(task)); got != "" {
+		t.Errorf("remote branch = %s, want none pushed", got)
 	}
 }
 

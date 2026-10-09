@@ -242,9 +242,13 @@ func transcriptEntry(entry transcript.Entry, nested html.Node) html.Node {
 		subject = html.Fragment(link(taskURL(string(b.To)), string(b.To)),
 			html.Text(" ended as "+b.State+" before the agent's messages reached it; they were not delivered"))
 	case transcript.BranchPushed:
-		label = "Pushed branch " + b.Branch + " at " + shortCommit(b.Commit)
-		if b.Error != "" {
+		switch {
+		case b.Error != "":
 			label = "Could not push branch " + b.Branch + " at " + shortCommit(b.Commit)
+		case b.Ahead == 0:
+			label = "Nothing to push on branch " + b.Branch + " at " + shortCommit(b.Commit)
+		default:
+			label = "Pushed branch " + b.Branch + " at " + shortCommit(b.Commit)
 		}
 		body = html.Fragment(paragraph(branchCounts(b.Ahead, b.Uncommitted)), errorText(b.Error))
 	case transcript.TaskMoved:

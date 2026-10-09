@@ -161,12 +161,19 @@ type QuotaWindow struct {
 	ResetsAt    time.Time `json:"resets_at"`
 }
 
-// BranchPushed reports the daemon pushing a task's branch, on which the
+// BranchPushed reports, at the end of a turn, the branch on which a
 // task's work leaves the daemon (docs/adr/2026-10-08-work-delivery.md).
-// Branch is the branch's name and Commit the commit pushed. Ahead counts
-// the branch's commits beyond the ref the task started from, and
-// Uncommitted the files left modified or untracked in the workspace.
-// Error says why the push failed, and is empty when it succeeded.
+// The daemon sends it when the turn leaves the branch holding commits
+// the remote's branch lacks, which it pushes, or leaves files
+// uncommitted in the workspace, or both; it sends none when neither
+// holds. Branch is the branch's name and Commit the commit the branch
+// holds in the workspace. Ahead counts the branch's commits beyond the
+// ref the task started from, and Uncommitted the files left modified or
+// untracked in the workspace. With Error empty, the remote's branch
+// holds Commit when Ahead is above zero, pushed by this turn or an
+// earlier one; when Ahead is zero the branch holds no work, and the
+// daemon pushed nothing. Error says why the branch could not be read or
+// pushed.
 type BranchPushed struct {
 	Branch      string `json:"branch"`
 	Commit      string `json:"commit"`

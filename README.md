@@ -429,8 +429,9 @@ The daemon delivers a task's work by pushing its branch to the
 repository; nothing of the work goes to the server
 ([work delivery](docs/adr/2026-10-08-work-delivery.md)). At the end of
 every turn, when the branch holds commits that the repository's copy of
-it lacks, the daemon pushes it with a plain `git push`, never forced,
-and the task page shows the branch, the commit pushed, how many commits
+it lacks, the daemon pushes it with a plain `git push`, never forced.
+After a push, and after any turn that leaves files uncommitted, pushed
+or not, the task page shows the branch, its commit, how many commits
 the branch holds beyond the ref, how many files the agent left
 uncommitted, and any push error. The dashboard's task list shows each
 task's branch and marks a failed push. The daemon adds to the task's

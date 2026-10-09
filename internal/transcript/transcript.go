@@ -265,12 +265,14 @@ type TaskMoved struct {
 	Prompt string
 }
 
-// BranchPushed is the daemon pushing the branch the task's work is
-// delivered on (docs/adr/2026-10-08-work-delivery.md): Commit is the
-// commit pushed, Ahead counts the branch's commits beyond the ref the
+// BranchPushed is the daemon reporting, at the end of a turn, the branch
+// the task's work is delivered on (docs/adr/2026-10-08-work-delivery.md),
+// with the meaning of protocol.BranchPushed: Commit is the commit the
+// branch holds, Ahead counts the branch's commits beyond the ref the
 // task started from, and Uncommitted the files the workspace held
-// uncommitted. Error says why the push failed, and is empty when it
-// succeeded.
+// uncommitted. With Error empty, the remote holds Commit when Ahead is
+// above zero, and nothing was pushed when Ahead is zero. Error says why
+// the branch could not be read or pushed.
 type BranchPushed struct {
 	Branch      string
 	Commit      string

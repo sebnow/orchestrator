@@ -150,9 +150,12 @@ exit 0
 
 // deliver pushes task's branch from the workspace dir when the branch
 // holds commits beyond the task's start that the remote's branch lacks,
-// and reports the push. It reports nothing when dir is not a workspace
-// whose work is delivered, or when there is nothing to push. A push that
-// fails, or that deliver refuses, is reported with Error set.
+// and reports the branch when it pushed it or when the workspace holds
+// uncommitted files, so that work left uncommitted is seen. With nothing
+// to push it pushes nothing and needs no remote. It reports nothing when
+// dir is not a workspace whose work is delivered, or when there is
+// nothing to push and nothing uncommitted. A push that fails, or that
+// deliver refuses, is reported with Error set.
 func (r runner) deliver(ctx context.Context, dir string, task protocol.TaskID) *protocol.BranchPushed {
 	if !r.isClone(ctx, dir) {
 		return nil
@@ -178,12 +181,15 @@ func (r runner) deliver(ctx context.Context, dir string, task protocol.TaskID) *
 		report.Error = "count the branch's commits: " + err.Error()
 		return report
 	}
-	if report.Ahead == 0 {
-		return nil
-	}
 	if report.Uncommitted, err = r.countUncommitted(ctx, dir); err != nil {
+		if report.Ahead == 0 {
+			return nil
+		}
 		report.Error = err.Error()
 		return report
+	}
+	if report.Ahead == 0 {
+		return uncommittedOnly(report)
 	}
 	remoteHead, remoteCommit, err := r.remoteBranches(ctx, dir, branch)
 	if err != nil {
@@ -191,10 +197,19 @@ func (r runner) deliver(ctx context.Context, dir string, task protocol.TaskID) *
 		return report
 	}
 	if remoteCommit == commit {
-		return nil
+		return uncommittedOnly(report)
 	}
 	if err := r.pushBranch(ctx, dir, branch, startRef, remoteHead); err != nil {
 		report.Error = err.Error()
+	}
+	return report
+}
+
+// uncommittedOnly is report, of a branch with nothing to push, when the
+// workspace holds uncommitted files, or else nil.
+func uncommittedOnly(report *protocol.BranchPushed) *protocol.BranchPushed {
+	if report.Uncommitted == 0 {
+		return nil
 	}
 	return report
 }
