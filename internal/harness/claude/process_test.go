@@ -175,7 +175,7 @@ func TestGivenSpecWhenStartingThenClaudeRunsInStreamJSONModeWiredToTheGateway(t 
 	_, init, _ := startFake(t, spec)
 
 	argv := init.Argv
-	for _, flag := range []string{"-p", "--verbose", "--strict-mcp-config"} {
+	for _, flag := range []string{"-p", "--verbose", "--strict-mcp-config", "--forward-subagent-text"} {
 		if !slices.Contains(argv, flag) {
 			t.Errorf("argv lacks %s: %q", flag, argv)
 		}

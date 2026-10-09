@@ -141,6 +141,11 @@ func arguments(spec harness.Spec) ([]string, error) {
 		"--input-format", "stream-json",
 		"--output-format", "stream-json",
 		"--verbose",
+		// The text and thinking of the harness's own subagents reach the
+		// transcript too, nested under the tool call that started each
+		// (https://code.claude.com/docs/en/headless.md, "Follow subagent
+		// messages"; Claude Code 2.1.211 or later).
+		"--forward-subagent-text",
 		"--model", spec.Model,
 		// Every tool call that needs approval goes to the gateway, whatever
 		// the machine's default permission mode is.

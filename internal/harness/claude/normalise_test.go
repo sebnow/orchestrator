@@ -204,3 +204,41 @@ func TestGivenLinesTheFixturesLackWhenNormalisingThenEachHasItsBody(t *testing.T
 		})
 	}
 }
+
+// The subagent fixture is written by hand from the documented shape; see
+// testdata/README.md.
+func TestGivenSubagentRunWhenNormalisingThenTheSubagentsBodiesCarryTheSpawningCallAndTheMainConversationsDoNot(t *testing.T) {
+	var bodies []transcript.Body
+	for _, line := range fixtureLines(t, "testdata/subagent.jsonl") {
+		bodies = append(bodies, claude.Normalise(line)...)
+	}
+
+	type entry struct {
+		kind   transcript.Kind
+		parent string
+	}
+	var got []entry
+	for _, body := range bodies {
+		got = append(got, entry{body.Kind(), transcript.ParentToolUseID(body)})
+	}
+	const agent = "toolu_fixture_agent"
+	want := []entry{
+		{transcript.KindToolCall, ""},
+		{transcript.KindUnknown, agent},
+		{transcript.KindAgentThinking, agent},
+		{transcript.KindToolCall, agent},
+		{transcript.KindToolResult, agent},
+		{transcript.KindAgentText, agent},
+		{transcript.KindToolResult, ""},
+		{transcript.KindAgentText, ""},
+		{transcript.KindTurnEnded, ""},
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("bodies = %+v\nwant     %+v", got, want)
+	}
+	texts := bodiesOf[transcript.AgentText](bodies)
+	if len(texts) != 2 || texts[0] != (transcript.AgentText{Text: "There are 3 files.", ParentToolUseID: agent}) ||
+		texts[1] != (transcript.AgentText{Text: "The workspace holds 3 files."}) {
+		t.Errorf("texts = %+v", texts)
+	}
+}

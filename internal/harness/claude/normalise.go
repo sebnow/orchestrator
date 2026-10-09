@@ -40,6 +40,12 @@ type contentBlock struct {
 // start of every turn, and rate_limit_event, which the daemon reports in
 // neutral form as a quota_observed event of its own. Everything else,
 // including a line that is not stream-json, becomes transcript.Unknown.
+//
+// An assistant or user message that a subagent wrote carries the id of
+// the tool call that started the subagent in parent_tool_use_id
+// (https://code.claude.com/docs/en/headless.md, "Follow subagent
+// messages"); every body made from it carries that id as its
+// ParentToolUseID.
 func Normalise(payload json.RawMessage) []transcript.Body {
 	msg, err := Parse(payload)
 	if err != nil {
@@ -54,17 +60,61 @@ func Normalise(payload json.RawMessage) []transcript.Body {
 	if result, ok := msg.Result(); ok {
 		return []transcript.Body{turnEnded(msg.Subtype, result)}
 	}
+	var bodies []transcript.Body
 	switch msg.Type {
 	case TypeAssistant:
 		if blocks, ok := messageBlocks(payload); ok {
-			return assistantBodies(blocks)
+			bodies = assistantBodies(blocks)
 		}
 	case TypeUser:
 		if blocks, ok := messageBlocks(payload); ok {
-			return userBodies(blocks)
+			bodies = userBodies(blocks)
 		}
 	}
-	return []transcript.Body{unknown(lineType(msg.Type, msg.Subtype), payload)}
+	if bodies == nil {
+		bodies = []transcript.Body{unknown(lineType(msg.Type, msg.Subtype), payload)}
+	}
+	if parent := parentToolUseID(payload); parent != "" {
+		for idx, body := range bodies {
+			bodies[idx] = withParent(body, parent)
+		}
+	}
+	return bodies
+}
+
+// parentToolUseID returns the line's parent_tool_use_id, which is null
+// for the main conversation's messages.
+func parentToolUseID(line json.RawMessage) string {
+	var env struct {
+		ParentToolUseID *string `json:"parent_tool_use_id"`
+	}
+	if err := json.Unmarshal(line, &env); err != nil || env.ParentToolUseID == nil {
+		return ""
+	}
+	return *env.ParentToolUseID
+}
+
+// withParent returns body marked as written by the subagent that the tool
+// call parent started.
+func withParent(body transcript.Body, parent string) transcript.Body {
+	switch b := body.(type) {
+	case transcript.AgentText:
+		b.ParentToolUseID = parent
+		return b
+	case transcript.AgentThinking:
+		b.ParentToolUseID = parent
+		return b
+	case transcript.ToolCall:
+		b.ParentToolUseID = parent
+		return b
+	case transcript.ToolResult:
+		b.ParentToolUseID = parent
+		return b
+	case transcript.Unknown:
+		b.ParentToolUseID = parent
+		return b
+	}
+	return body
 }
 
 func turnEnded(subtype string, result Result) transcript.TurnEnded {

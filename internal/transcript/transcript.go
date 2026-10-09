@@ -112,28 +112,36 @@ const (
 // AgentText is text the agent wrote to the owner.
 type AgentText struct {
 	Text string
+	// ParentToolUseID, here and on AgentThinking, ToolCall, ToolResult
+	// and Unknown, names the ToolCall that started the harness's own
+	// subagent which wrote the entry; it is empty for the task's main
+	// conversation. A subagent's entries are nested under that call.
+	ParentToolUseID string
 }
 
 // AgentThinking is the agent reasoning. Text is empty when the harness
 // reports that the agent thought but withholds what.
 type AgentThinking struct {
-	Text string
+	Text            string
+	ParentToolUseID string
 }
 
 // ToolCall is the agent calling a tool. Input is the tool's arguments as
 // JSON.
 type ToolCall struct {
-	ID    string
-	Name  string
-	Input json.RawMessage
+	ID              string
+	Name            string
+	Input           json.RawMessage
+	ParentToolUseID string
 }
 
 // ToolResult is what a tool returned to the ToolCall with ID ToolCallID,
 // as text. IsError is set when the call failed or was refused.
 type ToolResult struct {
-	ToolCallID string
-	Content    string
-	IsError    bool
+	ToolCallID      string
+	Content         string
+	IsError         bool
+	ParentToolUseID string
 }
 
 // TurnEnded closes one turn of the agent.
@@ -271,9 +279,28 @@ type BranchPushed struct {
 // harness's own type for a harness line, empty otherwise. Raw is the
 // record's payload as stored.
 type Unknown struct {
-	RecordKind string
-	Type       string
-	Raw        json.RawMessage
+	RecordKind      string
+	Type            string
+	Raw             json.RawMessage
+	ParentToolUseID string
+}
+
+// ParentToolUseID returns the ParentToolUseID of body, or "" for a body
+// that has none: the entry belongs to the task's main conversation.
+func ParentToolUseID(body Body) string {
+	switch b := body.(type) {
+	case AgentText:
+		return b.ParentToolUseID
+	case AgentThinking:
+		return b.ParentToolUseID
+	case ToolCall:
+		return b.ParentToolUseID
+	case ToolResult:
+		return b.ParentToolUseID
+	case Unknown:
+		return b.ParentToolUseID
+	}
+	return ""
 }
 
 func (OwnerPrompt) Kind() Kind          { return KindOwnerPrompt }
