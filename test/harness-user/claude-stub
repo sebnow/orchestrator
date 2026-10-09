@@ -1,0 +1,110 @@
+#!/bin/bash
+# A stand-in for Claude Code for the harness-user container check. It
+# speaks just enough stream-json for the daemon to run turns
+# (internal/harness/claude/process.go): a system/init line, then for each
+# user line on stdin an assistant line and a result echoing the prompt's
+# uuid, and it exits 0 when stdin closes and 143 on SIGTERM.
+#
+# The assistant text is a JSON object reporting what the stub sees as the
+# harness user: its user, uid, pid, parent, cwd, SSH_AUTH_SOCK and the
+# output of ssh-add -l. A run without --resume writes a file in its cwd
+# and commits it, so that the daemon has a branch to push.
+#
+# A prompt containing "hold:PATH" holds the turn after the assistant line,
+# without reading stdin, until PATH exists, so that the check can look
+# at the running process and signal it.
+#
+# Every run leaves files named by its pid in /tmp/stub-claude: .term on
+# SIGTERM, .eof when stdin closed.
+set -u
+
+marks=/tmp/stub-claude
+
+if [ "${1:-}" = "--version" ]; then
+	echo "0.0.0-stub (Claude Code)"
+	exit 0
+fi
+
+trap 'date +%s >"$marks/$$.term"; exit 143' TERM
+
+session=""
+resumed=false
+while [ $# -gt 0 ]; do
+	if [ "$1" = "--resume" ] && [ $# -gt 1 ]; then
+		session=$2
+		resumed=true
+		shift
+	fi
+	shift
+done
+if [ -z "$session" ]; then
+	session=$(cat /proc/sys/kernel/random/uuid)
+fi
+
+newid() {
+	cat /proc/sys/kernel/random/uuid
+}
+
+emit_init() {
+	jq -cn --arg s "$session" --arg cwd "$PWD" --arg u "$(newid)" \
+		'{type:"system",subtype:"init",cwd:$cwd,session_id:$s,tools:[],mcp_servers:[],model:"stub",permissionMode:"default",claude_code_version:"0.0.0-stub",uuid:$u}'
+}
+
+committed=false
+
+# report prints the JSON object the assistant line carries.
+report() {
+	local add add_status commit="" commit_error=""
+	add=$(ssh-add -l 2>&1)
+	add_status=$?
+	if [ "$resumed" = false ] && [ "$committed" = false ]; then
+		local file="stub-$$.txt"
+		if out=$( { echo "written by the claude stub as $(id -un), pid $$" >"$file" && git add -- "$file" && git commit --quiet -m "stub: add $file" && git rev-parse HEAD; } 2>&1); then
+			commit=$out
+			committed=true
+		else
+			commit_error=$out
+		fi
+	fi
+	jq -cn \
+		--arg user "$(id -un)" --argjson uid "$(id -u)" \
+		--argjson pid "$$" --argjson ppid "$PPID" \
+		--arg cwd "$PWD" --arg sock "${SSH_AUTH_SOCK-}" \
+		--arg add "$add" --argjson add_status "$add_status" \
+		--arg commit "$commit" --arg commit_error "$commit_error" \
+		--argjson resumed "$resumed" --arg home "${HOME-}" \
+		'{stub:"report",user:$user,uid:$uid,pid:$pid,ppid:$ppid,cwd:$cwd,home:$home,ssh_auth_sock:$sock,ssh_add_l:$add,ssh_add_status:$add_status,commit:$commit,commit_error:$commit_error,resumed:$resumed}'
+}
+
+turn() {
+	local uuid=$1 content=$2 text
+	text=$(report)
+	jq -cn --arg s "$session" --arg t "$text" --arg u "$(newid)" \
+		'{type:"assistant",message:{model:"stub",id:("msg_" + $u),type:"message",role:"assistant",content:[{type:"text",text:$t}],stop_reason:null},parent_tool_use_id:null,session_id:$s,uuid:$u}'
+	case $content in
+	*hold:*)
+		local release=${content#*hold:}
+		release=${release%%[[:space:]]*}
+		while [ ! -e "$release" ]; do
+			sleep 0.2
+		done
+		;;
+	esac
+	jq -cn --arg s "$session" --arg m "$uuid" --arg u "$(newid)" \
+		'{type:"result",subtype:"success",is_error:false,duration_ms:1,duration_api_ms:0,num_turns:1,result:"stub turn done",stop_reason:"end_turn",session_id:$s,total_cost_usd:0,usage:{input_tokens:0,output_tokens:0,cache_creation_input_tokens:0,cache_read_input_tokens:0},user_message_uuid:$m,uuid:$u}'
+}
+
+emit_init
+while IFS= read -r line; do
+	case $(jq -r '.type // ""' <<<"$line") in
+	user)
+		turn "$(jq -r '.uuid // ""' <<<"$line")" "$(jq -r '.message.content | if type == "string" then . else tostring end' <<<"$line")"
+		;;
+	control_request)
+		jq -cn --arg r "$(jq -r '.request_id' <<<"$line")" \
+			'{type:"control_response",response:{subtype:"success",request_id:$r}}'
+		;;
+	esac
+done
+date +%s >"$marks/$$.eof"
+exit 0

@@ -1,0 +1,8 @@
+Cmnd_Alias ORCH_CLAUDE = /usr/local/bin/claude
+Cmnd_Alias ORCH_GIT = /usr/bin/git
+Cmnd_Alias ORCH_RM = /usr/bin/rm
+Cmnd_Alias ORCH_HARNESS = ORCH_CLAUDE, ORCH_GIT, ORCH_RM
+Defaults!ORCH_HARNESS !requiretty, umask=0077
+Defaults!ORCH_CLAUDE env_keep += "PATH SSH_AUTH_SOCK"
+Defaults!ORCH_GIT env_keep += "PATH SSH_AUTH_SOCK GIT_TERMINAL_PROMPT GIT_CONFIG_GLOBAL GIT_CONFIG_NOSYSTEM GIT_SSH_COMMAND"
+orchestrator ALL = (orch-agent) CWD=* NOPASSWD: ORCH_HARNESS
