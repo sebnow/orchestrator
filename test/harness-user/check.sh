@@ -173,6 +173,30 @@ daemon_connected() {
 	[ "$(grep -c 'msg=connecting' "$DAEMON_LOG")" -ge "$1" ]
 }
 
+# no_daemon succeeds when no daemon process runs. A daemon that outlived
+# its SIGKILL would share its state directory with the restarted one, and
+# both would journal the end of the turn.
+no_daemon() {
+	! pgrep -f "^$BIN/daemon " >/dev/null
+}
+
+# restart_reported TASK checks what the server holds of TASK, whose turn
+# a daemon restart cut short, once the restarted daemon has sent its
+# events: one harness_exited, the restart's, and the task paused for the
+# owner to resume (docs/adr/2026-10-08-shutdown-recovery.md).
+restart_reported() {
+	local task=$1 exits
+	check "restart: the restarted daemon sent the task's events and deleted its journal" \
+		wait_until 30 test ! -e "$STATE/journal/$task.jsonl"
+	exits=$(events "$task" | jq -c '[.[] | select(.kind == "harness_exited") | {seq, payload}]')
+	echo "# harness_exited events: $exits"
+	check "restart: exactly one harness_exited, the restart's cut-short one" \
+		jq_true 'length == 1 and .[0].payload.exit_code == -1 and .[0].payload.error == "daemon restarted during the turn"' <<<"$exits"
+	check "restart: no daemon logged the end of a process of the task" \
+		test -z "$(grep "msg=\"process ended\" task=$task" "$DAEMON_LOG")"
+	check "restart: the task is paused" jq_true '.state == "paused"' <<<"$(curl -sf "$API/v1/tasks/$task")"
+}
+
 if [ "$REAL" = true ]; then
 	. /usr/local/bin/real-claude.sh
 	install_credentials
@@ -415,6 +439,7 @@ hold_task E
 E=$task
 kill -KILL "$daemon_pid"
 wait "$daemon_pid" 2>/dev/null
+check "restart: no daemon process outlives the SIGKILL" wait_until 5 no_daemon
 check "restart: the stub outlives the daemon killed with SIGKILL" running "$stub_pid"
 start_daemon
 check "restart: the restarted daemon starts" wait_until 30 daemon_connected 2
@@ -425,5 +450,6 @@ echo "# $line"
 check "restart: the daemon logs that it killed the harness its previous run left" test -n "$line"
 check "restart: task E's harness exit is reported" wait_for "$E" 'any(.[]; .kind == "harness_exited")' 30
 echo "# harness_exited: $(payload "$E" harness_exited)"
+restart_reported "$E"
 
 finish

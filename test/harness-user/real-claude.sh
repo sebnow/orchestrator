@@ -285,6 +285,7 @@ real_checks() {
 		wait "$daemon_pid" 2>/dev/null
 		t0=$(now)
 		echo "# as root: kill -KILL <daemon>"
+		check "restart: no daemon process outlives the SIGKILL" wait_until 5 no_daemon
 		sleep 2
 		if alive "$claude_pid"; then
 			echo "# 2 s after the daemon's SIGKILL claude (pid $claude_pid) still runs"
@@ -297,6 +298,7 @@ real_checks() {
 		grep "task=$E" "$DAEMON_LOG" | grep -E 'previous daemon' | evidence
 		check "restart: task E's harness exit is reported" wait_for "$E" 'any(.[]; .kind == "harness_exited")' 60
 		echo "# harness_exited: $(payload "$E" harness_exited | cut -c1-600)"
+		restart_reported "$E"
 		task_cost "task E" "$E"
 	fi
 }
