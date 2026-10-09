@@ -30,6 +30,8 @@ func (s *Server) routeGUI(mux *http.ServeMux) {
 	mux.HandleFunc("GET /tasks/{task}/stream", s.streamTask)
 	mux.HandleFunc("GET /tasks/{task}/updates", s.getTaskUpdates)
 	s.routeAgentsGUI(mux)
+	mux.HandleFunc("GET /daemons/{daemon}", s.getDaemonPage)
+	mux.HandleFunc("POST /daemons/{daemon}/labels", s.postLabelsForm)
 }
 
 // fromHTMX reports whether htmx made the request, in which case the
@@ -186,6 +188,7 @@ func (s *Server) dashboardLists(ctx context.Context, showDismissed bool) (html.N
 		row := component.Daemon{
 			ID: string(daemon.ID), LastSeen: daemon.LastSeen, Quota: daemon.Quota, QuotaAt: daemon.QuotaAt,
 			Connected: slices.Contains(connected, daemon.ID), Slots: s.sched.policy.SlotsPerDaemon, InUse: daemon.InUse,
+			Labels: Merge(daemon.Facts, daemon.Labels),
 		}
 		if daemon.Slots != nil {
 			row.Slots = *daemon.Slots

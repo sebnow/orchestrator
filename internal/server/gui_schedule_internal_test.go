@@ -77,7 +77,7 @@ func TestGivenQueuedTasksAndAReadingWhenTheDashboardIsShownThenItShowsPlacesReas
 		`<td><span class="badge state-running">running</span></td><td><a href="/tasks/`+string(running)+`">Touch two files</a></td><td></td><td>normal</td><td>laptop</td>`,
 		`<h2>Budget</h2>`, "42% used", "Taken 5 minutes ago",
 		"Filler runs while the five-hour window is below 50% used, low priority below 85%",
-		`<td>laptop</td><td>claude-code 2.1.289</td>`, `<td>yes</td><td>1 of 1 in use</td>`,
+		`<td><a href="/daemons/laptop">laptop</a></td><td>claude-code 2.1.289</td>`, `<td>yes</td><td>1 of 1 in use</td>`,
 		`<option value="" selected="">Any connected daemon</option>`,
 		`<option value="" selected="">The agent&#39;s, or normal</option>`,
 		`<input name="filler" type="checkbox" value="on">`,

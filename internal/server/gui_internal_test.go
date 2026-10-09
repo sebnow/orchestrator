@@ -185,7 +185,7 @@ func TestGivenTasksAndAQuotaReadingWhenDashboardRequestedThenAttentionTasksDaemo
 		`<span class="badge state-paused">paused</span> <a href="/tasks/`+string(paused)+`">Run ping five times…</a><span class="reason">paused: stopped after DONE-1</span>`,
 		`<a href="/tasks/`+string(waiting)+`">Touch two files</a><span class="reason">asks to run Bash</span>`,
 		`<td>laptop</td><td>`+testDefaultModel+`</td><td>$0.0313</td>`,
-		`<td>laptop</td><td>claude-code 2.1.289</td>`,
+		`<td><a href="/daemons/laptop">laptop</a></td><td>claude-code 2.1.289</td>`,
 		`<span class="badge quota-allowed">allowed</span>`,
 		"five hour: ", "42% used",
 		`hx-trigger="every 5s"`,

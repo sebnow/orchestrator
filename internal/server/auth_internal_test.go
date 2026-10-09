@@ -111,6 +111,7 @@ func TestGivenAnotherDaemonsCertificateWhenItRequestsTheDaemonsRoutesThenForbidd
 		newRequest(t, http.MethodGet, srv.url+"/v1/daemons/laptop/commands"),
 		newRequest(t, http.MethodPost, srv.url+"/v1/daemons/laptop/events"),
 		newRequest(t, http.MethodPost, srv.url+"/v1/daemons/laptop/tasks/task-1/requests"),
+		newRequest(t, http.MethodPut, srv.url+"/v1/daemons/laptop/facts"),
 	} {
 		if got := status(t, client, req); got != http.StatusForbidden {
 			t.Errorf("%s %s: status %d, want 403", req.Method, req.URL.Path, got)
@@ -127,6 +128,7 @@ func TestGivenNoClientCertificateWhenTheDaemonRoutesAreRequestedThenUnauthorized
 		newRequest(t, http.MethodGet, srv.url+"/v1/daemons/laptop/commands"),
 		newRequest(t, http.MethodPost, srv.url+"/v1/daemons/laptop/events"),
 		newRequest(t, http.MethodPost, srv.url+"/v1/daemons/laptop/tasks/task-1/requests"),
+		newRequest(t, http.MethodPut, srv.url+"/v1/daemons/laptop/facts"),
 	} {
 		if got := status(t, client, req); got != http.StatusUnauthorized {
 			t.Errorf("%s %s: status %d, want 401", req.Method, req.URL.Path, got)

@@ -427,10 +427,12 @@ type Daemon struct {
 	InUse     int
 	Quota     *protocol.QuotaObserved
 	QuotaAt   time.Time
+	// Labels are its facts and the owner's labels, merged.
+	Labels map[string]string
 }
 
 // DaemonColumns head a Table of DaemonRows.
-var DaemonColumns = []string{"Daemon", "Harness", "Last seen", "Connected", "Slots", "Quota"}
+var DaemonColumns = []string{"Daemon", "Harness", "Last seen", "Connected", "Slots", "Labels", "Quota"}
 
 // DaemonRow is a daemon in the daemon list.
 func DaemonRow(daemon Daemon) html.Node {
@@ -439,11 +441,12 @@ func DaemonRow(daemon Daemon) html.Node {
 		quota = QuotaReadout(*daemon.Quota, daemon.QuotaAt)
 	}
 	return html.El("tr", nil,
-		cell(html.Text(daemon.ID)),
+		cell(link(daemonURL(daemon.ID), daemon.ID)),
 		cell(html.Text(daemon.Harness)),
 		cell(timestamp(daemon.LastSeen)),
 		cell(connection(daemon)),
 		cell(html.Text(fmt.Sprintf("%d of %d in use", daemon.InUse, daemon.Slots))),
+		cell(LabelList(daemon.Labels), html.Text(" "), link(daemonURL(daemon.ID), "edit")),
 		cell(quota),
 	)
 }
