@@ -197,8 +197,23 @@ and `USER` for the harness user (sudoers(5), "Command environment"). The
 daemon passes the rest as follows:
 
 - `PATH`: the daemon's, in sudo's own environment. sudo keeps it
-  because `env_keep` lists it, unless sudoers sets `secure_path`, whose
-  value then replaces it (sudoers(5), "env_reset").
+  because `env_keep` lists it, unless sudoers sets `secure_path`: sudo
+  then replaces `PATH` with that value whatever `env_keep` lists
+  (sudoers(5), "env_reset"). Debian's `/etc/sudoers` sets it, and in
+  the container check below `claude` and its Bash tool got
+  `/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin`
+  rather than the daemon's `PATH`. The daemon does not change sudoers;
+  decide when you deploy whether `claude` should get the daemon's
+  `PATH`. To let it through to `claude` and the agent's tools, add this
+  line to `/etc/sudoers.d/orchestrator`, with `/usr/local/bin/claude`
+  replaced by the value of `-claude`:
+
+      Defaults!/usr/local/bin/claude !secure_path
+
+  This would be needed, for example, when `claude` is the npm package
+  and `node` is installed outside `secure_path` (not tested). The line
+  covers `claude` only: `git` and `rm`, which the daemon runs through
+  sudo directly, still get `secure_path`, which includes `/usr/bin`.
 - `SSH_AUTH_SOCK`: when the daemon has an ssh agent, the path of the
   socket the daemon relays to it (below), in sudo's own environment.
   sudo keeps it because `env_keep` lists it.
@@ -226,8 +241,9 @@ user's `~/.ssh` or in the system's.
 
 The harness user logs in to Claude Code once on each machine, and tasks
 spend that account's quota; the daemon does not manage the login. On
-Linux Claude Code keeps it under the user's home, in `~/.claude`. On
-macOS, see step 5 of the checklist below.
+Linux Claude Code keeps it under the user's home, in
+`~/.claude/.credentials.json`. On macOS, see step 5 of the checklist
+below.
 
 sudo relays SIGTERM to the command it runs but not SIGKILL (sudo(8),
 "Signal handling"), and the daemon's user cannot signal the harness
@@ -249,11 +265,22 @@ left. With Docker running, from the repository root:
 
 It prints `ok` or `not ok` for each check and exits 1 if one fails.
 The [findings](docs/design/2026-10-09-harness-user-container.md)
-record a run. The
-steps that need a Claude Code login or macOS stay manual: logging
-`orch-agent` in (step 4), step 5, the macOS forms of steps 1 and 3,
-and how `claude` itself, rather than the stub, ends on SIGTERM (steps
-10 and 11).
+record a run.
+
+On macOS with a Claude Code login in the Keychain, `run.sh
+--real-claude` runs the same container with Claude Code itself. It
+copies the login, without its refresh token, into `orch-agent`'s
+`~/.claude/.credentials.json` and spends a few short haiku turns of
+that account's quota. It covers step 4's login check (`claude -p` as
+`orch-agent` finds a copied login under sudo), steps 7, 8 and 11 with
+`claude`, the permission gateway, the `PATH` with and without the
+`!secure_path` line above, and a stop and a daemon restart with
+`claude` running a tool. Step 10 is not run with `claude`: it sends
+`claude` the same SIGTERM from `orch-agent` instead of through sudo,
+so step 11's result is expected to carry over (not tested). Its
+[findings](docs/design/2026-10-09-harness-user-real-claude.md) record
+a run. The interactive `/login` of step 4, step 5, and the macOS forms
+of steps 1 and 3 stay manual.
 
 1. Create the harness user, such as with `sudo useradd --create-home
    orch-agent` on Linux or `sudo sysadminctl -addUser orch-agent` on
