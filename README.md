@@ -189,8 +189,8 @@ to enter a workspace the harness user owns; it needs sudo 1.9.3 or
 later (sudoers(5), "Chdir_Spec"). `umask=0077` makes the workspaces
 readable by the harness user only: sudo runs the command with the union
 of the daemon's umask and this one (sudoers(5), "umask"). sudo
-1.9.17p2's `visudo -c` accepted these lines; they have not been tried
-on a machine with a harness user.
+1.9.17p2's `visudo -c` accepted these lines, and sudo 1.9.16p2 ran
+them, with `rm` at `/usr/bin/rm`, in the container check below.
 
 sudo resets the environment and sets `HOME`, `MAIL`, `SHELL`, `LOGNAME`
 and `USER` for the harness user (sudoers(5), "Command environment"). The
@@ -238,7 +238,22 @@ ignores both keeps running. A daemon that restarts and finds a harness
 its previous run left sends that harness's sudo SIGTERM.
 
 Checklist for a machine with a daemon user `orchestrator` and a harness
-user `orch-agent`. It has not been run.
+user `orch-agent`. A container check runs steps 1 to 3, the
+`known_hosts` part of step 4, and steps 6 to 11 on Linux, with a stub
+in place of `claude`, and asserts each. It also checks that the daemon
+sends sudo SIGTERM when a stopped harness outlasts the 30 s timeout,
+and that a restarted daemon terminates the harness its previous run
+left. With Docker running, from the repository root:
+
+    test/harness-user/run.sh
+
+It prints `ok` or `not ok` for each check and exits 1 if one fails.
+The [findings](docs/design/2026-10-09-harness-user-container.md)
+record a run. The
+steps that need a Claude Code login or macOS stay manual: logging
+`orch-agent` in (step 4), step 5, the macOS forms of steps 1 and 3,
+and how `claude` itself, rather than the stub, ends on SIGTERM (steps
+10 and 11).
 
 1. Create the harness user, such as with `sudo useradd --create-home
    orch-agent` on Linux or `sudo sysadminctl -addUser orch-agent` on
