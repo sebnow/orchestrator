@@ -503,11 +503,11 @@ may spawn is also told the name and description of every agent. A child
 runs on its parent's daemon when that has a free slot and the labels
 the child requires (see [Placement](#placement)), in a fresh clone of
 the parent's repository if it has one. A child started as an agent has
-that agent's tools, priority, filler flag and labels, and its model and
-pause limits, or else the parent's. A child started as no agent may
-call both `spawn_task` and `send_message`, whatever its parent may
-call, requires no labels, and takes its parent's model, pause limits,
-priority and filler flag. A model or labels given to
+that agent's priority, filler flag and labels, its model and pause
+limits, or else the parent's, and those of the agent's tools that the
+parent may call too. A child started as no agent may call the tools its
+parent may call, requires no labels, and takes its parent's model,
+pause limits, priority and filler flag. A model or labels given to
 `spawn_task` win over both. A message to a `finished` task becomes its
 next turn; one to a running task waits until its turn ends, and one to
 a `paused` task until the owner resumes it and that turn ends. Messages

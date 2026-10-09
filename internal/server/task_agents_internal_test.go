@@ -161,3 +161,63 @@ func TestGivenTaskNotAllowedAToolWhenItsAgentCallsItAnywayThenTheServerRefuses(t
 		t.Errorf("spawn err = %v, send err = %v; want both refused", spawnErr, sendErr)
 	}
 }
+
+func TestGivenParentAllowedOnlySpawnTaskWhenItSpawnsAChildAsNoAgentThenTheChildInheritsItsTools(t *testing.T) {
+	store, _ := openTestStore(t)
+	taskIn(t, store, "parent", TaskRunning)
+	if _, err := store.db.ExecContext(t.Context(), `UPDATE tasks SET tools = '["spawn_task"]' WHERE id = 'parent'`); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := store.spawnTask(t.Context(), "laptop", "parent", "child", protocol.Spawn{Prompt: "Work."}); err != nil {
+		t.Fatal(err)
+	}
+
+	child := readTask(t, store, "child")
+	if !reflect.DeepEqual(child.Start.Tools, []string{protocol.ToolSpawnTask}) {
+		t.Errorf("child tools = %#v, want the parent's [spawn_task]", child.Start.Tools)
+	}
+	if strings.Contains(child.Start.SystemPrompt, "send_message") {
+		t.Errorf("a child that may not message is told of send_message: %q", child.Start.SystemPrompt)
+	}
+}
+
+func TestGivenParentAllowedEveryToolWhenItSpawnsAChildAsNoAgentThenTheChildIsAllowedEveryTool(t *testing.T) {
+	store, _ := openTestStore(t)
+	taskIn(t, store, "parent", TaskRunning)
+
+	if _, err := store.spawnTask(t.Context(), "laptop", "parent", "child", protocol.Spawn{Prompt: "Work."}); err != nil {
+		t.Fatal(err)
+	}
+
+	if tools := readTask(t, store, "child").Start.Tools; tools != nil {
+		t.Errorf("child tools = %#v, want nil, every tool, as its parent", tools)
+	}
+}
+
+func TestGivenParentAllowedOnlySpawnTaskWhenItSpawnsAChildAsAnAgentThenTheChildHasOnlyTheAgentsToolsTheParentHas(t *testing.T) {
+	for name, tc := range map[string]struct {
+		agentTools []string
+		want       []string
+	}{
+		"agent allows both":           {agentTools: []string{protocol.ToolSendMessage, protocol.ToolSpawnTask}, want: []string{protocol.ToolSpawnTask}},
+		"agent allows only the other": {agentTools: []string{protocol.ToolSendMessage}, want: []string{}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			store, _ := openTestStore(t)
+			taskIn(t, store, "parent", TaskRunning)
+			if _, err := store.db.ExecContext(t.Context(), `UPDATE tasks SET tools = '["spawn_task"]' WHERE id = 'parent'`); err != nil {
+				t.Fatal(err)
+			}
+			createAgents(t, store, Agent{Name: "worker", Tools: tc.agentTools, Priority: PriorityNormal, Requires: Labels{}})
+
+			if _, err := store.spawnTask(t.Context(), "laptop", "parent", "child", protocol.Spawn{Prompt: "Work.", Agent: "worker"}); err != nil {
+				t.Fatal(err)
+			}
+
+			if tools := readTask(t, store, "child").Start.Tools; !reflect.DeepEqual(tools, tc.want) {
+				t.Errorf("child tools = %#v, want %#v", tools, tc.want)
+			}
+		})
+	}
+}

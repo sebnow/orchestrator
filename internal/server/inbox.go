@@ -51,11 +51,13 @@ func requireRunning(ctx context.Context, tx *sql.Tx, daemon protocol.DaemonID, t
 // daemon unless that has no free slot when it is admitted
 // (docs/adr/2026-10-08-scheduling.md). The child works in a fresh copy of
 // parent's workspace. Started as the agent spawn names, it has the
-// agent's tools, priority and filler flag, and the agent's model and
-// pause limits, or else parent's
-// (docs/adr/2026-10-09-agents-and-placement.md); started as none, it has
-// every tool and parent's settings. A model spawn names wins over both,
-// and so do the labels spawn requires, if it gives them.
+// agent's priority and filler flag, the agent's model and pause limits,
+// or else parent's (docs/adr/2026-10-09-agents-and-placement.md), and
+// those of the agent's tools that parent may call; started as none, it
+// has parent's tools and settings
+// (docs/design/2026-10-09-nostr-direction.md, Tool inheritance). A model
+// spawn names wins over both, and so do the labels spawn requires, if it
+// gives them.
 // A parent not allowed spawn_task, or a spawn naming no agent there is,
 // is refused with errRefused.
 func (s *Store) spawnTask(ctx context.Context, daemon protocol.DaemonID, parent, child protocol.TaskID, spawn protocol.Spawn) (queuedTurn, error) {
@@ -67,7 +69,11 @@ func (s *Store) spawnTask(ctx context.Context, daemon protocol.DaemonID, parent,
 	if err := requireRunning(ctx, tx, daemon, parent); err != nil {
 		return queuedTurn{}, err
 	}
-	if err := requireTool(ctx, tx, parent, protocol.ToolSpawnTask); err != nil {
+	parentTools, err := taskTools(ctx, tx, parent)
+	if err != nil {
+		return queuedTurn{}, err
+	}
+	if err := requireTool(parent, parentTools, protocol.ToolSpawnTask); err != nil {
 		return queuedTurn{}, err
 	}
 	var model, priority string
@@ -84,6 +90,7 @@ func (s *Store) spawnTask(ctx context.Context, daemon protocol.DaemonID, parent,
 		Prompt:      spawn.Prompt,
 		Model:       model,
 		PauseLimits: protocol.PauseLimits{Acknowledge: time.Duration(acknowledge), Cleanup: time.Duration(cleanup)},
+		Tools:       parentTools,
 	}
 	var agentPrompt string
 	requires := Labels{}
@@ -101,7 +108,7 @@ func (s *Store) spawnTask(ctx context.Context, daemon protocol.DaemonID, parent,
 		if a.PauseLimits != nil {
 			start.PauseLimits = *a.PauseLimits
 		}
-		start.Tools, priority, filler, agentPrompt, requires = a.Tools, string(a.Priority), a.Filler, a.SystemPrompt, a.Requires
+		start.Tools, priority, filler, agentPrompt, requires = narrowTools(a.Tools, parentTools), string(a.Priority), a.Filler, a.SystemPrompt, a.Requires
 	}
 	if spawn.Requires != nil {
 		requires = Labels(spawn.Requires)
@@ -135,22 +142,43 @@ func (s *Store) spawnTask(ctx context.Context, daemon protocol.DaemonID, parent,
 	return turn, nil
 }
 
-// requireTool refuses, with errRefused, a request for tool from task when
-// its start does not allow tool. The daemon does not offer such a tool,
-// so this guards against a daemon that does.
-func requireTool(ctx context.Context, tx *sql.Tx, task protocol.TaskID, tool string) error {
+// taskTools reads the gateway tools task's start allows, nil for every
+// one of them.
+func taskTools(ctx context.Context, tx *sql.Tx, task protocol.TaskID) ([]string, error) {
 	var tools sql.NullString
 	if err := tx.QueryRowContext(ctx, `SELECT tools FROM tasks WHERE id = ?`, string(task)).Scan(&tools); err != nil {
-		return fmt.Errorf("read tools of task %q: %w", task, err)
+		return nil, fmt.Errorf("read tools of task %q: %w", task, err)
 	}
 	if !tools.Valid {
-		return nil
+		return nil, nil
 	}
-	var allowed []string
+	allowed := []string{}
 	if err := json.Unmarshal([]byte(tools.String), &allowed); err != nil {
-		return fmt.Errorf("read tools of task %q: %w", task, err)
+		return nil, fmt.Errorf("read tools of task %q: %w", task, err)
 	}
-	if !slices.Contains(allowed, tool) {
+	return allowed, nil
+}
+
+// narrowTools returns those of tools that limit allows, in tools' order,
+// never nil; a nil limit allows every tool.
+func narrowTools(tools, limit []string) []string {
+	if limit == nil {
+		return tools
+	}
+	narrowed := []string{}
+	for _, tool := range tools {
+		if slices.Contains(limit, tool) {
+			narrowed = append(narrowed, tool)
+		}
+	}
+	return narrowed
+}
+
+// requireTool refuses, with errRefused, a request for tool from task when
+// allowed, the tools its start allows, does not hold tool. The daemon
+// does not offer such a tool, so this guards against a daemon that does.
+func requireTool(task protocol.TaskID, allowed []string, tool string) error {
+	if allowed != nil && !slices.Contains(allowed, tool) {
 		return fmt.Errorf("%w: task %s is not allowed %s", errRefused, task, tool)
 	}
 	return nil
@@ -170,7 +198,11 @@ func (s *Store) sendMessage(ctx context.Context, daemon protocol.DaemonID, from 
 	if err := requireRunning(ctx, tx, daemon, from); err != nil {
 		return false, err
 	}
-	if err := requireTool(ctx, tx, from, protocol.ToolSendMessage); err != nil {
+	fromTools, err := taskTools(ctx, tx, from)
+	if err != nil {
+		return false, err
+	}
+	if err := requireTool(from, fromTools, protocol.ToolSendMessage); err != nil {
 		return false, err
 	}
 	if send.To == from {
