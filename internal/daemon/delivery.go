@@ -2,7 +2,6 @@ package daemon
 
 import (
 	"bufio"
-	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -63,7 +62,7 @@ func deliveryPrompt(task protocol.TaskID) string {
 // local user.name and user.email; commit.gpgsign and tag.gpgsign are set
 // to false, so the daemon user's own signing settings do not apply to
 // the agent's commits.
-func prepareBranch(ctx context.Context, dir string, task protocol.TaskID, ref, gitName, gitEmail string) error {
+func (r runner) prepareBranch(ctx context.Context, dir string, task protocol.TaskID, ref, gitName, gitEmail string) error {
 	branch := taskBranch(task)
 	if gitName == "" || gitEmail == "" {
 		gitName, gitEmail = "orchestrator", "orchestrator@localhost"
@@ -86,41 +85,46 @@ func prepareBranch(ctx context.Context, dir string, task protocol.TaskID, ref, g
 		{"config", "--local", "commit.gpgsign", "false"},
 		{"config", "--local", "tag.gpgsign", "false"},
 	} {
-		if _, err := gitOutput(ctx, dir, args...); err != nil {
+		if _, err := r.gitOutput(ctx, dir, args...); err != nil {
 			return err
 		}
 	}
-	remote, err := gitOutput(ctx, dir, "ls-remote", "--heads", "origin", "refs/heads/"+branch)
+	remote, err := r.gitOutput(ctx, dir, "ls-remote", "--heads", "origin", "refs/heads/"+branch)
 	if err != nil {
 		return err
 	}
 	if remote == "" {
-		_, err = gitOutput(ctx, dir, "checkout", "--quiet", "-b", branch)
+		_, err = r.gitOutput(ctx, dir, "checkout", "--quiet", "-b", branch)
 		return err
 	}
 	fetch := []string{"fetch", "--quiet"}
 	// The branch's commits beyond ref are counted against ref, which a
 	// shallow clone cannot do.
-	if shallow, err := gitOutput(ctx, dir, "rev-parse", "--is-shallow-repository"); err != nil {
+	if shallow, err := r.gitOutput(ctx, dir, "rev-parse", "--is-shallow-repository"); err != nil {
 		return err
 	} else if shallow == "true" {
 		fetch = append(fetch, "--unshallow")
 	}
 	tracking := "refs/remotes/origin/" + branch
-	if _, err := gitOutput(ctx, dir, append(fetch, "origin", "+refs/heads/"+branch+":"+tracking)...); err != nil {
+	if _, err := r.gitOutput(ctx, dir, append(fetch, "origin", "+refs/heads/"+branch+":"+tracking)...); err != nil {
 		return err
 	}
-	_, err = gitOutput(ctx, dir, "checkout", "--quiet", "-b", branch, tracking)
+	_, err = r.gitOutput(ctx, dir, "checkout", "--quiet", "-b", branch, tracking)
 	return err
 }
 
-// installPrePushHook writes a pre-push hook into hooks that refuses to
-// push any ref but branch, or to delete branch.
+// installPrePushHook writes the pre-push hook for branch into hooks.
 func installPrePushHook(hooks, branch string) error {
 	if err := os.MkdirAll(hooks, 0o700); err != nil {
 		return err
 	}
-	script := `#!/bin/sh
+	return os.WriteFile(filepath.Join(hooks, "pre-push"), []byte(prePushHook(branch)), 0o700)
+}
+
+// prePushHook is a pre-push hook that refuses to push any ref but branch,
+// or to delete branch.
+func prePushHook(branch string) string {
+	return `#!/bin/sh
 # Installed by the orchestrator daemon. This workspace delivers its work
 # on one branch, which the daemon pushes; nothing else may be pushed.
 allowed=refs/heads/` + branch + `
@@ -139,7 +143,6 @@ while read -r local_ref local_sha remote_ref remote_sha; do
 done
 exit 0
 `
-	return os.WriteFile(filepath.Join(hooks, "pre-push"), []byte(script), 0o700)
 }
 
 // deliver pushes task's branch from the workspace dir when the branch
@@ -147,23 +150,23 @@ exit 0
 // and reports the push. It reports nothing when dir is not a workspace
 // whose work is delivered, or when there is nothing to push. A push that
 // fails, or that deliver refuses, is reported with Error set.
-func deliver(ctx context.Context, dir string, task protocol.TaskID) *protocol.BranchPushed {
-	if _, err := os.Stat(filepath.Join(dir, ".git")); err != nil {
+func (r runner) deliver(ctx context.Context, dir string, task protocol.TaskID) *protocol.BranchPushed {
+	if !r.isClone(dir) {
 		return nil
 	}
-	startRef, err := gitOutput(ctx, dir, "config", "--local", "--get", startRefKey)
+	startRef, err := r.gitOutput(ctx, dir, "config", "--local", "--get", startRefKey)
 	if err != nil || startRef == "" {
 		return nil
 	}
 	branch := taskBranch(task)
 	report := &protocol.BranchPushed{Branch: branch}
-	commit, err := gitOutput(ctx, dir, "rev-parse", "--verify", "--quiet", "refs/heads/"+branch)
+	commit, err := r.gitOutput(ctx, dir, "rev-parse", "--verify", "--quiet", "refs/heads/"+branch)
 	if err != nil {
 		report.Error = "the workspace has no branch " + branch
 		return report
 	}
 	report.Commit = commit
-	ahead, err := gitOutput(ctx, dir, "rev-list", "--count", commit, "--not", startCommitRef)
+	ahead, err := r.gitOutput(ctx, dir, "rev-list", "--count", commit, "--not", startCommitRef)
 	if err != nil {
 		report.Error = err.Error()
 		return report
@@ -175,11 +178,11 @@ func deliver(ctx context.Context, dir string, task protocol.TaskID) *protocol.Br
 	if report.Ahead == 0 {
 		return nil
 	}
-	if report.Uncommitted, err = countUncommitted(ctx, dir); err != nil {
+	if report.Uncommitted, err = r.countUncommitted(ctx, dir); err != nil {
 		report.Error = err.Error()
 		return report
 	}
-	remoteHead, remoteCommit, err := remoteBranches(ctx, dir, branch)
+	remoteHead, remoteCommit, err := r.remoteBranches(ctx, dir, branch)
 	if err != nil {
 		report.Error = err.Error()
 		return report
@@ -187,7 +190,7 @@ func deliver(ctx context.Context, dir string, task protocol.TaskID) *protocol.Br
 	if remoteCommit == commit {
 		return nil
 	}
-	if err := pushBranch(ctx, dir, branch, startRef, remoteHead); err != nil {
+	if err := r.pushBranch(ctx, dir, branch, startRef, remoteHead); err != nil {
 		report.Error = err.Error()
 	}
 	return report
@@ -197,7 +200,7 @@ func deliver(ctx context.Context, dir string, task protocol.TaskID) *protocol.Br
 // force. It refuses a branch that is the task's start ref, startRef, or
 // the remote's default branch, remoteHead, so that the daemon never
 // pushes either.
-func pushBranch(ctx context.Context, dir, branch, startRef, remoteHead string) error {
+func (r runner) pushBranch(ctx context.Context, dir, branch, startRef, remoteHead string) error {
 	full := "refs/heads/" + branch
 	if branch == startRef || full == startRef {
 		return fmt.Errorf("refused to push %s: it is the ref the task started from", branch)
@@ -205,15 +208,15 @@ func pushBranch(ctx context.Context, dir, branch, startRef, remoteHead string) e
 	if full == remoteHead {
 		return fmt.Errorf("refused to push %s: it is the remote's default branch", branch)
 	}
-	_, err := gitOutput(ctx, dir, "push", "--quiet", "origin", full+":"+full)
+	_, err := r.gitOutput(ctx, dir, "push", "--quiet", "origin", full+":"+full)
 	return err
 }
 
 // remoteBranches returns the ref the remote's HEAD names, such as
 // refs/heads/main, and the commit its branch holds; either is empty when
 // the remote has none.
-func remoteBranches(ctx context.Context, dir, branch string) (head, commit string, err error) {
-	out, err := gitOutput(ctx, dir, "ls-remote", "--symref", "origin", "HEAD", "refs/heads/"+branch)
+func (r runner) remoteBranches(ctx context.Context, dir, branch string) (head, commit string, err error) {
+	out, err := r.gitOutput(ctx, dir, "ls-remote", "--symref", "origin", "HEAD", "refs/heads/"+branch)
 	if err != nil {
 		return "", "", err
 	}
@@ -235,8 +238,8 @@ func remoteBranches(ctx context.Context, dir, branch string) (head, commit strin
 
 // countUncommitted counts the files in the clone in dir that are
 // modified, added, deleted or untracked and not ignored.
-func countUncommitted(ctx context.Context, dir string) (int, error) {
-	out, err := gitOutput(ctx, dir, "status", "--porcelain", "--untracked-files=all")
+func (r runner) countUncommitted(ctx context.Context, dir string) (int, error) {
+	out, err := r.gitOutput(ctx, dir, "status", "--porcelain", "--untracked-files=all")
 	if err != nil {
 		return 0, err
 	}
@@ -249,16 +252,6 @@ func countUncommitted(ctx context.Context, dir string) (int, error) {
 // errWorkspaceKept reports a workspace that was not deleted because its
 // work could not be delivered.
 var errWorkspaceKept = errors.New("workspace kept")
-
-// gitOutput runs git as runGit does and returns its standard output,
-// trimmed.
-func gitOutput(ctx context.Context, dir string, args ...string) (string, error) {
-	var stdout bytes.Buffer
-	if err := runGitTo(ctx, dir, &stdout, args...); err != nil {
-		return "", err
-	}
-	return strings.TrimSpace(stdout.String()), nil
-}
 
 // joinPrompts appends extra to a system prompt, as a paragraph of its
 // own.

@@ -68,11 +68,6 @@ func ParseGitIdentity(s string) (name, email string, err error) {
 	return addr.Name, addr.Address, nil
 }
 
-// workspacePath returns the directory task works in under stateDir.
-func workspacePath(stateDir string, task protocol.TaskID) string {
-	return filepath.Join(stateDir, "workspaces", string(task))
-}
-
 // service is a daemon connected to the server: it applies the commands
 // the server sends and sends the server every task's events.
 type service struct {
@@ -427,8 +422,8 @@ func (s *service) startTask(command protocol.Command) *Task {
 	if err := limits.validate(); err != nil {
 		return s.failStart(task, j, err)
 	}
-	workdir := workspacePath(s.cfg.StateDir, task)
-	if err := prepareWorkspace(s.stopping, workdir, task, start.Workspace, s.cfg.GitName, s.cfg.GitEmail); err != nil {
+	workdir := s.daemon.workspace(task)
+	if err := s.daemon.runner.prepareWorkspace(s.stopping, workdir, task, start.Workspace, s.cfg.GitName, s.cfg.GitEmail); err != nil {
 		return s.failStart(task, j, fmt.Errorf("prepare workspace: %w", err))
 	}
 	if start.Workspace != nil {
@@ -486,7 +481,7 @@ func (s *service) resume(task protocol.TaskID, followUp string) (*Task, error) {
 	t := s.startProcess(task, j, TaskSpec{
 		ID:           task,
 		Prompt:       prompt,
-		Workdir:      workspacePath(s.cfg.StateDir, task),
+		Workdir:      s.daemon.workspace(task),
 		Model:        rec.Settings.Model,
 		SystemPrompt: rec.Settings.SystemPrompt,
 		Pause:        rec.Settings.limits(),
@@ -601,7 +596,7 @@ func (s *service) forget(task protocol.TaskID) {
 	if err := os.Remove(JournalPath(s.cfg.StateDir, task)); err != nil && !errors.Is(err, fs.ErrNotExist) {
 		s.log.Error("delete the journal of a forgotten task", "task", task, "error", err)
 	}
-	if err := deleteWorkspace(s.cfg.StateDir, task); err != nil {
+	if err := s.daemon.deleteWorkspace(task); err != nil {
 		s.log.Error("delete the workspace of a forgotten task", "task", task, "error", err)
 	}
 	s.log.Info("task forgotten", "task", task)
@@ -610,7 +605,7 @@ func (s *service) forget(task protocol.TaskID) {
 // discardWorkspace deletes the workspace of task, which has ended for
 // good on this daemon: it was stopped, or failed in the daemon's view.
 func (s *service) discardWorkspace(task protocol.TaskID) {
-	if err := deleteWorkspace(s.cfg.StateDir, task); err != nil {
+	if err := s.daemon.deleteWorkspace(task); err != nil {
 		s.log.Error("delete the workspace of an ended task", "task", task, "error", err)
 	}
 }

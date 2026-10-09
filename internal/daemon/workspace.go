@@ -1,13 +1,10 @@
 package daemon
 
 import (
-	"bytes"
 	"context"
 	"fmt"
-	"io"
 	"net/url"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 
@@ -30,9 +27,9 @@ import (
 // gitName and gitEmail become the clone's local user.name and user.email,
 // for the agent's own commits; either empty uses the default identity
 // "orchestrator" <orchestrator@localhost>.
-func prepareWorkspace(ctx context.Context, dir string, task protocol.TaskID, ws *protocol.Workspace, gitName, gitEmail string) error {
+func (r runner) prepareWorkspace(ctx context.Context, dir string, task protocol.TaskID, ws *protocol.Workspace, gitName, gitEmail string) error {
 	if ws == nil {
-		return os.MkdirAll(dir, 0o700)
+		return r.makeDir(dir)
 	}
 	if err := requireRemote(ws.Repo); err != nil {
 		return err
@@ -44,42 +41,20 @@ func prepareWorkspace(ctx context.Context, dir string, task protocol.TaskID, ws 
 	if err := os.MkdirAll(filepath.Dir(dir), 0o700); err != nil {
 		return err
 	}
-	err := runGit(ctx, "", "clone", "--quiet", "--depth", "1", "--branch", ws.Ref, "--", ws.Repo, dir)
+	err := r.runGit(ctx, "", "clone", "--quiet", "--depth", "1", "--branch", ws.Ref, "--", ws.Repo, dir)
 	if err != nil {
-		os.RemoveAll(dir)
-		err = runGit(ctx, "", "clone", "--quiet", "--", ws.Repo, dir)
+		r.remove(dir)
+		err = r.runGit(ctx, "", "clone", "--quiet", "--", ws.Repo, dir)
 		if err == nil {
-			err = runGit(ctx, dir, "checkout", "--quiet", "--detach", ws.Ref)
+			err = r.runGit(ctx, dir, "checkout", "--quiet", "--detach", ws.Ref)
 		}
 	}
 	if err == nil {
-		err = prepareBranch(ctx, dir, task, ws.Ref, gitName, gitEmail)
+		err = r.prepareBranch(ctx, dir, task, ws.Ref, gitName, gitEmail)
 	}
 	if err != nil {
-		os.RemoveAll(dir)
+		r.remove(dir)
 		return err
-	}
-	return nil
-}
-
-func runGit(ctx context.Context, dir string, args ...string) error {
-	return runGitTo(ctx, dir, nil, args...)
-}
-
-// runGitTo runs git in dir, writing its standard output to stdout.
-// GIT_SSH_COMMAND puts ssh in batch mode, so that an unknown host key or
-// a key's passphrase fails the command rather than waits for an answer
-// nobody gives.
-func runGitTo(ctx context.Context, dir string, stdout io.Writer, args ...string) error {
-	cmd := exec.CommandContext(ctx, "git", args...)
-	cmd.Dir = dir
-	cmd.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0", "GIT_CONFIG_GLOBAL=/dev/null", "GIT_CONFIG_NOSYSTEM=1",
-		"GIT_SSH_COMMAND=ssh -o BatchMode=yes")
-	cmd.Stdout = stdout
-	var stderr bytes.Buffer
-	cmd.Stderr = &stderr
-	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("git %s: %w: %s", args[0], err, strings.TrimSpace(stderr.String()))
 	}
 	return nil
 }
@@ -112,20 +87,19 @@ func requireRemote(repo string) error {
 	return nil
 }
 
-// deleteWorkspace deletes the directory task works in under stateDir,
-// with everything in it. Every workspace a task has worked in is deleted
+// deleteWorkspace deletes the directory dir that task works in, with
+// everything in it. Every workspace a task has worked in is deleted
 // through it, so that its work is delivered first: a workspace whose
 // task branch holds commits the remote lacks is pushed, and kept when
 // the push fails, with an error wrapping errWorkspaceKept. A workspace
 // that does not exist is not an error.
-func deleteWorkspace(stateDir string, task protocol.TaskID) error {
-	dir := workspacePath(stateDir, task)
+func (r runner) deleteWorkspace(dir string, task protocol.TaskID) error {
 	ctx, cancel := context.WithTimeout(context.Background(), pushTimeout)
 	defer cancel()
-	if report := deliver(ctx, dir, task); report != nil && report.Error != "" {
+	if report := r.deliver(ctx, dir, task); report != nil && report.Error != "" {
 		return fmt.Errorf("%w: task %s's branch %s holds work that could not be pushed: %s", errWorkspaceKept, task, report.Branch, report.Error)
 	}
-	if err := os.RemoveAll(dir); err != nil {
+	if err := r.remove(dir); err != nil {
 		return fmt.Errorf("delete the workspace of task %s: %w", task, err)
 	}
 	return nil

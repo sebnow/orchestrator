@@ -6,7 +6,6 @@ import (
 	"io/fs"
 	"log/slog"
 	"os"
-	"path/filepath"
 	"strings"
 	"time"
 
@@ -192,7 +191,7 @@ func (d *Daemon) recoverTasks(st *state, log *slog.Logger, wait time.Duration) e
 // forgot it or never recorded it, and one whose record cannot be resumed.
 // A directory that is not named after a task is left alone.
 func (d *Daemon) sweepWorkspaces(st *state, log *slog.Logger) {
-	entries, err := os.ReadDir(filepath.Join(d.stateDir, "workspaces"))
+	entries, err := os.ReadDir(d.workspaces)
 	if errors.Is(err, fs.ErrNotExist) {
 		return
 	}
@@ -208,7 +207,7 @@ func (d *Daemon) sweepWorkspaces(st *state, log *slog.Logger) {
 		if rec, ok := st.record(task); ok && rec.resumable() {
 			continue
 		}
-		if err := deleteWorkspace(d.stateDir, task); err != nil {
+		if err := d.deleteWorkspace(task); err != nil {
 			log.Error("delete the workspace of a task that cannot run again", "task", task, "error", err)
 			continue
 		}

@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"path/filepath"
 	"slices"
 	"sync"
 
@@ -49,6 +50,11 @@ type Daemon struct {
 	// processes finds and kills the harness processes a previous daemon
 	// left running.
 	processes processTable
+	// workspaces holds each task's workspace, in a directory named after
+	// the task.
+	workspaces string
+	// runner runs the commands that touch workspaces.
+	runner runner
 }
 
 // New returns a daemon that keeps journals under stateDir, runs h, and
@@ -57,7 +63,18 @@ func New(stateDir string, h harness.Harness, gateway *Gateway, observe func(prot
 	if observe == nil {
 		observe = func(protocol.Event) {}
 	}
-	return &Daemon{stateDir: stateDir, harness: h, gateway: gateway, observe: observe, processes: psTable{}}
+	return &Daemon{stateDir: stateDir, harness: h, gateway: gateway, observe: observe, processes: psTable{}, workspaces: filepath.Join(stateDir, "workspaces")}
+}
+
+// workspace returns the directory task works in.
+func (d *Daemon) workspace(task protocol.TaskID) string {
+	return filepath.Join(d.workspaces, string(task))
+}
+
+// deleteWorkspace deletes the workspace of task once its work is
+// delivered, as runner.deleteWorkspace does.
+func (d *Daemon) deleteWorkspace(task protocol.TaskID) error {
+	return d.runner.deleteWorkspace(d.workspace(task), task)
 }
 
 // TaskSpec is what the daemon needs to run a task.
@@ -108,8 +125,9 @@ type Task struct {
 	id      protocol.TaskID
 	harness harness.Harness
 	// workdir is where the harness runs; its work is delivered from there
-	// when the process exits.
+	// when the process exits, by runner.
 	workdir string
+	runner  runner
 	proc    harness.Process
 	journal *journal
 	observe func(protocol.Event)
@@ -163,6 +181,7 @@ func (d *Daemon) start(ctx context.Context, j *journal, spec TaskSpec) (*Task, e
 	t := &Task{
 		id:          spec.ID,
 		workdir:     spec.Workdir,
+		runner:      d.runner,
 		harness:     d.harness,
 		journal:     j,
 		observe:     d.observe,
@@ -293,7 +312,7 @@ func (t *Task) run(unregister func()) {
 	// The work is pushed before the exit is journaled, so that the server
 	// holds the push once it holds the end of the turn.
 	delivery, cancel := context.WithTimeout(context.Background(), pushTimeout)
-	if pushed := deliver(delivery, t.workdir, t.id); pushed != nil {
+	if pushed := t.runner.deliver(delivery, t.workdir, t.id); pushed != nil {
 		t.record(protocol.KindBranchPushed, *pushed)
 	}
 	cancel()
