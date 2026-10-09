@@ -650,6 +650,16 @@ func TestLiveGivenPromptToUseASubagentWhenItRunsThenTheSubagentsMessagesCarryThe
 		}
 	}
 	t.Logf("agent call %q; lines with a parent, by type: %v; subagent assistant text: %v", agentCall, children, childText)
+	var asked []string
+	for _, event := range events {
+		if event.Kind != protocol.KindPermissionRequested {
+			continue
+		}
+		var req protocol.PermissionRequested
+		json.Unmarshal(event.Payload, &req)
+		asked = append(asked, req.Tool)
+	}
+	t.Logf("permission requests by tool, in order: %q", asked)
 	if agentCall == "" {
 		t.Fatal("the agent started no subagent")
 	}
