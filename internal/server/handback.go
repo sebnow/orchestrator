@@ -13,8 +13,10 @@ import (
 // handBack sends the final reply of task's turn, which has just ended with
 // task finished, to task's parent as a message from task, unless task has
 // no parent or sent a message during the turn
-// (docs/adr/2026-10-09-agents-and-placement.md). A parent that has ended
-// is not told, as with any notice.
+// (docs/adr/2026-10-09-agents-and-placement.md). The message ends with
+// what the daemon last reported of task's branch, so that the parent
+// knows where the work is. A parent that has ended is not told, as with
+// any notice.
 func handBack(ctx context.Context, tx *sql.Tx, task protocol.TaskID, fx *effects) error {
 	var parent sql.NullString
 	if err := tx.QueryRowContext(ctx, `SELECT parent_id FROM tasks WHERE id = ?`, string(task)).Scan(&parent); err != nil {
@@ -42,6 +44,11 @@ func handBack(ctx context.Context, tx *sql.Tx, task protocol.TaskID, fx *effects
 	if text == "" {
 		text = fmt.Sprintf("(Task %s finished its turn without writing any text.)", task)
 	}
+	branches, err := latestBranches(ctx, tx, task)
+	if err != nil {
+		return err
+	}
+	text += "\n\n" + branchNote(task, branches[task])
 	if _, err := tx.ExecContext(ctx, `
 		INSERT INTO messages (from_task, to_task, text, created_at, hand_back) VALUES (?, ?, ?, ?, 1)`,
 		string(task), string(to), text, formatTime(time.Now().UTC())); err != nil {
@@ -114,4 +121,33 @@ func finalReply(ctx context.Context, tx *sql.Tx, task protocol.TaskID) (string, 
 		}
 	}
 	return text, nil
+}
+
+// branchNote tells task's parent what the daemon last reported of task's
+// branch: its name and latest commit, or that no branch was pushed.
+// pushed is nil when the daemon has reported no branch for task.
+func branchNote(task protocol.TaskID, pushed *protocol.BranchPushed) string {
+	var note string
+	switch {
+	case pushed == nil:
+		note = fmt.Sprintf("No branch pushed for task %s.", task)
+	case pushed.Error != "":
+		note = fmt.Sprintf("The branch %s of task %s failed to push at commit %s (%s).", pushed.Branch, task, pushed.Commit, pushed.Error)
+	case pushed.Ahead > 0:
+		note = fmt.Sprintf("The branch %s of task %s is pushed at commit %s, %s beyond its start.", pushed.Branch, task, pushed.Commit, plural(pushed.Ahead, "commit"))
+	default:
+		note = fmt.Sprintf("No branch pushed for task %s: its branch %s holds no commits beyond its start, at commit %s.", task, pushed.Branch, pushed.Commit)
+	}
+	if pushed != nil && pushed.Uncommitted > 0 {
+		note += fmt.Sprintf(" %s left uncommitted in its workspace.", plural(pushed.Uncommitted, "file"))
+	}
+	return "(Orchestrator: " + note + ")"
+}
+
+// plural words n of unit, as "1 commit" or "2 commits".
+func plural(n int, unit string) string {
+	if n == 1 {
+		return "1 " + unit
+	}
+	return fmt.Sprintf("%d %ss", n, unit)
 }

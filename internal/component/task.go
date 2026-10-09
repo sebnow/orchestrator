@@ -151,12 +151,14 @@ func lineage(parent string) html.Node {
 
 // Child is a task another spawned, as its parent's page lists it.
 // Report is the latest message it sent its parent; empty for none.
+// Branch is what the daemon last pushed of its branch; nil for none.
 type Child struct {
 	ID, Agent, State, Report string
+	Branch                   *transcript.BranchPushed
 }
 
 // ChildColumns head a Table of ChildRows.
-var ChildColumns = []string{"Task", "Agent", "State", "Latest report"}
+var ChildColumns = []string{"Task", "Agent", "State", "Branch", "Latest report"}
 
 // ChildRow is a child in its parent's list, linking to its page.
 func ChildRow(child Child) html.Node {
@@ -168,8 +170,23 @@ func ChildRow(child Child) html.Node {
 		cell(link(taskURL(child.ID), child.ID)),
 		cell(agentLink(child.Agent)),
 		cell(StateBadge(child.State)),
+		cell(childBranch(child.Branch)),
 		cell(report),
 	)
+}
+
+// childBranch is a child's branch and the commit last pushed or tried,
+// marked when the push failed.
+func childBranch(pushed *transcript.BranchPushed) html.Node {
+	if pushed == nil {
+		return html.El("span", attrs("class", "empty"), html.Text("none"))
+	}
+	var failed html.Node
+	if pushed.Error != "" {
+		failed = html.Fragment(html.Text(" "), badge("push failed", "state-failed"))
+	}
+	return html.Fragment(html.El("code", nil, html.Text(pushed.Branch)),
+		html.Text(" at "), html.El("code", nil, html.Text(shortCommit(pushed.Commit))), failed)
 }
 
 // Attention is a task waiting for the owner, and why. Dismissable says

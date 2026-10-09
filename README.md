@@ -571,8 +571,9 @@ a `paused` task until the owner resumes it and that turn ends. Messages
 to `stopped` or `failed` tasks are refused, and a parent is told when
 its child stops or fails. When a task stops or fails with messages
 still waiting in its inbox, each sender's next prompt is a notice that
-those messages were not delivered. The task page links a task's parent
-and children and shows the messages it sent and received.
+those messages were not delivered. The task page links a task's parent,
+lists its children with each one's branch and latest report, and shows
+the messages it sent and received.
 
 A child reports to its parent with `send_message`, or by ending its
 turn: when a child's turn ends with the task `finished` and the child
@@ -581,6 +582,8 @@ text, from the child's main conversation rather than a subagent's, to
 the parent as a hand-back
 ([agents and placement](docs/adr/2026-10-09-agents-and-placement.md)).
 A turn that wrote no text hands back a notice that it wrote none. The
+hand-back ends with the child's branch and its latest commit, as the
+daemon last reported them, or says that no branch was pushed. The
 parent receives it as a prompt like any message, marked as a hand-back,
 and its transcript shows it as "Report from child" with the child's
 id. A

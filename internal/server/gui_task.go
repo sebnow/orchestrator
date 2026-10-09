@@ -74,7 +74,12 @@ func (v taskView) task() component.Task {
 func (v taskView) childList() html.Node {
 	rows := make([]html.Node, len(v.children))
 	for idx, child := range v.children {
-		rows[idx] = component.ChildRow(component.Child{ID: string(child.ID), Agent: child.Agent, State: string(child.State), Report: child.Report})
+		row := component.Child{ID: string(child.ID), Agent: child.Agent, State: string(child.State), Report: child.Report}
+		if child.Branch != nil {
+			pushed := transcript.BranchPushed(*child.Branch)
+			row.Branch = &pushed
+		}
+		rows[idx] = component.ChildRow(row)
 	}
 	return component.Table(component.ChildColumns, "It has not spawned any tasks.", rows...)
 }

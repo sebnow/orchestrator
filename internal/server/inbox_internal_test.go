@@ -348,7 +348,7 @@ func TestGivenChildWhenTheOwnerStopsItWhileItsParentRunsThenTheNoticeWaitsForThe
 	// The child finished a turn without sending before it was stopped, so
 	// its hand-back comes first.
 	requirePrompts(t, prompts(t, store, "parent"), []protocol.Prompt{{
-		Text: "Report from child task child, its final reply as it ended its turn: (Task child finished its turn without writing any text.)\n\n" +
+		Text: "Report from child task child, its final reply as it ended its turn: (Task child finished its turn without writing any text.)\n\n(Orchestrator: No branch pushed for task child.)\n\n" +
 			"Notice from the orchestrator: Your child task child has ended as stopped. It will send no more messages.",
 		From: fromTask("child"),
 	}})

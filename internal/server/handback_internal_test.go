@@ -25,13 +25,63 @@ func TestGivenChildThatSentNothingWhenItsTurnFinishesThenItsLastTextIsHandedBack
 	child.event(protocol.KindHarnessOutput, `{"type":"assistant","message":{"content":[{"type":"text","text":"SUBAGENT-LAST"}]},"parent_tool_use_id":"toolu_1"}`, TaskRunning)
 	child.event(protocol.KindHarnessExited, cleanly, TaskFinished)
 
-	requirePrompts(t, prompts(t, store, "parent"), []protocol.Prompt{{Text: "Report from child task child, its final reply as it ended its turn: PEAR", From: fromTask("child")}})
+	requirePrompts(t, prompts(t, store, "parent"), []protocol.Prompt{{Text: "Report from child task child, its final reply as it ended its turn: PEAR\n\n(Orchestrator: No branch pushed for task child.)", From: fromTask("child")}})
 	entries := transcriptOf(t, store, "parent")
-	if !hasBody(entries, transcript.MessageReceived{From: fromTask("child"), Text: "PEAR", HandBack: true}) {
+	if !hasBody(entries, transcript.MessageReceived{From: fromTask("child"), Text: "PEAR\n\n(Orchestrator: No branch pushed for task child.)", HandBack: true}) {
 		t.Errorf("parent's transcript lacks the hand-back: %+v", entries)
 	}
-	if !hasBody(transcriptOf(t, store, "child"), transcript.MessageSent{To: "parent", Text: "PEAR", HandBack: true}) {
+	if !hasBody(transcriptOf(t, store, "child"), transcript.MessageSent{To: "parent", Text: "PEAR\n\n(Orchestrator: No branch pushed for task child.)", HandBack: true}) {
 		t.Errorf("child's transcript lacks the hand-back")
+	}
+}
+
+func TestGivenChildThatPushedItsBranchWhenItsTurnFinishesThenTheHandBackNamesTheBranchAndCommit(t *testing.T) {
+	store, _ := openTestStore(t)
+	parent := taskIn(t, store, "parent", TaskRunning)
+	child := spawned(t, store, "parent", "child")
+	parent.event(protocol.KindHarnessExited, cleanly, TaskFinished)
+
+	child.event(protocol.KindHarnessStarted, started, TaskRunning)
+	child.event(protocol.KindHarnessOutput, agentSays("Committed."), TaskRunning)
+	child.event(protocol.KindBranchPushed, `{"branch":"orchestrator/child","commit":"eb69b7b37fad09fd0170733cbb1f53dbc1502ae7","ahead":1,"uncommitted":0,"error":""}`, TaskRunning)
+	child.event(protocol.KindHarnessExited, cleanly, TaskFinished)
+
+	requirePrompts(t, prompts(t, store, "parent"), []protocol.Prompt{{
+		Text: "Report from child task child, its final reply as it ended its turn: Committed.\n\n" +
+			"(Orchestrator: The branch orchestrator/child of task child is pushed at commit eb69b7b37fad09fd0170733cbb1f53dbc1502ae7, 1 commit beyond its start.)",
+		From: fromTask("child"),
+	}})
+}
+
+func TestBranchNoteSaysWhatTheDaemonReportedOfTheBranch(t *testing.T) {
+	cases := []struct {
+		name   string
+		pushed *protocol.BranchPushed
+		want   string
+	}{
+		{"none reported", nil, "(Orchestrator: No branch pushed for task child.)"},
+		{
+			"pushed with files left",
+			&protocol.BranchPushed{Branch: "orchestrator/child", Commit: "c0ffee", Ahead: 2, Uncommitted: 1},
+			"(Orchestrator: The branch orchestrator/child of task child is pushed at commit c0ffee, 2 commits beyond its start. 1 file left uncommitted in its workspace.)",
+		},
+		{
+			"nothing to push",
+			&protocol.BranchPushed{Branch: "orchestrator/child", Commit: "c0ffee", Uncommitted: 3},
+			"(Orchestrator: No branch pushed for task child: its branch orchestrator/child holds no commits beyond its start, at commit c0ffee. 3 files left uncommitted in its workspace.)",
+		},
+		{
+			"push failed",
+			&protocol.BranchPushed{Branch: "orchestrator/child", Commit: "c0ffee", Ahead: 1, Error: "remote rejected"},
+			"(Orchestrator: The branch orchestrator/child of task child failed to push at commit c0ffee (remote rejected).)",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := branchNote("child", tc.pushed); got != tc.want {
+				t.Errorf("branchNote = %q, want %q", got, tc.want)
+			}
+		})
 	}
 }
 
@@ -44,7 +94,7 @@ func TestGivenChildThatWroteNoTextWhenItsTurnFinishesThenItsParentIsToldItFinish
 	child.drive(TaskFinished)
 
 	requirePrompts(t, prompts(t, store, "parent"), []protocol.Prompt{{
-		Text: "Report from child task child, its final reply as it ended its turn: (Task child finished its turn without writing any text.)", From: fromTask("child"),
+		Text: "Report from child task child, its final reply as it ended its turn: (Task child finished its turn without writing any text.)\n\n(Orchestrator: No branch pushed for task child.)", From: fromTask("child"),
 	}})
 }
 
@@ -79,7 +129,7 @@ func TestGivenChildThatReportedOnAnEarlierTurnWhenALaterTurnFinishesSilentlyThen
 	child.event(protocol.KindHarnessExited, cleanly, TaskFinished)
 
 	got := prompts(t, store, "parent")
-	if len(got) != 2 || got[1].Text != "Report from child task child, its final reply as it ended its turn: PLUM" {
+	if len(got) != 2 || got[1].Text != "Report from child task child, its final reply as it ended its turn: PLUM\n\n(Orchestrator: No branch pushed for task child.)" {
 		t.Errorf("parent's prompts = %+v, want APPLE then the hand-back of PLUM", got)
 	}
 }

@@ -515,19 +515,26 @@ func (s *Store) taskPrompts(ctx context.Context) (map[protocol.TaskID]string, er
 
 // childSummary is a task's child as its parent's page lists it. Report
 // is the latest message the child sent its parent, its report, handed
-// back or sent; empty when it has sent none.
+// back or sent; empty when it has sent none. Branch is the latest
+// branch_pushed the child's daemon reported; nil when none.
 type childSummary struct {
 	ID     protocol.TaskID
 	Agent  string
 	State  TaskState
 	Report string
+	Branch *protocol.BranchPushed
 }
 
 // children returns the tasks task spawned, oldest first. Stored times do
 // not sort as text; julianday compares the instants, to the millisecond,
 // and the row id, which follows insertion, breaks ties.
 func (s *Store) children(ctx context.Context, task protocol.TaskID) ([]childSummary, error) {
-	rows, err := s.db.QueryContext(ctx, `
+	tx, err := s.db.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
+	if err != nil {
+		return nil, fmt.Errorf("read children of task %q: %w", task, err)
+	}
+	defer tx.Rollback()
+	rows, err := tx.QueryContext(ctx, `
 		SELECT t.id, coalesce(t.agent, ''), t.state,
 			coalesce((SELECT m.text FROM messages m WHERE m.from_task = t.id AND m.to_task = ?1 ORDER BY m.id DESC LIMIT 1), '')
 		FROM tasks t WHERE t.parent_id = ?1 ORDER BY julianday(t.created_at), t.rowid`, string(task))
@@ -547,6 +554,14 @@ func (s *Store) children(ctx context.Context, task protocol.TaskID) ([]childSumm
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("read children of task %q: %w", task, err)
+	}
+	rows.Close()
+	for idx := range children {
+		branches, err := latestBranches(ctx, tx, children[idx].ID)
+		if err != nil {
+			return nil, err
+		}
+		children[idx].Branch = branches[children[idx].ID]
 	}
 	return children, nil
 }
