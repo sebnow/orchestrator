@@ -42,12 +42,22 @@ type liveTask struct {
 
 func startLiveTask(t *testing.T, ctx context.Context, prompt string, limits daemon.PauseLimits) liveTask {
 	t.Helper()
+	return startLiveTaskOn(t, ctx, claudeHarness(t), prompt, limits)
+}
+
+func claudeHarness(t *testing.T) *claude.Harness {
+	t.Helper()
 	liveHarnessOnce.Do(func() {
 		liveHarness, liveHarnessErr = claude.New(context.Background(), "claude")
 	})
 	if liveHarnessErr != nil {
 		t.Fatalf("claude harness: %v", liveHarnessErr)
 	}
+	return liveHarness
+}
+
+func startLiveTaskOn(t *testing.T, ctx context.Context, h harness.Harness, prompt string, limits daemon.PauseLimits) liveTask {
+	t.Helper()
 	gateway, err := daemon.StartGateway()
 	if err != nil {
 		t.Fatal(err)
@@ -59,7 +69,7 @@ func startLiveTask(t *testing.T, ctx context.Context, prompt string, limits daem
 			t.Logf("seq %d %s %s", event.Seq, event.Kind, event.Payload)
 		}
 	}
-	d := daemon.New(lt.stateDir, liveHarness, gateway, observe)
+	d := daemon.New(lt.stateDir, h, gateway, observe)
 	lt.task, err = d.StartTask(ctx, daemon.TaskSpec{
 		ID:      protocol.TaskID(strings.ReplaceAll(t.Name(), "/", "_")),
 		Prompt:  prompt,
@@ -516,14 +526,72 @@ func TestLiveGivenPermissionRequestUnansweredForSixMinutesWhenTheOwnerAllowsItTh
 	}
 }
 
+// closeWatch wraps a harness to record how many lines its process had
+// read when the daemon first closed the process's input.
+type closeWatch struct {
+	harness.Harness
+	mu          sync.Mutex
+	read        int
+	readAtClose int
+	closed      bool
+}
+
+func (w *closeWatch) Start(ctx context.Context, spec harness.Spec) (harness.Process, error) {
+	proc, err := w.Harness.Start(ctx, spec)
+	if err != nil {
+		return nil, err
+	}
+	return watchedProcess{proc, w}, nil
+}
+
+// linesReadAtClose returns the number of lines read before the first
+// CloseInput, and whether there was one.
+func (w *closeWatch) linesReadAtClose() (int, bool) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.readAtClose, w.closed
+}
+
+type watchedProcess struct {
+	harness.Process
+	w *closeWatch
+}
+
+func (p watchedProcess) Read() (harness.Output, error) {
+	out, err := p.Process.Read()
+	if err == nil {
+		p.w.mu.Lock()
+		p.w.read++
+		p.w.mu.Unlock()
+	}
+	return out, err
+}
+
+func (p watchedProcess) CloseInput() error {
+	p.w.mu.Lock()
+	if !p.w.closed {
+		p.w.closed = true
+		p.w.readAtClose = p.w.read
+	}
+	p.w.mu.Unlock()
+	return p.Process.CloseInput()
+}
+
 // Cost: one claude process, one turn in which the agent starts one of
 // Claude Code's own subagents with its Agent tool. Every stream-json line
 // is logged, prefixed "raw:", so that the subagent's messages can be
 // compared with internal/harness/claude/testdata/subagent.jsonl.
+//
+// When the subagent runs in the background, Claude Code writes a result
+// before the subagent finishes and another after it; the daemon must not
+// close the harness's input before the last
+// (docs/design/2026-10-09-background-subagent-turn.md). The test waits for
+// the harness to exit by itself.
 func TestLiveGivenPromptToUseASubagentWhenItRunsThenTheSubagentsMessagesCarryTheAgentCallAsTheirParent(t *testing.T) {
 	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Minute)
 	defer cancel()
-	lt := startLiveTask(t, ctx, "Use a subagent to count the files in this directory and then reply with the number only.",
+	watch := &closeWatch{Harness: claudeHarness(t)}
+	lt := startLiveTaskOn(t, ctx, watch, "Use a subagent running in the background to count the files in this directory. Once it reports back, reply with the number only.",
 		daemon.PauseLimits{Acknowledge: time.Minute, Cleanup: time.Minute})
 	for _, name := range []string{"a.txt", "b.txt", "c.txt"} {
 		if err := os.WriteFile(filepath.Join(lt.workdir, name), []byte(name), 0o600); err != nil {
@@ -534,15 +602,22 @@ func TestLiveGivenPromptToUseASubagentWhenItRunsThenTheSubagentsMessagesCarryThe
 		return harness.Decision{Allow: true}
 	})
 
-	waitFor(t, ctx, lt.task, "the turn to end", turnsSettled(1))
-	lt.task.Stop(ctx, nil)
+	final := waitFor(t, ctx, lt.task, "the harness to exit", func(s daemon.State) bool { return !s.Running })
 
 	events := lt.journal(t)
 	var agentCall string
 	children := map[string]int{}
 	var childText bool
-	for _, o := range outputs(t, events) {
+	var backgrounded bool
+	lastResult := -1
+	for idx, o := range outputs(t, events) {
 		t.Logf("raw: %s", o.event.Payload)
+		if started, ok := o.msg.TaskStarted(); ok && started.TaskType == claude.TaskTypeLocalAgent && started.IsBackgrounded {
+			backgrounded = true
+		}
+		if _, ok := o.msg.Result(); ok {
+			lastResult = idx
+		}
 		var line struct {
 			ParentToolUseID *string `json:"parent_tool_use_id"`
 			Message         struct {
@@ -580,5 +655,27 @@ func TestLiveGivenPromptToUseASubagentWhenItRunsThenTheSubagentsMessagesCarryThe
 	}
 	if len(children) == 0 {
 		t.Error("no line carries a parent_tool_use_id")
+	}
+
+	readAtClose, closed := watch.linesReadAtClose()
+	resultCount := len(results(outputs(t, events)))
+	t.Logf("subagent backgrounded: %v; results: %d; turns ended: %d; lines read at the first input close: %d of %d; exit: %+v",
+		backgrounded, resultCount, final.TurnsEnded, readAtClose, len(outputs(t, events)), final.Exit)
+	if !closed {
+		t.Fatal("the daemon never closed the harness's input")
+	}
+	if readAtClose <= lastResult {
+		t.Errorf("the daemon closed the harness's input after %d lines, before the last result, line %d", readAtClose, lastResult+1)
+	}
+	if !backgrounded {
+		t.Error("the subagent ran in the foreground; the background case was not exercised")
+	} else if resultCount < 2 {
+		t.Errorf("a background subagent ran, and the harness wrote %d result(s), want a result before and after it", resultCount)
+	}
+	if final.TurnsEnded != 1 {
+		t.Errorf("turns ended = %d, want 1", final.TurnsEnded)
+	}
+	if final.Exit == nil || final.Exit.ExitCode != 0 {
+		t.Errorf("exit = %+v, want code 0", final.Exit)
 	}
 }
