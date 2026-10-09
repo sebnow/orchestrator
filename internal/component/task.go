@@ -149,6 +149,29 @@ func lineage(parent string) html.Node {
 	return html.El("span", attrs("class", "reason"), html.Text(" ↳ child of "), link(taskURL(parent), parent))
 }
 
+// Child is a task another spawned, as its parent's page lists it.
+// Report is the latest message it sent its parent; empty for none.
+type Child struct {
+	ID, Agent, State, Report string
+}
+
+// ChildColumns head a Table of ChildRows.
+var ChildColumns = []string{"Task", "Agent", "State", "Latest report"}
+
+// ChildRow is a child in its parent's list, linking to its page.
+func ChildRow(child Child) html.Node {
+	report := html.Node(html.El("span", attrs("class", "empty"), html.Text("none yet")))
+	if child.Report != "" {
+		report = html.Text(excerpt(child.Report))
+	}
+	return html.El("tr", nil,
+		cell(link(taskURL(child.ID), child.ID)),
+		cell(agentLink(child.Agent)),
+		cell(StateBadge(child.State)),
+		cell(report),
+	)
+}
+
 // Attention is a task waiting for the owner, and why. Dismissable says
 // the owner may dismiss it from the list.
 type Attention struct {

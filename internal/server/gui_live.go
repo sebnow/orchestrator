@@ -124,6 +124,7 @@ func (v taskView) update(c cursor, polling bool) (html.Node, cursor) {
 	return html.Fragment(
 		component.TranscriptEntries(fresh, shown),
 		component.OutOfBand(component.RegionTaskHeader, v.header()),
+		component.OutOfBand(component.RegionChildren, v.childList()),
 		component.OutOfBand(component.RegionUnknown, v.unknownToggle()),
 		permission,
 		component.OutOfBand(component.RegionPromptSubmit, component.PromptSubmit(v.promptClosed())),

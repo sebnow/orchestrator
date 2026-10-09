@@ -488,22 +488,37 @@ func (s *Store) taskPrompts(ctx context.Context) (map[protocol.TaskID]string, er
 	return prompts, nil
 }
 
-// children returns the ids of the tasks task spawned, oldest first.
-// Stored times do not sort as text; julianday compares the instants, to
-// the millisecond, and the row id, which follows insertion, breaks ties.
-func (s *Store) children(ctx context.Context, task protocol.TaskID) ([]protocol.TaskID, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT id FROM tasks WHERE parent_id = ? ORDER BY julianday(created_at), rowid`, string(task))
+// childSummary is a task's child as its parent's page lists it. Report
+// is the latest message the child sent its parent, its report, handed
+// back or sent; empty when it has sent none.
+type childSummary struct {
+	ID     protocol.TaskID
+	Agent  string
+	State  TaskState
+	Report string
+}
+
+// children returns the tasks task spawned, oldest first. Stored times do
+// not sort as text; julianday compares the instants, to the millisecond,
+// and the row id, which follows insertion, breaks ties.
+func (s *Store) children(ctx context.Context, task protocol.TaskID) ([]childSummary, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT t.id, coalesce(t.agent, ''), t.state,
+			coalesce((SELECT m.text FROM messages m WHERE m.from_task = t.id AND m.to_task = ?1 ORDER BY m.id DESC LIMIT 1), '')
+		FROM tasks t WHERE t.parent_id = ?1 ORDER BY julianday(t.created_at), t.rowid`, string(task))
 	if err != nil {
 		return nil, fmt.Errorf("read children of task %q: %w", task, err)
 	}
 	defer rows.Close()
-	var children []protocol.TaskID
+	var children []childSummary
 	for rows.Next() {
-		var id string
-		if err := rows.Scan(&id); err != nil {
+		var child childSummary
+		var id, state string
+		if err := rows.Scan(&id, &child.Agent, &state, &child.Report); err != nil {
 			return nil, fmt.Errorf("read children of task %q: %w", task, err)
 		}
-		children = append(children, protocol.TaskID(id))
+		child.ID, child.State = protocol.TaskID(id), TaskState(state)
+		children = append(children, child)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("read children of task %q: %w", task, err)

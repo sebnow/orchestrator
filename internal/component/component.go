@@ -268,6 +268,8 @@ const (
 	// RegionUnknown says how many unrecognised transcript entries a task
 	// page hides or shows.
 	RegionUnknown Region = "task-unknown"
+	// RegionChildren lists the tasks a task spawned.
+	RegionChildren Region = "task-children"
 )
 
 // RegionOf is region with children as its content.

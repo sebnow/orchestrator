@@ -18,7 +18,7 @@ import (
 // Unrecognised entries are hidden unless showUnknown is set.
 type taskView struct {
 	detail      taskDetail
-	children    []protocol.TaskID
+	children    []childSummary
 	entries     []transcript.Entry
 	showUnknown bool
 }
@@ -64,9 +64,19 @@ func (v taskView) id() string { return string(v.detail.ID) }
 func (v taskView) task() component.Task {
 	task := guiTask(v.detail.taskSummary, v.detail.Start.Prompt)
 	for _, child := range v.children {
-		task.Children = append(task.Children, string(child))
+		task.Children = append(task.Children, string(child.ID))
 	}
 	return task
+}
+
+// childList lists the tasks the task spawned, with each one's latest
+// report.
+func (v taskView) childList() html.Node {
+	rows := make([]html.Node, len(v.children))
+	for idx, child := range v.children {
+		rows[idx] = component.ChildRow(component.Child{ID: string(child.ID), Agent: child.Agent, State: string(child.State), Report: child.Report})
+	}
+	return component.Table(component.ChildColumns, "It has not spawned any tasks.", rows...)
 }
 
 // header is the task's header with the controls its state offers. A task
@@ -189,6 +199,7 @@ func (v taskView) page(refused refusal) html.Node {
 	return component.Page("Task "+v.id(),
 		component.RegionOf(component.RegionTaskHeader, v.header()),
 		component.RegionOf(component.RegionPermission, v.permission(permissionProblem)),
+		component.Section("Children", component.RegionOf(component.RegionChildren, v.childList())),
 		component.Section("Transcript",
 			component.RegionOf(component.RegionUnknown, v.unknownToggle()),
 			component.Transcript(v.visible(v.entries)),
