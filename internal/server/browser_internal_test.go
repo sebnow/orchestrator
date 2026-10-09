@@ -4,6 +4,7 @@ package server
 
 import (
 	"context"
+	"encoding/hex"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -259,6 +260,35 @@ func TestGivenTaskPageWhenANewEventArrivesThenTheTranscriptShowsItOverSSEWithout
 	if got := requests.matching(http.MethodGet, "/tasks/"+string(task)+"/updates"); len(got) != 0 {
 		t.Errorf("the page polled %d times, want none", len(got))
 	}
+}
+
+func TestGivenTaskPageWhenASubagentsEntryArrivesThenItIsAppendedUnderTheToolCallThatStartedIt(t *testing.T) {
+	srv, _ := startBrowserServer(t)
+	task, events := runningTask(t, srv)
+	events.add(protocol.KindHarnessOutput, `{"type":"assistant","message":{"content":[{"type":"tool_use","id":"toolu_sub","name":"Agent","input":{"description":"Look around"}}]},"parent_tool_use_id":null}`)
+	events.ingest(t, srv, "laptop")
+	page := openPage(t)
+	page.Navigate(srv.url + "/tasks/" + string(task))
+	markLoaded(page)
+	page.WaitTrue(`document.querySelector('[sse-connect]')?.['htmx-internal-data']?.sseEventSource?.readyState === 1`)
+	subagentHidden := `getComputedStyle(document.getElementById(` + js("subagent-"+hex.EncodeToString([]byte("toolu_sub"))) + `).closest('details')).display === 'none'`
+	var hidden bool
+	page.MustEval(subagentHidden, &hidden)
+	if !hidden {
+		t.Error("the empty subagent list is shown")
+	}
+
+	events.add(protocol.KindHarnessOutput, `{"type":"assistant","message":{"content":[{"type":"text","text":"SUBAGENT-1"}]},"parent_tool_use_id":"toolu_sub"}`)
+	events.add(protocol.KindHarnessOutput, `{"type":"assistant","message":{"content":[{"type":"text","text":"MAIN-1"}]},"parent_tool_use_id":null}`)
+	events.ingest(t, srv, "laptop")
+
+	page.WaitTrue(hasText("#transcript > li.entry:last-child", "MAIN-1"))
+	page.WaitTrue(hasText("#transcript li.entry details.subagent > ol > li.entry", "SUBAGENT-1"))
+	page.MustEval(subagentHidden, &hidden)
+	if hidden {
+		t.Error("the subagent list is hidden once it has an entry")
+	}
+	requireNotReloaded(t, page)
 }
 
 // waitRequests waits until the server has received at least want

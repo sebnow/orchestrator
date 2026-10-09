@@ -2,6 +2,7 @@ package component
 
 import (
 	"bytes"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"strconv"
@@ -15,22 +16,122 @@ import (
 // Transcript is a task's transcript, in order. New entries are appended
 // to it as they arrive.
 func Transcript(entries []transcript.Entry) html.Node {
-	return html.El("ol", attrs("id", "transcript", "class", "transcript"), TranscriptEntries(entries))
+	return html.El("ol", attrs("id", "transcript", "class", "transcript"), TranscriptEntries(entries, nil))
 }
 
-// TranscriptEntries are entries side by side, to append to a Transcript.
-func TranscriptEntries(entries []transcript.Entry) html.Node {
-	nodes := make([]html.Node, len(entries))
-	for idx, entry := range entries {
-		nodes[idx] = TranscriptEntry(entry)
+// TranscriptEntries are entries, to append to a Transcript that shows
+// shown already. An entry a harness subagent wrote is nested under the
+// tool call that started the subagent: in that call's list when the call
+// is among entries, appended to the list on the page out of band when
+// the call is among shown, and otherwise in a list of its own, titled by
+// the call's id, where its first entry falls.
+func TranscriptEntries(entries, shown []transcript.Entry) html.Node {
+	onPage := make(map[string]bool)
+	for _, entry := range shown {
+		if call, ok := entry.Body.(transcript.ToolCall); ok {
+			onPage[call.ID] = true
+		}
+		if parent := transcript.ParentToolUseID(entry.Body); parent != "" {
+			onPage[parent] = true
+		}
+	}
+	calls := make(map[string]bool)
+	nested := make(map[string][]transcript.Entry)
+	for _, entry := range entries {
+		if call, ok := entry.Body.(transcript.ToolCall); ok {
+			calls[call.ID] = true
+		}
+		if parent := transcript.ParentToolUseID(entry.Body); parent != "" {
+			nested[parent] = append(nested[parent], entry)
+		}
+	}
+	var render func(entry transcript.Entry) html.Node
+	renderAll := func(entries []transcript.Entry) []html.Node {
+		nodes := make([]html.Node, len(entries))
+		for idx, entry := range entries {
+			nodes[idx] = render(entry)
+		}
+		return nodes
+	}
+	render = func(entry transcript.Entry) html.Node {
+		call, ok := entry.Body.(transcript.ToolCall)
+		if !ok {
+			return transcriptEntry(entry, nil)
+		}
+		return transcriptEntry(entry, subagent(call.ID, subagentTitle(call), renderAll(nested[call.ID])...))
+	}
+
+	var nodes []html.Node
+	var appended []string
+	toAppend := make(map[string][]html.Node)
+	orphans := make(map[string]bool)
+	for _, entry := range entries {
+		parent := transcript.ParentToolUseID(entry.Body)
+		switch {
+		case parent == "":
+			nodes = append(nodes, render(entry))
+		case onPage[parent]:
+			if toAppend[parent] == nil {
+				appended = append(appended, parent)
+			}
+			toAppend[parent] = append(toAppend[parent], render(entry))
+		case calls[parent]:
+			// Rendered inside its call.
+		case !orphans[parent]:
+			orphans[parent] = true
+			nodes = append(nodes, html.El("li", attrs("class", "entry from-agent"),
+				subagent(parent, "Subagent of tool call "+parent, renderAll(nested[parent])...)))
+		}
+	}
+	for _, parent := range appended {
+		nodes = append(nodes, html.El("ol", attrs("hx-swap-oob", "beforeend:#"+subagentListID(parent)), toAppend[parent]...))
 	}
 	return html.Fragment(nodes...)
 }
 
+// subagent is the list of what the subagent that the tool call id started
+// wrote, folded under title. The list is there, empty, for every tool
+// call, so that entries arriving later can be appended to it; the style
+// sheet hides it while it is empty.
+func subagent(id, title string, entries ...html.Node) html.Node {
+	return html.El("details", attrs("class", "subagent", "open", ""),
+		html.El("summary", nil, html.Text(title)),
+		html.El("ol", attrs("id", subagentListID(id), "class", "transcript"), entries...))
+}
+
+// subagentListID is the element id of the list nested under tool call id.
+// Tool call ids are the harness's, so they are hex-encoded to make a
+// valid id and selector whatever they hold.
+func subagentListID(id string) string {
+	return "subagent-" + hex.EncodeToString([]byte(id))
+}
+
+// subagentTitle names the subagent a tool call started by the call's
+// tool and, when its input has one, its description.
+func subagentTitle(call transcript.ToolCall) string {
+	var input struct {
+		Description string `json:"description"`
+	}
+	title := "Subagent started by " + call.Name
+	if json.Unmarshal(call.Input, &input) == nil && input.Description != "" {
+		title += ": " + input.Description
+	}
+	return title
+}
+
 // TranscriptEntry is one entry. Text the agent or a tool wrote keeps its
 // whitespace and is not interpreted, as markdown or otherwise; tool
-// inputs and results are folded away.
+// inputs and results are folded away. A tool call has an empty list for
+// the entries of a subagent it starts.
 func TranscriptEntry(entry transcript.Entry) html.Node {
+	if call, ok := entry.Body.(transcript.ToolCall); ok {
+		return transcriptEntry(entry, subagent(call.ID, subagentTitle(call)))
+	}
+	return transcriptEntry(entry, nil)
+}
+
+// transcriptEntry is entry, with nested after its body.
+func transcriptEntry(entry transcript.Entry, nested html.Node) html.Node {
 	// subject follows label in the entry's header, for links to other
 	// tasks.
 	from, label, subject, body := "daemon", "", html.Node(nil), html.Node(nil)
@@ -154,7 +255,7 @@ func TranscriptEntry(entry transcript.Entry) html.Node {
 	}
 	return html.El("li", attrs("class", "entry from-"+from),
 		html.El("header", nil, timestamp(entry.Time), html.Text(" "+label), subject),
-		body)
+		body, nested)
 }
 
 func paragraph(text string) html.Node {

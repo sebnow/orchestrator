@@ -76,6 +76,23 @@ func (c cursor) after(entries []transcript.Entry) ([]transcript.Entry, cursor) {
 	return fresh, next
 }
 
+// shown returns the entries a page at c shows already: those after
+// leaves out.
+func (c cursor) shown(entries []transcript.Entry) []transcript.Entry {
+	fresh, _ := c.after(entries)
+	isFresh := make(map[transcript.Source]bool, len(fresh))
+	for _, entry := range fresh {
+		isFresh[entry.Source] = true
+	}
+	var shown []transcript.Entry
+	for _, entry := range entries {
+		if !isFresh[entry.Source] {
+			shown = append(shown, entry)
+		}
+	}
+	return shown
+}
+
 // changesPermission reports whether entry can change which permission
 // requests wait for an answer.
 func changesPermission(entry transcript.Entry) bool {
@@ -95,6 +112,7 @@ func changesPermission(entry transcript.Entry) bool {
 func (v taskView) update(c cursor, polling bool) (html.Node, cursor) {
 	fresh, next := c.after(v.entries)
 	fresh = v.visible(fresh)
+	shown := v.visible(c.shown(v.entries))
 	var permission html.Node
 	if slices.ContainsFunc(fresh, changesPermission) {
 		permission = component.OutOfBand(component.RegionPermission, v.permission(""))
@@ -104,7 +122,7 @@ func (v taskView) update(c cursor, polling bool) (html.Node, cursor) {
 		live = component.OutOfBand(component.RegionLive, component.Polling(v.id(), next.String(), v.showUnknown))
 	}
 	return html.Fragment(
-		component.TranscriptEntries(fresh),
+		component.TranscriptEntries(fresh, shown),
 		component.OutOfBand(component.RegionTaskHeader, v.header()),
 		component.OutOfBand(component.RegionUnknown, v.unknownToggle()),
 		permission,

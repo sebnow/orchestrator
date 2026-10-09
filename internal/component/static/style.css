@@ -89,6 +89,9 @@ pre.payload { margin: 0; max-height: 20rem; overflow: auto; }
 .from-owner { border-left: calc(var(--space) / 2) solid var(--state-running); }
 .from-agent { border-left: calc(var(--space) / 2) solid var(--state-finished); }
 .from-task { border-left: calc(var(--space) / 2) solid var(--state-paused); }
+.subagent { margin-top: var(--space); padding-left: var(--space); border-left: 1px dashed var(--border); }
+.subagent > summary { color: var(--muted); font-size: 0.875rem; }
+.subagent:not(:has(li)) { display: none; }
 
 .task-header dl { display: grid; grid-template-columns: max-content 1fr; gap: 0 var(--space); }
 .task-header dt { color: var(--muted); }
