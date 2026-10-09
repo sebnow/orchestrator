@@ -52,6 +52,9 @@ type Config struct {
 	// ShutdownTimeout bounds stopping the running tasks once ctx ends, and
 	// then bounds sending their last events; zero means 30 s.
 	ShutdownTimeout time.Duration
+	// LockTimeout is how long to wait for another daemon to release the
+	// state directory; 0 means the default.
+	LockTimeout time.Duration
 	// GitName and GitEmail are the identity an agent's own git commits get
 	// in a task's clone; either empty uses "orchestrator"
 	// <orchestrator@localhost>.
@@ -126,6 +129,9 @@ func Serve(ctx context.Context, cfg Config) error {
 		return fmt.Errorf("state directory: %w", err)
 	}
 	cfg.StateDir = stateDir
+	if err := os.MkdirAll(stateDir, 0o700); err != nil {
+		return fmt.Errorf("state directory %s: %w", stateDir, err)
+	}
 	if cfg.Client == nil {
 		cfg.Client = &http.Client{}
 	}
@@ -138,6 +144,14 @@ func Serve(ctx context.Context, cfg Config) error {
 	if cfg.ShutdownTimeout <= 0 {
 		cfg.ShutdownTimeout = defaultShutdownTimeout
 	}
+	if cfg.LockTimeout <= 0 {
+		cfg.LockTimeout = cfg.ShutdownTimeout + 30*time.Second
+	}
+	lock, err := lockStateDir(ctx, stateDir, cfg.LockTimeout, cfg.Log)
+	if err != nil {
+		return err
+	}
+	defer lock.Close()
 	workspaceDir, err := resolveWorkspaceDir(stateDir, cfg.WorkspaceDir, cfg.HarnessUser)
 	if err != nil {
 		return err
