@@ -28,6 +28,7 @@ const maxOwnerRequestBytes = 1 << 20
 type createTaskRequest struct {
 	DaemonID protocol.DaemonID `json:"daemon_id"`
 	Agent    string            `json:"agent"`
+	Requires *Labels           `json:"requires"`
 	Priority string            `json:"priority"`
 	Filler   *bool             `json:"filler"`
 	protocol.StartTask
@@ -63,7 +64,7 @@ func (s *Server) postTask(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	turn, err := s.startTask(r.Context(), taskRequest{Daemon: daemon, Agent: request.Agent, Priority: priority, Filler: request.Filler, Start: request.StartTask})
+	turn, err := s.startTask(r.Context(), taskRequest{Daemon: daemon, Agent: request.Agent, Requires: request.Requires, Priority: priority, Filler: request.Filler, Start: request.StartTask})
 	if errors.Is(err, errInvalidTask) {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
@@ -90,11 +91,12 @@ func (s *Server) postTask(w http.ResponseWriter, r *http.Request) {
 // taskRequest is a task the owner asks for. An empty Daemon is any
 // connected daemon. Agent names the agent the task is started as, if
 // any, whose values the task takes where the request leaves them out:
-// an empty Priority, a nil Filler, an empty Start.Model, a nil
-// Start.Tools and zero Start.PauseLimits.
+// an empty Priority, a nil Filler, a nil Requires, an empty
+// Start.Model, a nil Start.Tools and zero Start.PauseLimits.
 type taskRequest struct {
 	Daemon   protocol.DaemonID
 	Agent    string
+	Requires *Labels
 	Priority Priority
 	Filler   *bool
 	Start    protocol.StartTask
@@ -115,6 +117,7 @@ var errInvalidTask = errors.New("invalid task")
 func (s *Server) startTask(ctx context.Context, request taskRequest) (queuedTurn, error) {
 	start := request.Start
 	priority, filler := request.Priority, false
+	requires := Labels{}
 	var agentPrompt string
 	if request.Agent != "" {
 		a, err := s.store.agent(ctx, request.Agent)
@@ -125,7 +128,13 @@ func (s *Server) startTask(ctx context.Context, request taskRequest) (queuedTurn
 		if priority == "" {
 			priority = a.Priority
 		}
-		filler, agentPrompt = a.Filler, a.SystemPrompt
+		filler, agentPrompt, requires = a.Filler, a.SystemPrompt, a.Requires
+	}
+	if request.Requires != nil {
+		requires = *request.Requires
+	}
+	if err := requires.Validate(); err != nil {
+		return queuedTurn{}, fmt.Errorf("%w: requires: %v", errInvalidTask, err)
 	}
 	if request.Filler != nil {
 		filler = *request.Filler
@@ -154,6 +163,7 @@ func (s *Server) startTask(ctx context.Context, request taskRequest) (queuedTurn
 		Daemon:    request.Daemon,
 		Placement: placed,
 		Agent:     request.Agent,
+		Requires:  requires,
 		Priority:  priority,
 		Filler:    filler,
 		Start:     start,

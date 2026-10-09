@@ -61,6 +61,7 @@ func guiTask(summary taskSummary, prompt string) component.Task {
 	task := component.Task{
 		ID:             string(summary.ID),
 		Agent:          summary.Agent,
+		Requires:       summary.Requires,
 		State:          string(summary.State),
 		Daemon:         string(summary.DaemonID),
 		Model:          summary.Model,
@@ -300,6 +301,7 @@ func (s *Server) postTaskForm(w http.ResponseWriter, r *http.Request) {
 	}
 	input := component.NewTask{
 		Agent:       r.PostForm.Get("agent"),
+		Requires:    strings.TrimSpace(r.PostForm.Get("requires")),
 		Prompt:      r.PostForm.Get("prompt"),
 		Repo:        strings.TrimSpace(r.PostForm.Get("repo")),
 		Ref:         strings.TrimSpace(r.PostForm.Get("ref")),
@@ -403,7 +405,16 @@ func (s *Server) startTaskFromForm(ctx context.Context, input component.NewTask)
 		on := true
 		filler = &on
 	}
-	turn, err := s.startTask(ctx, taskRequest{Daemon: daemon, Agent: input.Agent, Priority: priority, Filler: filler, Start: start})
+	// Blank requires are the agent's.
+	var requires *Labels
+	if input.Requires != "" {
+		parsed, err := ParseLabels(input.Requires)
+		if err != nil {
+			return "", "Requires: " + strings.TrimPrefix(err.Error(), errInvalidLabels.Error()+": ") + ".", nil
+		}
+		requires = &parsed
+	}
+	turn, err := s.startTask(ctx, taskRequest{Daemon: daemon, Agent: input.Agent, Requires: requires, Priority: priority, Filler: filler, Start: start})
 	if errors.Is(err, errInvalidTask) {
 		return "", "The task was not started: " + strings.TrimPrefix(err.Error(), errInvalidTask.Error()+": ") + ".", nil
 	}

@@ -308,7 +308,9 @@ type taskSummary struct {
 	// ParentID names the task that spawned this one; nil for the owner's.
 	ParentID *protocol.TaskID `json:"parent_id,omitempty"`
 	// Agent names the agent the task was started as; empty for none.
-	Agent          string    `json:"agent,omitempty"`
+	Agent string `json:"agent,omitempty"`
+	// Requires are the labels the task's daemon must have.
+	Requires       Labels    `json:"requires,omitempty"`
 	State          TaskState `json:"state"`
 	Model          string    `json:"model"`
 	Priority       Priority  `json:"priority"`
@@ -334,18 +336,22 @@ type taskDetail struct {
 	Start protocol.StartTask `json:"start"`
 }
 
-const summaryColumns = `id, daemon_id, placement, parent_id, coalesce(agent, ''), state, model, priority, filler, created_at, last_activity_at, cost_usd, dismissed_at`
+const summaryColumns = `id, daemon_id, placement, parent_id, coalesce(agent, ''), requires, state, model, priority, filler, created_at, last_activity_at, cost_usd, dismissed_at`
 
 // scanSummary reads summaryColumns, followed by extra destinations.
 func scanSummary(row interface{ Scan(...any) error }, extra ...any) (taskSummary, error) {
 	var summary taskSummary
-	var id, daemon, placed, state, priority, created, lastActivity string
+	var id, daemon, placed, requires, state, priority, created, lastActivity string
 	var parent, dismissed sql.NullString
-	dest := append([]any{&id, &daemon, &placed, &parent, &summary.Agent, &state, &summary.Model, &priority, &summary.Filler, &created, &lastActivity, &summary.CostUSD, &dismissed}, extra...)
+	dest := append([]any{&id, &daemon, &placed, &parent, &summary.Agent, &requires, &state, &summary.Model, &priority, &summary.Filler, &created, &lastActivity, &summary.CostUSD, &dismissed}, extra...)
 	if err := row.Scan(dest...); err != nil {
 		return taskSummary{}, err
 	}
 	summary.ID, summary.State, summary.Priority = protocol.TaskID(id), TaskState(state), Priority(priority)
+	var err error
+	if summary.Requires, err = decodeLabels(requires); err != nil {
+		return taskSummary{}, fmt.Errorf("task %q requires: %w", id, err)
+	}
 	if placement(placed) == placementBound {
 		summary.DaemonID = protocol.DaemonID(daemon)
 	}
@@ -353,7 +359,6 @@ func scanSummary(row interface{ Scan(...any) error }, extra ...any) (taskSummary
 		parentID := protocol.TaskID(parent.String)
 		summary.ParentID = &parentID
 	}
-	var err error
 	if summary.CreatedAt, err = parseTime(created); err != nil {
 		return taskSummary{}, fmt.Errorf("task %q created_at: %w", id, err)
 	}

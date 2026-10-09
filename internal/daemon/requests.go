@@ -67,6 +67,9 @@ type spawnTaskInput struct {
 	Prompt string `json:"prompt" jsonschema:"the child task's instructions; it sees nothing else of your conversation"`
 	Agent  string `json:"agent,omitempty" jsonschema:"the name of the agent to start the child as, from the agents your instructions list; none when omitted"`
 	Model  string `json:"model,omitempty" jsonschema:"the model the child runs, such as haiku; the agent's, or yours, when omitted"`
+	// Requires is passed on as given: an empty object requires nothing,
+	// in place of the agent's labels.
+	Requires map[string]string `json:"requires,omitempty" jsonschema:"labels, such as {\"gpu\": \"nvidia\"}, that the daemon the child runs on must have; the agent's when omitted"`
 }
 
 type sendMessageInput struct {
@@ -78,7 +81,7 @@ type sendMessageInput struct {
 func (d *Daemon) spawnTask(task protocol.TaskID) func(context.Context, spawnTaskInput) (string, error) {
 	return func(ctx context.Context, in spawnTaskInput) (string, error) {
 		var spawned protocol.Spawned
-		if err := d.request(ctx, task, protocol.AgentSpawn, protocol.Spawn{Prompt: in.Prompt, Model: in.Model, Agent: in.Agent}, &spawned); err != nil {
+		if err := d.request(ctx, task, protocol.AgentSpawn, protocol.Spawn{Prompt: in.Prompt, Model: in.Model, Agent: in.Agent, Requires: in.Requires}, &spawned); err != nil {
 			return "", err
 		}
 		return fmt.Sprintf("Started child task %s. It works on its own and sends its result with %s. "+

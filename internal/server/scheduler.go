@@ -110,6 +110,9 @@ type pendingTurn struct {
 	// was moved off a lost daemon. Its start goes to none of them: one
 	// that came back may still hold the task's old record.
 	Ran []protocol.DaemonID
+	// Requires are the labels the task's daemon must have
+	// (docs/adr/2026-10-09-agents-and-placement.md).
+	Requires Labels
 }
 
 // slotHolder is a task holding a slot on its daemon.
@@ -132,8 +135,10 @@ func holdsSlot(state TaskState) bool {
 
 // schedule is everything the scheduler reads to decide.
 type schedule struct {
-	// slots maps each connected daemon to its slot count.
+	// slots maps each connected daemon to its slot count, and labels to
+	// its facts and the owner's labels, merged.
 	slots   map[protocol.DaemonID]int
+	labels  map[protocol.DaemonID]Labels
 	holders []slotHolder
 	// turns are the waiting turns of tasks that have not ended, oldest
 	// first.
@@ -159,11 +164,11 @@ type decisions struct {
 
 // slotWait is a turn that would be admitted but for a free slot. It
 // waits on daemon, unless flexible, when any connected daemon's slot
-// would do, daemon's first if it is set, other than those in ran.
+// would do, daemon's first if it is set, other than those in exclude.
 type slotWait struct {
 	daemon   protocol.DaemonID
 	flexible bool
-	ran      []protocol.DaemonID
+	exclude  []protocol.DaemonID
 }
 
 // decide applies the scheduling rules to s at now:
@@ -245,7 +250,7 @@ func decide(s schedule, policy SchedulePolicy, now time.Time) decisions {
 			d.admit = append(d.admit, admission{turn: turn, daemon: turn.Daemon})
 			continue
 		}
-		daemon, reason, wait := place(turn, s.slots, free)
+		daemon, reason, wait := place(turn, s.slots, free, s.labels)
 		if daemon != "" {
 			free[daemon]--
 			d.admit = append(d.admit, admission{turn: turn, daemon: daemon})
@@ -293,26 +298,42 @@ func percent(fraction float64) string {
 
 // place picks the daemon with a free slot that turn goes to. When there
 // is none it returns why, and, if the turn waits only for a slot, what
-// it waits on. A start goes to no daemon the task ran on before.
-func place(turn pendingTurn, slots, free map[protocol.DaemonID]int) (protocol.DaemonID, string, *slotWait) {
+// it waits on. A start goes only to a daemon whose labels hold what the
+// task requires, and to none the task ran on before.
+func place(turn pendingTurn, slots, free map[protocol.DaemonID]int, labels map[protocol.DaemonID]Labels) (protocol.DaemonID, string, *slotWait) {
 	_, connected := slots[turn.Daemon]
 	if turn.Kind != turnStart || turn.Placement == placementBound {
 		if !connected {
 			return "", "daemon " + string(turn.Daemon) + " is not connected", nil
+		}
+		if lacks := lacking(turn.Requires, labels[turn.Daemon]); turn.Kind == turnStart && len(lacks) > 0 {
+			return "", "daemon " + string(turn.Daemon) + " does not have " + lacks.String(), nil
 		}
 		if free[turn.Daemon] > 0 {
 			return turn.Daemon, "", nil
 		}
 		return "", "slots: daemon " + string(turn.Daemon) + " has no free slot", &slotWait{daemon: turn.Daemon}
 	}
-	parent := connected && turn.Placement == placementParent && !slices.Contains(turn.Ran, turn.Daemon)
+	exclude := slices.Clone(turn.Ran)
+	var candidates []protocol.DaemonID
+	for daemon := range slots {
+		switch {
+		case slices.Contains(turn.Ran, daemon):
+		case !labels[daemon].Holds(turn.Requires):
+			exclude = append(exclude, daemon)
+			candidates = append(candidates, daemon)
+		default:
+			candidates = append(candidates, daemon)
+		}
+	}
+	parent := connected && turn.Placement == placementParent && !slices.Contains(exclude, turn.Daemon)
 	if parent && free[turn.Daemon] > 0 {
 		return turn.Daemon, "", nil
 	}
 	var best protocol.DaemonID
 	usable := 0
 	for daemon := range slots {
-		if slices.Contains(turn.Ran, daemon) {
+		if slices.Contains(exclude, daemon) {
 			continue
 		}
 		usable++
@@ -326,14 +347,43 @@ func place(turn pendingTurn, slots, free map[protocol.DaemonID]int) (protocol.Da
 	if len(slots) == 0 {
 		return "", "no daemon is connected", nil
 	}
-	if usable == 0 {
+	if len(candidates) == 0 {
 		return "", "the task ran on every connected daemon before it was moved; it waits for another daemon", nil
 	}
-	wait := &slotWait{flexible: true, ran: turn.Ran}
+	if usable == 0 {
+		return "", "no daemon has " + unmet(turn.Requires, candidates, labels).String(), nil
+	}
+	wait := &slotWait{flexible: true, exclude: exclude}
 	if parent {
 		wait.daemon = turn.Daemon
 	}
 	return "", "slots: no connected daemon has a free slot", wait
+}
+
+// lacking returns the pairs of required that labels does not have.
+func lacking(required, labels Labels) Labels {
+	lacks := Labels{}
+	for key, value := range required {
+		if labels[key] != value {
+			lacks[key] = value
+		}
+	}
+	return lacks
+}
+
+// unmet returns the pairs of required that none of daemons has, or, when
+// each is on one of them but none has them all, required.
+func unmet(required Labels, daemons []protocol.DaemonID, labels map[protocol.DaemonID]Labels) Labels {
+	missing := Labels{}
+	for key, value := range required {
+		if !slices.ContainsFunc(daemons, func(daemon protocol.DaemonID) bool { return labels[daemon][key] == value }) {
+			missing[key] = value
+		}
+	}
+	if len(missing) == 0 {
+		return required
+	}
+	return missing
 }
 
 // yields picks the filler tasks to pause so that each wait gets a slot.
@@ -368,13 +418,13 @@ func yields(waits []slotWait, s schedule) []slotHolder {
 		if wait.flexible && !usable(daemon) {
 			daemon = ""
 			for candidate, count := range underway {
-				if count > 0 && !slices.Contains(wait.ran, candidate) && (daemon == "" || candidate < daemon) {
+				if count > 0 && !slices.Contains(wait.exclude, candidate) && (daemon == "" || candidate < daemon) {
 					daemon = candidate
 				}
 			}
 			var newest uint64
 			for candidate, list := range fillers {
-				if underway[daemon] == 0 && len(list) > 0 && !slices.Contains(wait.ran, candidate) && (daemon == "" || list[0].Admitted > newest) {
+				if underway[daemon] == 0 && len(list) > 0 && !slices.Contains(wait.exclude, candidate) && (daemon == "" || list[0].Admitted > newest) {
 					daemon, newest = candidate, list[0].Admitted
 				}
 			}
@@ -461,10 +511,11 @@ func (s *Store) schedule(ctx context.Context, policy SchedulePolicy, now time.Ti
 
 // readSchedule reads what the scheduler decides on.
 func readSchedule(ctx context.Context, tx *sql.Tx, policy SchedulePolicy, connected []protocol.DaemonID) (schedule, error) {
-	s := schedule{slots: make(map[protocol.DaemonID]int, len(connected))}
+	s := schedule{slots: make(map[protocol.DaemonID]int, len(connected)), labels: make(map[protocol.DaemonID]Labels, len(connected))}
 	for _, daemon := range connected {
 		var slots sql.NullInt64
-		err := tx.QueryRowContext(ctx, `SELECT slots FROM daemons WHERE id = ?`, string(daemon)).Scan(&slots)
+		var labels, facts string
+		err := tx.QueryRowContext(ctx, `SELECT slots, labels, facts FROM daemons WHERE id = ?`, string(daemon)).Scan(&slots, &labels, &facts)
 		if errors.Is(err, sql.ErrNoRows) {
 			continue
 		}
@@ -475,6 +526,15 @@ func readSchedule(ctx context.Context, tx *sql.Tx, policy SchedulePolicy, connec
 		if slots.Valid {
 			s.slots[daemon] = int(slots.Int64)
 		}
+		owners, err := decodeLabels(labels)
+		if err != nil {
+			return schedule{}, fmt.Errorf("read labels of daemon %q: %w", daemon, err)
+		}
+		reported, err := decodeLabels(facts)
+		if err != nil {
+			return schedule{}, fmt.Errorf("read facts of daemon %q: %w", daemon, err)
+		}
+		s.labels[daemon] = Merge(reported, owners)
 	}
 
 	rows, err := tx.QueryContext(ctx, `
@@ -522,7 +582,8 @@ func queryWaitingTurns(ctx context.Context, tx *sql.Tx) ([]pendingTurn, error) {
 			t.state, t.priority,
 			CASE WHEN t.placement = ?3 THEN coalesce((SELECT p.daemon_id FROM tasks p WHERE p.id = t.parent_id), t.daemon_id) ELSE t.daemon_id END,
 			t.placement, coalesce(t.pause_origin, ''),
-			coalesce((SELECT group_concat(DISTINCT c.daemon_id) FROM commands c WHERE c.task_id = t.id AND c.kind = ?4), '')
+			coalesce((SELECT group_concat(DISTINCT c.daemon_id) FROM commands c WHERE c.task_id = t.id AND c.kind = ?4), ''),
+			t.requires
 		FROM turns u JOIN tasks t ON t.id = u.task_id
 		WHERE u.admitted_command_id IS NULL AND t.state NOT IN (?1, ?2)
 		ORDER BY u.id`, string(TaskStopped), string(TaskFailed), string(placementParent), string(protocol.CommandStartTask))
@@ -534,10 +595,14 @@ func queryWaitingTurns(ctx context.Context, tx *sql.Tx) ([]pendingTurn, error) {
 	for rows.Next() {
 		var turn pendingTurn
 		var id int64
-		var task, kind, state, priority, daemon, placed, pausedBy, ran string
+		var task, kind, state, priority, daemon, placed, pausedBy, ran, requires string
 		var payload []byte
-		if err := rows.Scan(&id, &task, &kind, &payload, &turn.Filler, &turn.Reason, &state, &priority, &daemon, &placed, &pausedBy, &ran); err != nil {
+		if err := rows.Scan(&id, &task, &kind, &payload, &turn.Filler, &turn.Reason, &state, &priority, &daemon, &placed, &pausedBy, &ran, &requires); err != nil {
 			return nil, fmt.Errorf("read waiting turns: %w", err)
+		}
+		var err error
+		if turn.Requires, err = decodeLabels(requires); err != nil {
+			return nil, fmt.Errorf("read waiting turn %d: %w", id, err)
 		}
 		turn.ID, turn.Task, turn.Kind, turn.Payload = uint64(id), protocol.TaskID(task), turnKind(kind), payload
 		turn.State, turn.Priority, turn.Daemon, turn.Placement, turn.PausedBy =

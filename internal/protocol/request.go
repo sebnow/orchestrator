@@ -25,11 +25,14 @@ type AgentRequest struct {
 
 // Spawn starts a child task with Prompt, as the agent named Agent when
 // that is set (docs/adr/2026-10-09-agents-and-placement.md). An empty
-// Model leaves the choice to the server.
+// Model leaves the choice to the server. Requires, when not nil, are the
+// labels the child's daemon must have, in place of the agent's; an empty
+// one requires nothing.
 type Spawn struct {
-	Prompt string `json:"prompt"`
-	Model  string `json:"model,omitempty"`
-	Agent  string `json:"agent,omitempty"`
+	Prompt   string            `json:"prompt"`
+	Model    string            `json:"model,omitempty"`
+	Agent    string            `json:"agent,omitempty"`
+	Requires map[string]string `json:"requires,omitzero"`
 }
 
 // Spawned names the child task a Spawn started.

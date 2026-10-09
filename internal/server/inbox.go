@@ -54,7 +54,8 @@ func requireRunning(ctx context.Context, tx *sql.Tx, daemon protocol.DaemonID, t
 // agent's tools, priority and filler flag, and the agent's model and
 // pause limits, or else parent's
 // (docs/adr/2026-10-09-agents-and-placement.md); started as none, it has
-// every tool and parent's settings. A model spawn names wins over both.
+// every tool and parent's settings. A model spawn names wins over both,
+// and so do the labels spawn requires, if it gives them.
 // A parent not allowed spawn_task, or a spawn naming no agent there is,
 // is refused with errRefused.
 func (s *Store) spawnTask(ctx context.Context, daemon protocol.DaemonID, parent, child protocol.TaskID, spawn protocol.Spawn) (queuedTurn, error) {
@@ -85,6 +86,7 @@ func (s *Store) spawnTask(ctx context.Context, daemon protocol.DaemonID, parent,
 		PauseLimits: protocol.PauseLimits{Acknowledge: time.Duration(acknowledge), Cleanup: time.Duration(cleanup)},
 	}
 	var agentPrompt string
+	requires := Labels{}
 	if spawn.Agent != "" {
 		a, err := queryAgent(ctx, tx, spawn.Agent)
 		if errors.Is(err, errUnknownAgent) {
@@ -99,7 +101,13 @@ func (s *Store) spawnTask(ctx context.Context, daemon protocol.DaemonID, parent,
 		if a.PauseLimits != nil {
 			start.PauseLimits = *a.PauseLimits
 		}
-		start.Tools, priority, filler, agentPrompt = a.Tools, string(a.Priority), a.Filler, a.SystemPrompt
+		start.Tools, priority, filler, agentPrompt, requires = a.Tools, string(a.Priority), a.Filler, a.SystemPrompt, a.Requires
+	}
+	if spawn.Requires != nil {
+		requires = Labels(spawn.Requires)
+		if err := requires.Validate(); err != nil {
+			return queuedTurn{}, fmt.Errorf("%w: requires: %v", errRefused, err)
+		}
 	}
 	if spawn.Model != "" {
 		start.Model = spawn.Model
@@ -114,7 +122,7 @@ func (s *Store) spawnTask(ctx context.Context, daemon protocol.DaemonID, parent,
 	}
 	fx := effects{changed: []protocol.TaskID{parent}}
 	turn, err := insertTask(ctx, tx, newTask{
-		ID: child, Parent: &parent, Daemon: daemon, Placement: placementParent, Agent: spawn.Agent,
+		ID: child, Parent: &parent, Daemon: daemon, Placement: placementParent, Agent: spawn.Agent, Requires: requires,
 		Priority: Priority(priority), Filler: filler, Start: start, Origin: originServer,
 	}, &fx)
 	if err != nil {

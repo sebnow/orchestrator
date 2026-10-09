@@ -17,7 +17,9 @@ import (
 type Task struct {
 	ID string
 	// Agent names the agent the task was started as; empty for none.
-	Agent          string
+	Agent string
+	// Requires are the labels the task's daemon must have.
+	Requires       map[string]string
 	State          string
 	Daemon         string
 	Model          string
@@ -177,7 +179,10 @@ func TaskHeader(task Task, controls html.Node) html.Node {
 	term := func(name string, value html.Node) html.Node {
 		return html.Fragment(html.El("dt", nil, html.Text(name)), html.El("dd", nil, value))
 	}
-	var parent, children, queue, dismissed, agent html.Node
+	var parent, children, queue, dismissed, agent, requires html.Node
+	if len(task.Requires) > 0 {
+		requires = term("Requires", LabelList(task.Requires))
+	}
 	if task.Agent != "" {
 		agent = term("Agent", agentLink(task.Agent))
 	}
@@ -210,6 +215,7 @@ func TaskHeader(task Task, controls html.Node) html.Node {
 			term("State", queueBadges(task)),
 			queue,
 			agent,
+			requires,
 			term("Priority", html.Text(task.Priority)),
 			term("Filler", html.Text(yesNo(task.Filler))),
 			term("Daemon", html.Text(task.Daemon)),
@@ -359,7 +365,9 @@ func PromptSubmit(closed string) html.Node {
 // none, and an empty Daemon any connected daemon. What is left empty,
 // or Filler unticked, takes the agent's value, or the default.
 type NewTask struct {
-	Agent                            string
+	Agent string
+	// Requires are key=value labels the task's daemon must have.
+	Requires                         string
 	Prompt, Repo, Ref, Model, Daemon string
 	// Acknowledge and Cleanup are the pause limits as Go durations.
 	Acknowledge, Cleanup string
@@ -402,6 +410,7 @@ func NewTaskForm(input NewTask, daemons, agents []string, defaultModel, defaultA
 		Field(FieldSpec{Name: "ref", Label: "Ref", Value: input.Ref}),
 		Field(FieldSpec{Name: "model", Label: "Model", Value: input.Model, Placeholder: "the agent's, or " + defaultModel}),
 		Field(FieldSpec{Kind: FieldSelect, Name: "daemon", Label: "Daemon", Value: input.Daemon, Options: daemonOptions}),
+		Field(FieldSpec{Name: "requires", Label: "Requires labels (key=value, separated by commas)", Value: input.Requires, Placeholder: "the agent's, or none"}),
 		noDaemons,
 		Field(FieldSpec{Kind: FieldSelect, Name: "priority", Label: "Priority", Value: input.Priority, Options: priorityOptions}),
 		Field(FieldSpec{Kind: FieldCheckbox, Name: "filler", Label: "Filler: runs only on spare budget, and yields to other work; unticked leaves the agent's choice", Value: input.Filler}),

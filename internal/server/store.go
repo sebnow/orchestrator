@@ -130,6 +130,9 @@ var migrations = [...]string{
 	// (docs/adr/2026-10-09-agents-and-placement.md).
 	`ALTER TABLE daemons ADD COLUMN labels TEXT NOT NULL DEFAULT '{}';
 	ALTER TABLE daemons ADD COLUMN facts TEXT NOT NULL DEFAULT '{}';`,
+	// Version 13 keeps the labels each task requires of its daemon, a JSON
+	// object of strings.
+	`ALTER TABLE tasks ADD COLUMN requires TEXT NOT NULL DEFAULT '{}';`,
 }
 
 // schemaVersion is the version this server migrates databases to. A
