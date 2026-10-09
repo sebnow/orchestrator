@@ -16,6 +16,7 @@ import (
 
 	"github.com/sebnow/orchestrator/internal/harness"
 	"github.com/sebnow/orchestrator/internal/protocol"
+	"github.com/sebnow/orchestrator/internal/runas"
 )
 
 const (
@@ -29,12 +30,20 @@ type Config struct {
 	// Server is the base URL of the server's HTTP API.
 	Server *url.URL
 	ID     protocol.DaemonID
-	// StateDir holds the daemon's state, the task journals and the task
-	// workspaces.
+	// StateDir holds the daemon's state and the task journals, and the
+	// task workspaces unless WorkspaceDir is set.
 	StateDir string
-	Harness  harness.Harness
-	Gateway  *Gateway
-	Log      *slog.Logger
+	// WorkspaceDir holds the task workspaces; empty means "workspaces"
+	// under StateDir. With a HarnessUser it must exist, and that user
+	// must own it.
+	WorkspaceDir string
+	// HarnessUser runs the harness and every command that touches a
+	// workspace (docs/adr/2026-10-08-harness-user.md); the zero User runs
+	// them as the daemon's own user.
+	HarnessUser runas.User
+	Harness     harness.Harness
+	Gateway     *Gateway
+	Log         *slog.Logger
 	// Client makes the requests to the server; nil uses a new client.
 	Client *http.Client
 	// MinBackoff and MaxBackoff bound the wait between attempts to reach
@@ -126,6 +135,18 @@ func Serve(ctx context.Context, cfg Config) error {
 	if cfg.ShutdownTimeout <= 0 {
 		cfg.ShutdownTimeout = defaultShutdownTimeout
 	}
+	workspaceDir, err := resolveWorkspaceDir(stateDir, cfg.WorkspaceDir, cfg.HarnessUser)
+	if err != nil {
+		return err
+	}
+	cfg.WorkspaceDir = workspaceDir
+	run, err := newRunner(cfg.HarnessUser)
+	if err != nil {
+		return err
+	}
+	if run.as.Other() {
+		cfg.Log.Info("running tasks as the harness user", "user", run.as.Name, "git", run.gitCmd, "rm", run.rmCmd, "workspace_dir", workspaceDir, "ssh_agent", run.as.SSHAuthSock != "")
+	}
 
 	st, err := loadState(stateDir)
 	if err != nil {
@@ -136,13 +157,18 @@ func Serve(ctx context.Context, cfg Config) error {
 	var snd *sender
 	d := New(stateDir, cfg.Harness, cfg.Gateway, func(event protocol.Event) { snd.notify(event.TaskID) })
 	d.forward = forwardTo(cfg.Client, cfg.Server, cfg.ID)
+	d.workspaces = cfg.WorkspaceDir
+	d.runner = run
 	d.sessionSeen = func(task protocol.TaskID, session string) {
 		if err := st.updateTask(task, func(rec *taskRecord) { rec.Session = session }); err != nil {
 			cfg.Log.Error("record harness session", "task", task, "error", err)
 		}
 	}
-	if cfg.processes != nil {
+	switch {
+	case cfg.processes != nil:
 		d.processes = cfg.processes
+	case run.as.Other():
+		d.processes = psTable{terminate: true}
 	}
 	d.harnessStarted = func(task protocol.TaskID, pid int) {
 		started, err := d.processes.started(pid)
@@ -608,4 +634,32 @@ func (s *service) discardWorkspace(task protocol.TaskID) {
 	if err := s.daemon.deleteWorkspace(task); err != nil {
 		s.log.Error("delete the workspace of an ended task", "task", task, "error", err)
 	}
+}
+
+// resolveWorkspaceDir returns the absolute workspace directory: dir, or
+// "workspaces" under stateDir when dir is empty. A harness user cannot
+// enter the state directory and the daemon cannot create a directory
+// that user owns, so with one dir must be given and exist.
+func resolveWorkspaceDir(stateDir, dir string, user runas.User) (string, error) {
+	if dir == "" {
+		if user.Other() {
+			return "", errors.New("workspace directory: a harness user needs one outside the state directory")
+		}
+		return filepath.Join(stateDir, "workspaces"), nil
+	}
+	dir, err := filepath.Abs(dir)
+	if err != nil {
+		return "", fmt.Errorf("workspace directory: %w", err)
+	}
+	if !user.Other() {
+		return dir, nil
+	}
+	info, err := os.Stat(dir)
+	if err == nil && !info.IsDir() {
+		err = errors.New("not a directory")
+	}
+	if err != nil {
+		return "", fmt.Errorf("workspace directory %s: %w; create it, owned by the harness user %s", dir, err, user.Name)
+	}
+	return dir, nil
 }

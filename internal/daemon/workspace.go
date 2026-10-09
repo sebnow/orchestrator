@@ -6,6 +6,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 
 	"github.com/sebnow/orchestrator/internal/protocol"
@@ -21,15 +22,16 @@ import (
 // The repository must be an https:// or ssh URL. git runs with prompts
 // turned off and ignores the user's and the system's git configuration,
 // whose credential helpers and URL rewrites would otherwise apply; ssh
-// still reads the daemon user's ~/.ssh. A failed clone leaves no
-// directory behind.
+// still reads the ~/.ssh of the user git runs as. A failed clone leaves
+// no directory behind. As the harness user, the directory dir is in
+// must exist already.
 //
 // gitName and gitEmail become the clone's local user.name and user.email,
 // for the agent's own commits; either empty uses the default identity
 // "orchestrator" <orchestrator@localhost>.
 func (r runner) prepareWorkspace(ctx context.Context, dir string, task protocol.TaskID, ws *protocol.Workspace, gitName, gitEmail string) error {
 	if ws == nil {
-		return r.makeDir(dir)
+		return r.makeDir(ctx, dir)
 	}
 	if err := requireRemote(ws.Repo); err != nil {
 		return err
@@ -38,13 +40,21 @@ func (r runner) prepareWorkspace(ctx context.Context, dir string, task protocol.
 	if strings.HasPrefix(ws.Ref, "-") {
 		return fmt.Errorf("ref %q is not a ref", ws.Ref)
 	}
-	if err := os.MkdirAll(filepath.Dir(dir), 0o700); err != nil {
+	if !r.as.Other() {
+		if err := os.MkdirAll(filepath.Dir(dir), 0o700); err != nil {
+			return err
+		}
+	}
+	template, cleanup, err := r.cloneTemplate(taskBranch(task))
+	if err != nil {
 		return err
 	}
-	err := r.runGit(ctx, "", "clone", "--quiet", "--depth", "1", "--branch", ws.Ref, "--", ws.Repo, dir)
+	defer cleanup()
+	clone := append([]string{"clone", "--quiet"}, template...)
+	err = r.runGit(ctx, "", slices.Concat(clone, []string{"--depth", "1", "--branch", ws.Ref, "--", ws.Repo, dir})...)
 	if err != nil {
 		r.remove(dir)
-		err = r.runGit(ctx, "", "clone", "--quiet", "--", ws.Repo, dir)
+		err = r.runGit(ctx, "", slices.Concat(clone, []string{"--", ws.Repo, dir})...)
 		if err == nil {
 			err = r.runGit(ctx, dir, "checkout", "--quiet", "--detach", ws.Ref)
 		}

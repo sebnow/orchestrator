@@ -71,8 +71,11 @@ func (r runner) prepareBranch(ctx context.Context, dir string, task protocol.Tas
 	if err != nil {
 		return err
 	}
-	if err := installPrePushHook(hooks, branch); err != nil {
-		return err
+	// A clone made as the harness user got the hook from its template.
+	if !r.as.Other() {
+		if err := installPrePushHook(hooks, branch); err != nil {
+			return err
+		}
 	}
 	for _, args := range [][]string{
 		{"update-ref", startCommitRef, "HEAD"},
@@ -151,7 +154,7 @@ exit 0
 // whose work is delivered, or when there is nothing to push. A push that
 // fails, or that deliver refuses, is reported with Error set.
 func (r runner) deliver(ctx context.Context, dir string, task protocol.TaskID) *protocol.BranchPushed {
-	if !r.isClone(dir) {
+	if !r.isClone(ctx, dir) {
 		return nil
 	}
 	startRef, err := r.gitOutput(ctx, dir, "config", "--local", "--get", startRefKey)

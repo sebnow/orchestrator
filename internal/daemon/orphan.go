@@ -36,8 +36,13 @@ type processTable interface {
 }
 
 // psTable reads start times with ps, which macOS and Linux with procps
-// both provide, with second resolution.
-type psTable struct{}
+// both provide, with second resolution. It kills with SIGKILL, or with
+// SIGTERM when terminate is set: a harness run as the harness user is
+// known by the pid of its sudo, which relays SIGTERM to it but not
+// SIGKILL (docs/adr/2026-10-08-harness-user.md).
+type psTable struct {
+	terminate bool
+}
 
 func (psTable) started(pid int) (string, error) {
 	cmd := exec.Command("ps", "-o", "lstart=", "-p", strconv.Itoa(pid))
@@ -55,7 +60,10 @@ func (psTable) started(pid int) (string, error) {
 	return strings.TrimSpace(string(out)), nil
 }
 
-func (psTable) kill(pid int) error {
+func (p psTable) kill(pid int) error {
+	if p.terminate {
+		return syscall.Kill(pid, syscall.SIGTERM)
+	}
 	return syscall.Kill(pid, syscall.SIGKILL)
 }
 

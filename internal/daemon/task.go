@@ -53,7 +53,8 @@ type Daemon struct {
 	// workspaces holds each task's workspace, in a directory named after
 	// the task.
 	workspaces string
-	// runner runs the commands that touch workspaces.
+	// runner runs the harness and the commands that touch workspaces as
+	// the harness user, or as the daemon's own user when it is zero.
 	runner runner
 }
 
@@ -211,6 +212,7 @@ func (d *Daemon) start(ctx context.Context, j *journal, spec TaskSpec) (*Task, e
 		Model:        spec.Model,
 		SystemPrompt: spec.SystemPrompt,
 		Resume:       spec.Session,
+		RunAs:        d.runner.as,
 		Gateway: harness.Gateway{
 			URL:            url,
 			PermissionTool: PermissionTool,
