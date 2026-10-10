@@ -130,6 +130,7 @@ func New(store *Store, log *slog.Logger, options Options) *Server {
 	owner.HandleFunc("POST /v1/tasks/{task}/commands", s.postCommand)
 	owner.HandleFunc("POST /v1/tasks/{task}/dismiss", s.postDismiss)
 	owner.HandleFunc("GET /v1/tasks/{task}/events", s.getEvents)
+	owner.HandleFunc("GET /v1/tasks/{task}/tree", s.getTree)
 	owner.HandleFunc("GET /v1/agents", s.getAgents)
 	owner.HandleFunc("POST /v1/agents", s.postAgent)
 	owner.HandleFunc("GET /v1/agents/{agent}", s.getAgent)

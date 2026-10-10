@@ -271,6 +271,8 @@ const (
 	RegionUnknown Region = "task-unknown"
 	// RegionChildren lists the tasks a task spawned.
 	RegionChildren Region = "task-children"
+	// RegionTree shows the tree of tasks rooted at a task.
+	RegionTree Region = "task-tree"
 )
 
 // RegionOf is region with children as its content.

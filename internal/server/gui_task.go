@@ -21,6 +21,7 @@ type taskView struct {
 	// projectName is the name of the task's project; empty for none.
 	projectName string
 	children    []childSummary
+	tree        taskNode
 	entries     []transcript.Entry
 	showUnknown bool
 }
@@ -38,7 +39,11 @@ func (s *Server) readTaskView(ctx context.Context, task protocol.TaskID) (taskVi
 	if err != nil {
 		return taskView{}, err
 	}
-	view := taskView{detail: detail, children: children, entries: entries}
+	tree, err := s.store.tree(ctx, task)
+	if err != nil {
+		return taskView{}, err
+	}
+	view := taskView{detail: detail, children: children, tree: tree, entries: entries}
 	if detail.Project != "" {
 		p, err := s.store.project(ctx, detail.Project)
 		if err != nil {
@@ -93,6 +98,25 @@ func (v taskView) childList() html.Node {
 		rows[idx] = component.ChildRow(row)
 	}
 	return component.Table(component.ChildColumns, "It has not spawned any tasks.", rows...)
+}
+
+// treeView shows the tree of tasks rooted at the task.
+func (v taskView) treeView() html.Node {
+	return component.Tree(guiTreeNode(v.tree))
+}
+
+func guiTreeNode(node taskNode) component.TreeNode {
+	gui := component.TreeNode{
+		ID: string(node.ID), Purpose: node.Purpose, Prompt: node.prompt, Agent: node.Agent, State: string(node.State), CostUSD: node.CostUSD,
+	}
+	if node.Branch != nil {
+		pushed := transcript.BranchPushed(*node.Branch)
+		gui.Branch = &pushed
+	}
+	for _, child := range node.Children {
+		gui.Children = append(gui.Children, guiTreeNode(child))
+	}
+	return gui
 }
 
 // header is the task's header with the controls its state offers. A task
@@ -216,6 +240,7 @@ func (v taskView) page(refused refusal) html.Node {
 		component.RegionOf(component.RegionTaskHeader, v.header()),
 		component.RegionOf(component.RegionPermission, v.permission(permissionProblem)),
 		component.Section("Children", component.RegionOf(component.RegionChildren, v.childList())),
+		component.Section("Tree", component.RegionOf(component.RegionTree, v.treeView())),
 		component.Section("Transcript",
 			component.RegionOf(component.RegionUnknown, v.unknownToggle()),
 			component.Transcript(v.visible(v.entries)),

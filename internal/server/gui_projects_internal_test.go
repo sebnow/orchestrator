@@ -87,7 +87,7 @@ func TestGivenProjectWithTasksWhenItsPageIsShownThenItListsItsRootTasksAndItsFor
 		t.Errorf("task = %+v, start %+v; want the project's agent, its pause limits and the project's repository", detail.taskSummary, detail.Start)
 	}
 	page = getPage(t, srv.url+"/projects/"+p.ID)
-	requireContains(t, page, `<tr><td><span class="badge state-running">running</span></td><td><a href="/tasks/`+string(root)+`">Plan the release.</a></td>`+
+	requireContains(t, page, `<tr><td><span class="badge state-running">running</span></td><td><a href="/tasks/`+string(root)+`#task-tree">Plan the release.</a></td>`+
 		`<td><a href="/agents/senior">senior</a></td><td>$0.0000</td><td><code>orchestrator/`+string(root)+`</code> at <code>eb69b7b37fad</code></td></tr>`)
 	requireLacks(t, page, "Elsewhere.", `href="/tasks/child"`)
 	requireContains(t, getPage(t, srv.url+"/tasks/"+string(root)), `<dt>Project</dt><dd><a href="/projects/`+p.ID+`">tools</a></dd>`)

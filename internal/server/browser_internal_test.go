@@ -491,3 +491,20 @@ func TestGivenJavaScriptOffWhenTheTaskPageIsUsedThenItShowsTheTranscriptAndItsFo
 		t.Errorf("the page opened the stream %d times without JavaScript", len(got))
 	}
 }
+
+func TestGivenTaskPageWhenTheTaskSpawnsAChildThenItsTreeShowsTheChildsPurposeWithoutAReload(t *testing.T) {
+	srv, _ := startBrowserServer(t)
+	task, _ := runningTask(t, srv)
+	page := openPage(t)
+	page.Navigate(srv.url + "/tasks/" + string(task))
+	markLoaded(page)
+	page.WaitTrue(`document.querySelector('[sse-connect]')?.['htmx-internal-data']?.sseEventSource?.readyState === 1`)
+
+	status, body := postAgentRequest(t, srv, "laptop", task, protocol.AgentSpawn, protocol.Spawn{Purpose: "BROWSER-TREE-1", Prompt: "Say PEAR."})
+	if status != http.StatusOK {
+		t.Fatalf("spawn: %d %s", status, body)
+	}
+
+	page.WaitTrue(hasText("#task-tree ul.tree > li > ul > li > a", "BROWSER-TREE-1"))
+	requireNotReloaded(t, page)
+}

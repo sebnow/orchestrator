@@ -82,11 +82,12 @@ type RootTask struct {
 // RootTaskColumns head a Table of RootTaskRows.
 var RootTaskColumns = []string{"State", "Task", "Agent", "Cost", "Branch"}
 
-// RootTaskRow is a root task in its project's list, linking to its page.
+// RootTaskRow is a root task in its project's list, linking to the tree
+// on its page.
 func RootTaskRow(task RootTask) html.Node {
 	return html.El("tr", nil,
 		cell(StateBadge(task.State)),
-		cell(link(taskURL(task.ID), excerpt(task.Title))),
+		cell(link(taskURL(task.ID)+"#"+string(RegionTree), excerpt(task.Title))),
 		cell(agentLink(task.Agent)),
 		cell(html.Text(cost(task.CostUSD))),
 		cell(childBranch(task.Branch)),
@@ -103,4 +104,44 @@ func projectLink(id, name string) html.Node {
 		name = id
 	}
 	return link(projectURL(id), name)
+}
+
+// TreeNode is a task in a tree of tasks and the tasks it spawned.
+// Purpose says why it exists; empty for none, when Prompt names it.
+// Branch is what the daemon last pushed of its branch; nil for none.
+// Children are oldest first.
+type TreeNode struct {
+	ID, Purpose, Prompt, Agent, State string
+	CostUSD                           float64
+	Branch                            *transcript.BranchPushed
+	Children                          []TreeNode
+}
+
+// Tree shows root and its descendants as nested lists, each task with
+// its state, purpose or prompt, agent, cost and branch.
+func Tree(root TreeNode) html.Node {
+	return html.El("ul", attrs("class", "tree"), treeItem(root))
+}
+
+func treeItem(node TreeNode) html.Node {
+	var agent, branch, children html.Node
+	if node.Agent != "" {
+		agent = html.Fragment(html.Text(" as "), agentLink(node.Agent))
+	}
+	if node.Branch != nil {
+		branch = html.Fragment(html.Text(", "), childBranch(node.Branch))
+	}
+	if len(node.Children) > 0 {
+		items := make([]html.Node, len(node.Children))
+		for idx, child := range node.Children {
+			items[idx] = treeItem(child)
+		}
+		children = html.El("ul", nil, items...)
+	}
+	return html.El("li", nil,
+		StateBadge(node.State), html.Text(" "),
+		link(taskURL(node.ID), title(node.Purpose, node.Prompt)),
+		agent,
+		html.El("span", attrs("class", "reason"), html.Text(" "+cost(node.CostUSD)), branch),
+		children)
 }

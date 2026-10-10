@@ -99,6 +99,7 @@ pre.payload { margin: 0; max-height: 20rem; overflow: auto; }
 .task-header dd { margin: 0; }
 .attention li, .reason, .empty, .notice { margin-block: calc(var(--space) / 2); color: var(--muted); }
 .attention .reason { margin-left: var(--space); }
+.tree li { margin-block: calc(var(--space) / 4); }
 .problem { color: var(--state-failed); }
 
 form label { display: block; margin-block: var(--space); }
