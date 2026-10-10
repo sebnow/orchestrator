@@ -19,12 +19,12 @@ func TestGivenNoHarnessUserWhenBuildingTheCommandThenClaudeRunsDirectlyWithTheDa
 	t.Setenv("PATH", "/usr/bin:/bin")
 	t.Setenv("CLAUDECODE", "1")
 	h := &Harness{path: "/opt/claude/bin/claude"}
-	args, err := arguments(commandSpec)
+	args, err := arguments(commandSpec, "")
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	cmd, err := h.command(t.Context(), commandSpec)
+	cmd, err := h.command(t.Context(), commandSpec, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -47,12 +47,12 @@ func TestGivenHarnessUserWhenBuildingTheCommandThenSudoRunsClaudeInTheWorkspaceW
 	h := &Harness{path: "/opt/claude/bin/claude"}
 	spec := commandSpec
 	spec.RunAs = runas.User{Name: "orch-agent", SSHAuthSock: "/tmp/orchestrator-agent-1/agent-0123.sock"}
-	args, err := arguments(spec)
+	args, err := arguments(spec, "")
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	cmd, err := h.command(t.Context(), spec)
+	cmd, err := h.command(t.Context(), spec, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -66,5 +66,28 @@ func TestGivenHarnessUserWhenBuildingTheCommandThenSudoRunsClaudeInTheWorkspaceW
 	}
 	if cmd.SysProcAttr == nil || !cmd.SysProcAttr.Setsid {
 		t.Errorf("sys = %+v; want a session of its own", cmd.SysProcAttr)
+	}
+}
+
+func TestGivenHarnessUserWhenWritingTheSystemPromptThenTheFileIsReadableByThatUser(t *testing.T) {
+	spec := commandSpec
+	spec.SystemPrompt = "You work for the orchestrator."
+	spec.FileDir = t.TempDir()
+	spec.RunAs = runas.User{Name: "orch-agent"}
+
+	path, err := writeSystemPrompt(spec)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if mode := info.Mode().Perm(); mode != 0o644 {
+		t.Errorf("mode = %v, want 0644 so that the harness user can read it", mode)
+	}
+	if data, _ := os.ReadFile(path); string(data) != spec.SystemPrompt {
+		t.Errorf("file holds %q", data)
 	}
 }

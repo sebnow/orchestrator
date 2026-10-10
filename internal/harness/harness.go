@@ -40,6 +40,10 @@ type Spec struct {
 	// RunAs is the OS user the process runs as; the zero User is the
 	// daemon's own (docs/adr/2026-10-08-harness-user.md).
 	RunAs runas.User
+	// FileDir is where the harness may write files its process reads,
+	// such as the system prompt, deleting them when the process exits.
+	// RunAs must be able to read files there; empty means os.TempDir.
+	FileDir string
 }
 
 // Gateway is the daemon's MCP endpoint for one task.

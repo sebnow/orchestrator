@@ -56,6 +56,9 @@ type Daemon struct {
 	// runner runs the harness and the commands that touch workspaces as
 	// the harness user, or as the daemon's own user when it is zero.
 	runner runner
+	// harnessFiles is where the harness writes files its process reads,
+	// as harness.Spec.FileDir; empty leaves the choice to the harness.
+	harnessFiles string
 }
 
 // New returns a daemon that keeps journals under stateDir, runs h, and
@@ -217,6 +220,7 @@ func (d *Daemon) start(ctx context.Context, j *journal, spec TaskSpec) (*Task, e
 		SystemPrompt: spec.SystemPrompt,
 		Resume:       spec.Session,
 		RunAs:        d.runner.as,
+		FileDir:      d.harnessFiles,
 		Gateway: harness.Gateway{
 			URL:            url,
 			PermissionTool: PermissionTool,

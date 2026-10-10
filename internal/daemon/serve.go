@@ -176,6 +176,12 @@ func Serve(ctx context.Context, cfg Config) error {
 	d.forward = forwardTo(cfg.Client, cfg.Server, cfg.ID)
 	d.workspaces = cfg.WorkspaceDir
 	d.runner = run
+	harnessFiles, removeHarnessFiles, err := run.harnessFiles(stateDir)
+	if err != nil {
+		return err
+	}
+	defer removeHarnessFiles()
+	d.harnessFiles = harnessFiles
 	d.sessionSeen = func(task protocol.TaskID, session string) {
 		if err := st.updateTask(task, func(rec *taskRecord) { rec.Session = session }); err != nil {
 			cfg.Log.Error("record harness session", "task", task, "error", err)

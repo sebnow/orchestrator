@@ -40,9 +40,18 @@ func fakeClaude() {
 	out := json.NewEncoder(os.Stdout)
 	cwd, _ := os.Getwd()
 	_, inherited := os.LookupEnv("CLAUDECODE")
+	var systemPrompt string
+	if path, ok := argValue(os.Args[1:], "--append-system-prompt-file"); ok {
+		data, err := os.ReadFile(path)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "fake claude:", err)
+			os.Exit(2)
+		}
+		systemPrompt = string(data)
+	}
 	out.Encode(map[string]any{
 		"type": "system", "subtype": "init", "session_id": "fake-session", "model": "fake-model",
-		"cwd": cwd, "argv": os.Args[1:], "inherited_claudecode": inherited,
+		"cwd": cwd, "argv": os.Args[1:], "inherited_claudecode": inherited, "system_prompt": systemPrompt,
 	})
 	fmt.Println("this line is not JSON")
 	out.Encode(map[string]any{
@@ -129,6 +138,8 @@ type fakeInit struct {
 	Cwd                 string   `json:"cwd"`
 	Argv                []string `json:"argv"`
 	InheritedClaudeCode bool     `json:"inherited_claudecode"`
+	// SystemPrompt is what the fake read from --append-system-prompt-file.
+	SystemPrompt string `json:"system_prompt"`
 }
 
 // startFake starts the fake and reads up to and including its two
@@ -138,6 +149,9 @@ func startFake(t *testing.T, spec harness.Spec) (harness.Process, fakeInit, []ha
 	h := fakeHarness(t)
 	if spec.Workdir == "" {
 		spec.Workdir = t.TempDir()
+	}
+	if spec.FileDir == "" {
+		spec.FileDir = t.TempDir()
 	}
 	proc, err := h.Start(t.Context(), spec)
 	if err != nil {
@@ -204,7 +218,6 @@ func TestGivenSpecWhenStartingThenClaudeRunsInStreamJSONModeWiredToTheGateway(t 
 		"--permission-mode":        "default",
 		"--setting-sources":        "project",
 		"--permission-prompt-tool": "mcp__orchestrator__permission",
-		"--append-system-prompt":   "You work for the orchestrator.",
 		"--allowedTools":           "mcp__orchestrator__acknowledge_pause",
 		"--disallowedTools":        "SendMessage,ListAgents",
 	}
@@ -245,14 +258,52 @@ func TestGivenSpecWhenStartingThenClaudeRunsInStreamJSONModeWiredToTheGateway(t 
 	}
 }
 
+func TestGivenSystemPromptWhenStartingThenClaudeReadsItFromAPrivateFileThatIsDeletedWhenItExits(t *testing.T) {
+	spec := testSpec
+	spec.FileDir = t.TempDir()
+
+	proc, init, _ := startFake(t, spec)
+
+	if init.SystemPrompt != spec.SystemPrompt {
+		t.Errorf("system prompt read = %q, want %q", init.SystemPrompt, spec.SystemPrompt)
+	}
+	for _, arg := range init.Argv {
+		if strings.Contains(arg, spec.SystemPrompt) || arg == "--append-system-prompt" {
+			t.Errorf("the system prompt is on the command line: %q", init.Argv)
+		}
+	}
+	path, _ := argValue(init.Argv, "--append-system-prompt-file")
+	if filepath.Dir(path) != spec.FileDir {
+		t.Errorf("prompt file %q, want it in %q", path, spec.FileDir)
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if mode := info.Mode().Perm(); mode != 0o600 {
+		t.Errorf("prompt file mode = %v, want 0600", mode)
+	}
+	if err := proc.CloseInput(); err != nil {
+		t.Fatal(err)
+	}
+	proc.Wait()
+	if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("prompt file after exit: %v, want it deleted", err)
+	}
+}
+
 func TestGivenNoSystemPromptWhenStartingThenNoneIsAppended(t *testing.T) {
 	spec := testSpec
 	spec.SystemPrompt = ""
+	spec.FileDir = t.TempDir()
 
 	_, init, _ := startFake(t, spec)
 
-	if slices.Contains(init.Argv, "--append-system-prompt") {
+	if slices.ContainsFunc(init.Argv, func(arg string) bool { return strings.HasPrefix(arg, "--append-system-prompt") }) {
 		t.Errorf("argv = %q", init.Argv)
+	}
+	if files, _ := os.ReadDir(spec.FileDir); len(files) != 0 {
+		t.Errorf("files written: %v", files)
 	}
 }
 

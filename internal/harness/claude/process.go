@@ -93,7 +93,26 @@ func (h *Harness) Info() protocol.Harness {
 }
 
 func (h *Harness) Start(ctx context.Context, spec harness.Spec) (harness.Process, error) {
-	cmd, err := h.command(ctx, spec)
+	promptFile, err := writeSystemPrompt(spec)
+	if err != nil {
+		return nil, err
+	}
+	removePrompt := func() {
+		if promptFile != "" {
+			os.Remove(promptFile)
+		}
+	}
+	proc, err := h.startProcess(ctx, spec, promptFile)
+	if err != nil {
+		removePrompt()
+		return nil, err
+	}
+	proc.cleanup = removePrompt
+	return proc, nil
+}
+
+func (h *Harness) startProcess(ctx context.Context, spec harness.Spec, promptFile string) (*process, error) {
+	cmd, err := h.command(ctx, spec, promptFile)
 	if err != nil {
 		return nil, err
 	}
@@ -114,16 +133,44 @@ func (h *Harness) Start(ctx context.Context, spec harness.Spec) (harness.Process
 	return &process{cmd: cmd, stdin: stdin, stdout: bufio.NewReader(stdout), stderr: stderr, viaSudo: spec.RunAs.Other()}, nil
 }
 
-// command returns the command that runs the harness spec describes.
-func (h *Harness) command(ctx context.Context, spec harness.Spec) (*exec.Cmd, error) {
-	args, err := arguments(spec)
+// writeSystemPrompt writes spec's system prompt to a file in spec.FileDir
+// and returns its path, or "" when there is no prompt. The file keeps the
+// prompt off the command line, which every local user can read in the
+// process list. Only the daemon's user may read it, unless the harness
+// runs as another user, who must read it too.
+func writeSystemPrompt(spec harness.Spec) (string, error) {
+	if spec.SystemPrompt == "" {
+		return "", nil
+	}
+	f, err := os.CreateTemp(spec.FileDir, "system-prompt-*.txt")
+	if err != nil {
+		return "", fmt.Errorf("write the system prompt: %w", err)
+	}
+	_, err = f.WriteString(spec.SystemPrompt)
+	if closeErr := f.Close(); err == nil {
+		err = closeErr
+	}
+	if err == nil && spec.RunAs.Other() {
+		err = os.Chmod(f.Name(), 0o644)
+	}
+	if err != nil {
+		os.Remove(f.Name())
+		return "", fmt.Errorf("write the system prompt: %w", err)
+	}
+	return f.Name(), nil
+}
+
+// command returns the command that runs the harness spec describes, with
+// the system prompt read from promptFile, if not empty.
+func (h *Harness) command(ctx context.Context, spec harness.Spec, promptFile string) (*exec.Cmd, error) {
+	args, err := arguments(spec, promptFile)
 	if err != nil {
 		return nil, err
 	}
 	return spec.RunAs.Command(ctx, spec.Workdir, h.path, args, childEnv(os.Environ()), nil), nil
 }
 
-func arguments(spec harness.Spec) ([]string, error) {
+func arguments(spec harness.Spec, promptFile string) ([]string, error) {
 	config, err := json.Marshal(map[string]any{
 		"mcpServers": map[string]any{
 			gatewayServer: map[string]any{
@@ -169,8 +216,8 @@ func arguments(spec harness.Spec) ([]string, error) {
 		// (docs/adr/2026-10-08-inbox-delivery.md, Consequences).
 		"--disallowedTools", strings.Join(crossSessionTools, ","),
 	}
-	if spec.SystemPrompt != "" {
-		args = append(args, "--append-system-prompt", spec.SystemPrompt)
+	if promptFile != "" {
+		args = append(args, "--append-system-prompt-file", promptFile)
 	}
 	if spec.Resume != "" {
 		// The session keeps the system prompt it recorded first; passing
@@ -254,6 +301,8 @@ type process struct {
 	// viaSudo is set when sudo runs the harness as another user; the
 	// process is then sudo's.
 	viaSudo bool
+	// cleanup deletes the files written for the process, once it exits.
+	cleanup func()
 
 	stdinMu    sync.Mutex
 	stdin      io.WriteCloser
@@ -434,6 +483,7 @@ func (p *process) Kill() error {
 
 func (p *process) Wait() protocol.HarnessExited {
 	err := p.cmd.Wait()
+	p.cleanup()
 	exited := protocol.HarnessExited{ExitCode: p.cmd.ProcessState.ExitCode(), Stderr: p.stderr.String()}
 	if _, isExit := errors.AsType[*exec.ExitError](err); err != nil && !isExit {
 		exited.Error = err.Error()

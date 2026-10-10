@@ -139,7 +139,12 @@ still read its own Claude Code login, and every task's workspace on
 that daemon, since all tasks share the one harness user. It can also
 see in the process list the URL of the daemon's MCP gateway, which
 serves every task's `spawn_task`, `send_message` and permission tools
-on loopback without authentication.
+on loopback without authentication. A task's system prompt is not on
+the command line: the daemon writes it to a file that `claude` reads,
+in a directory under `/tmp` that every user may enter but not list,
+and deletes the file when `claude` exits. The process list shows the
+file's path, so any local user who reads it can read the prompt while
+the task runs.
 
 The daemon starts each command as `sudo -n -u NAME -D DIR VAR=value...
 -- COMMAND ARG...`, in a session of its own so that sudo has no
@@ -448,8 +453,11 @@ Daemon flags:
   server with.
 - `-state-dir` (required): created when missing. It holds `state.json`,
   which records what each task needs to be resumed, one journal per task
-  under `journal/`, and, unless `-workspace-dir` is given, each task's
-  working directory under `workspaces/<task>/`. Claude Code keeps its sessions outside it:
+  under `journal/`, without `-harness-user` each running harness's
+  system prompt under `harness/`, which the daemon empties when it
+  starts, and, unless
+  `-workspace-dir` is given, each task's working directory under
+  `workspaces/<task>/`. Claude Code keeps its sessions outside it:
   Claude Code 2.1.289 on macOS kept them under `~/.claude/projects/` of
   the user running it ([resume spike](docs/design/2026-10-08-resume-spike.md)).
   The daemon holds a lock file in the state directory; it waits up to the

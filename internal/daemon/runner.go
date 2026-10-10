@@ -165,3 +165,34 @@ func (r runner) cloneTemplate(branch string) ([]string, func(), error) {
 	}
 	return []string{"--template", dir}, cleanup, nil
 }
+
+// harnessFiles returns the directory for files the harness process reads,
+// such as its system prompt (harness.Spec.FileDir), and a function that
+// deletes it. As the daemon's own user it is "harness" under stateDir,
+// emptied of what an earlier run left. The harness user cannot enter
+// the state directory, so for that user it is a new directory under
+// runas.TempDir that every user may enter but none may list.
+func (r runner) harnessFiles(stateDir string) (string, func(), error) {
+	if !r.as.Other() {
+		dir := filepath.Join(stateDir, "harness")
+		err := os.RemoveAll(dir)
+		if err == nil {
+			err = os.Mkdir(dir, 0o700)
+		}
+		if err != nil {
+			return "", nil, fmt.Errorf("harness file directory: %w", err)
+		}
+		return dir, func() {}, nil
+	}
+	dir, err := os.MkdirTemp(runas.TempDir, "orchestrator-harness-")
+	if err != nil {
+		return "", nil, fmt.Errorf("harness file directory: %w", err)
+	}
+	cleanup := func() { os.RemoveAll(dir) }
+	// The mode is set apart from creation, which the umask narrows.
+	if err := os.Chmod(dir, 0o711); err != nil {
+		cleanup()
+		return "", nil, fmt.Errorf("harness file directory: %w", err)
+	}
+	return dir, cleanup, nil
+}

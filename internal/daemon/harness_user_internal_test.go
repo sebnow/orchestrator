@@ -345,6 +345,40 @@ func TestGivenHarnessUserWhenServingThenTheHarnessRunsAsThatUserInTheWorkspaceDi
 	if calls := sudo.calls(t); len(calls) == 0 || calls[0].command()[1] != "init" {
 		t.Errorf("sudo calls = %+v; want the workspace made through sudo", calls)
 	}
+	files := proc.spec.FileDir
+	if info, err := os.Stat(files); err != nil || filepath.Dir(files) != runas.TempDir || info.Mode().Perm() != 0o711 {
+		t.Errorf("harness files in %q: %v, %v; want a directory under %s every user may enter but not list", files, info, err, runas.TempDir)
+	}
+	d.stop(t)
+	if _, err := os.Stat(files); !os.IsNotExist(err) {
+		t.Errorf("harness files after the daemon stopped: %v, want the directory deleted", err)
+	}
+}
+
+func TestGivenNoHarnessUserWhenServingThenHarnessFilesGoInAPrivateDirectoryUnderTheStateDirectoryEmptiedOfLeftovers(t *testing.T) {
+	srv := startServer(t)
+	stateDir := t.TempDir()
+	leftover := filepath.Join(stateDir, "harness", "system-prompt-1.txt")
+	if err := os.MkdirAll(filepath.Dir(leftover), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(leftover, []byte("old"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	d := runDaemonAs(t, srv.url, stateDir, func(*Config) {})
+
+	srv.createTask(t, testDaemon, protocol.StartTask{Prompt: "Do the work.", Model: "fake-model", PauseLimits: testPauseLimits})
+	proc := d.nextProcess(t)
+
+	if want := filepath.Join(stateDir, "harness"); proc.spec.FileDir != want {
+		t.Errorf("harness files in %q, want %q", proc.spec.FileDir, want)
+	}
+	if info, err := os.Stat(proc.spec.FileDir); err != nil || info.Mode().Perm() != 0o700 {
+		t.Errorf("harness file directory: %v, %v; want mode 0700", info, err)
+	}
+	if _, err := os.Stat(leftover); !os.IsNotExist(err) {
+		t.Errorf("leftover file: %v, want it deleted", err)
+	}
 }
 
 // runDaemonAs runs a daemon as runDaemon does, with adjust applied to its
