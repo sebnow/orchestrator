@@ -186,7 +186,10 @@ from a laptop](#moving-from-a-laptop).
    - owned by root, mode 0755: the server binary at
      `/usr/local/bin/orchestrator-server`, and `daemon-linux-amd64` and
      `daemon-linux-arm64` in `/var/lib/orchestrator/binaries`, the
-     `-daemon-binaries-dir`;
+     `-daemon-binaries-dir`. These are the release build's
+     `server-<version>-linux-<arch>` and `daemon-<version>-linux-<arch>`
+     files under their fixed names: the server serves daemons by the
+     fixed names;
    - owned by `orchestrator`, mode 0700: the directories
      `/var/lib/orchestrator`, where the server keeps the database and
      its `backups/`, and `/etc/orchestrator`;
