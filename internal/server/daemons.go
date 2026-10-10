@@ -183,7 +183,8 @@ func validateSlotsLabel(labels Labels) error {
 // bare, as SSHPublicKeyBlob, both empty when the daemon reported none.
 // Slots is the daemon's capacity, its slots fact capped by the owner's
 // slots label, and Running counts the tasks holding a slot. LostSince is set while the
-// server holds the daemon lost.
+// server holds the daemon lost. StreamRefused is why the server last
+// refused the daemon's command stream, until one of its streams opens.
 type daemonView struct {
 	ID               protocol.DaemonID `json:"id"`
 	Labels           Labels            `json:"labels"`
@@ -194,6 +195,7 @@ type daemonView struct {
 	Connected        bool              `json:"connected"`
 	Lost             bool              `json:"lost"`
 	LostSince        *time.Time        `json:"lost_since,omitempty"`
+	StreamRefused    *streamRefusal    `json:"stream_refused,omitempty"`
 	Slots            int               `json:"slots"`
 	Running          int               `json:"running"`
 	// Login is the daemon's latest login since the server started; nil
@@ -206,7 +208,7 @@ func (s *Server) view(daemon daemonSummary, connected bool) daemonView {
 	v := daemonView{
 		ID: daemon.ID, Labels: daemon.Labels, Facts: daemon.Facts, SSHPublicKey: sshKeyLine(daemon),
 		SSHPublicKeyBlob: daemon.Facts[protocol.FactSSHPublicKey], LastSeen: daemon.LastSeen, Connected: connected,
-		Lost: daemon.LostAt != nil, LostSince: daemon.LostAt, Slots: s.sched.policy.capacity(daemon.Facts, daemon.Labels), Running: daemon.InUse,
+		Lost: daemon.LostAt != nil, LostSince: daemon.LostAt, StreamRefused: daemon.StreamRefusal, Slots: s.sched.policy.capacity(daemon.Facts, daemon.Labels), Running: daemon.InUse,
 	}
 	if login, ok := s.loginOf(daemon.ID); ok {
 		v.Login = &login

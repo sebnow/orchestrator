@@ -146,7 +146,7 @@ func TestGivenInvalidTaskWhenCreatingThenBadRequestAndNoCommandIsIssued(t *testi
 			}
 		})
 	}
-	commands, err := srv.store.commandsAfter(t.Context(), "laptop", 0)
+	commands, err := srv.store.commandsAfter(t.Context(), "laptop", protocol.CommandPosition{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -382,7 +382,7 @@ func TestGivenTaskThatHasNotStartedWhenStoppedThenItEndsWithNothingSentAndOtherC
 		t.Errorf("state = %s, want stopped", state)
 	}
 	admitTurns(t, srv.store)
-	commands, err := srv.store.commandsAfter(t.Context(), "laptop", 0)
+	commands, err := srv.store.commandsAfter(t.Context(), "laptop", protocol.CommandPosition{})
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -78,7 +78,7 @@ pre.ssh-key { user-select: all; }
 .state-queued { background: var(--state-queued); }
 .state-finished, .quota-allowed { background: var(--state-finished); }
 .state-stopped { background: var(--state-stopped); }
-.state-failed, .quota-rejected, .login-needed { background: var(--state-failed); }
+.state-failed, .quota-rejected, .login-needed, .refused { background: var(--state-failed); }
 a.login-needed { text-decoration: none; }
 
 .card, .entry {

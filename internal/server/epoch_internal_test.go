@@ -70,7 +70,7 @@ func TestGivenAnEpochWhenCommandsAreIssuedThenEachBelongsToIt(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	commands, err := store.commandsAfter(t.Context(), "laptop", 0)
+	commands, err := store.commandsAfter(t.Context(), "laptop", protocol.CommandPosition{})
 	if err != nil {
 		t.Fatal(err)
 	}

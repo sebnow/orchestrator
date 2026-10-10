@@ -18,7 +18,7 @@ func (denyAll) Decide(protocol.TaskID, protocol.PermissionRequested) Decision {
 
 func lastCommand(t *testing.T, srv testServer, daemon protocol.DaemonID) protocol.Command {
 	t.Helper()
-	commands, err := srv.store.commandsAfter(t.Context(), daemon, 0)
+	commands, err := srv.store.commandsAfter(t.Context(), daemon, protocol.CommandPosition{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -56,7 +56,7 @@ func TestGivenAllowAllWhenARequestIsPostedAgainThenItIsAnsweredOnce(t *testing.T
 
 	postEvents(t, srv, "laptop", events.events...)
 
-	commands, err := srv.store.commandsAfter(t.Context(), "laptop", 0)
+	commands, err := srv.store.commandsAfter(t.Context(), "laptop", protocol.CommandPosition{})
 	if err != nil {
 		t.Fatal(err)
 	}

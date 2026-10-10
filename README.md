@@ -863,6 +863,53 @@ Everything recorded after the backup was made is lost. The server does
 not know the tasks started after it, and refuses their daemons' events
 for them.
 
+### Command ids and epochs
+
+Each command the server issues has an id and the epoch of the database
+it was issued in ([server loss](docs/adr/2026-10-10-server-loss.md)). A
+database's first epoch is made when the database is, and each restore
+starts a new one, whose parent is the backup's latest, so the database
+holds its lineage. The command stream sends `EPOCH:ID` as each command's
+event id. The daemon keeps the last one it applied in `state.json`, as
+`last_command` and `command_epoch`, and sends it as `Last-Event-ID` when
+it reconnects. It skips a command of that epoch at or below that id,
+and applies a command of any other epoch.
+
+When a daemon opens its command stream, the server looks up the epoch of
+its `Last-Event-ID`:
+
+- The current epoch: the server sends the daemon's commands past that
+  id. An id past the last command the server has issued in the epoch
+  means the daemon's state is not from this server, and the server
+  refuses the stream with 409 and the reason `daemon_ahead`.
+- An earlier epoch of the lineage, after a restore: the server sends the
+  daemon's commands of that epoch past the id, then every command of
+  each later epoch, in order.
+- An epoch the lineage does not hold, as after a restore to a backup
+  older than an earlier restore: the server refuses the stream with 409
+  and the reason `unknown_lineage`.
+
+The answer to a refused stream is JSON with the `reason` and a `message`
+that names the server's current epoch. The dashboard's daemon list
+shows the refusal and when it happened, and `GET /v1/daemons` reports it
+as `stream_refused`, until a stream of the daemon's opens. The daemon
+logs the refusal and tries again with backoff.
+
+To reset a daemon refused with `unknown_lineage`, stop it, set
+`command_epoch` in its `state.json` to the current epoch the message
+names and `last_command` to `0`, and start it. It then receives every
+command the server has issued to it in the current epoch, none of which
+it can have applied, since its streams were refused. A daemon refused
+with `daemon_ahead` holds state from another server's database, such as
+a state directory copied from elsewhere; find where it came from before
+changing it.
+
+A `Last-Event-ID` that is a bare id, as a daemon sends whose
+`state.json` was written before commands had epochs, is taken as an id
+in the database's first epoch. Every command issued before epochs
+existed belongs to that epoch, so such a daemon resumes where it left
+off after the server and the daemon are upgraded together.
+
 ### Using the GUI
 
 The dashboard lists the tasks that need attention, every task with the
@@ -962,7 +1009,7 @@ Server flags:
 - `-db` (required): the SQLite database file, created with its directory
   when missing. It holds every daemon, task, event and command, the
   agents and projects, the owner token's hash and the login sessions.
-  The server brings an older database to its schema, version 28, when it
+  The server brings an older database to its schema, version 29, when it
   starts, and refuses a database of a later version.
 - `-listen`: the address to serve on, `127.0.0.1:8080` by default.
 - `-tls-cert`, `-tls-key` (required unless `-insecure-loopback`): the

@@ -51,6 +51,12 @@ func startTestServer(t *testing.T) testServer {
 func startTestServerWith(t *testing.T, options Options) testServer {
 	t.Helper()
 	store, _ := openTestStore(t)
+	return startTestServerOn(t, store, options)
+}
+
+// startTestServerOn is startTestServerWith over store.
+func startTestServerOn(t *testing.T, store *Store, options Options) testServer {
+	t.Helper()
 	logs := &syncBuffer{}
 	options.DefaultModel, options.Insecure = testDefaultModel, true
 	srv := New(store, slog.New(slog.NewTextHandler(logs, nil)), options)

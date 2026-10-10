@@ -365,7 +365,7 @@ func TestGivenTaskWithSeveralTurnsWhenScheduledThenTheyGoOneAtATimeAndADeliveryW
 // only daemon connected and one slot, and returns the commands it issued.
 func schedulerAt(t *testing.T, store *Store, now time.Time) []protocol.Command {
 	t.Helper()
-	before, err := store.commandsAfter(t.Context(), "laptop", 0)
+	before, err := store.commandsAfter(t.Context(), "laptop", protocol.CommandPosition{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -373,9 +373,9 @@ func schedulerAt(t *testing.T, store *Store, now time.Time) []protocol.Command {
 	if _, err := store.schedule(t.Context(), policy, now, []protocol.DaemonID{"laptop"}, time.Time{}); err != nil {
 		t.Fatal(err)
 	}
-	var last uint64
+	var last protocol.CommandPosition
 	if len(before) > 0 {
-		last = before[len(before)-1].ID
+		last = before[len(before)-1].Position()
 	}
 	issued, err := store.commandsAfter(t.Context(), "laptop", last)
 	if err != nil {

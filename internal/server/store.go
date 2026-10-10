@@ -330,6 +330,10 @@ var migrations = [...]string{
 	DROP TABLE commands;
 	ALTER TABLE commands_new RENAME TO commands;
 	CREATE INDEX commands_by_daemon ON commands (daemon_id, id);`,
+	// Version 29 keeps why the server last refused a daemon's command
+	// stream, as JSON with the reason, the message and when; NULL once a
+	// stream of the daemon's has opened since.
+	`ALTER TABLE daemons ADD COLUMN stream_refusal TEXT;`,
 }
 
 // newEpochID is the SQL expression that makes an epoch's id: 128 random
@@ -1049,12 +1053,28 @@ func yieldTask(ctx context.Context, tx *sql.Tx, daemon protocol.DaemonID, task p
 	return command, nil
 }
 
-// commandsAfter returns daemon's commands with an id greater than after,
-// in id order.
-func (s *Store) commandsAfter(ctx context.Context, daemon protocol.DaemonID, after uint64) ([]protocol.Command, error) {
+// commandsAfter returns daemon's commands past after in the order of the
+// database's lineage: those of after's epoch with a greater id, then
+// every command of each later epoch. An after without an epoch is in the
+// first epoch, which holds every command issued before commands had
+// epochs. after's epoch must be one of the lineage's.
+func (s *Store) commandsAfter(ctx context.Context, daemon protocol.DaemonID, after protocol.CommandPosition) ([]protocol.Command, error) {
+	ordinal := int64(1)
+	if after.Epoch != "" {
+		err := s.db.QueryRowContext(ctx, `SELECT ordinal FROM epochs WHERE id = ?`, string(after.Epoch)).Scan(&ordinal)
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, fmt.Errorf("read commands: epoch %s is not in the lineage", after.Epoch)
+		}
+		if err != nil {
+			return nil, fmt.Errorf("read commands: %w", err)
+		}
+	}
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT id, epoch, task_id, kind, time, payload FROM commands WHERE daemon_id = ? AND id > ? ORDER BY id`,
-		string(daemon), int64(after))
+		SELECT c.id, c.epoch, c.task_id, c.kind, c.time, c.payload
+		FROM commands c JOIN epochs e ON e.id = c.epoch
+		WHERE c.daemon_id = ?1 AND (e.ordinal > ?2 OR (e.ordinal = ?2 AND c.id > ?3))
+		ORDER BY e.ordinal, c.id`,
+		string(daemon), ordinal, int64(after.ID))
 	if err != nil {
 		return nil, fmt.Errorf("read commands: %w", err)
 	}
@@ -1313,6 +1333,9 @@ type daemonSummary struct {
 	// LostAt is when the server declared the daemon lost; nil while it
 	// is not.
 	LostAt *time.Time
+	// StreamRefusal is why the server last refused the daemon's command
+	// stream; nil when none of its streams was refused since one opened.
+	StreamRefusal *streamRefusal
 	// Labels are the owner's, and Facts what the daemon last reported.
 	Labels, Facts Labels
 }
@@ -1330,7 +1353,7 @@ func (s *Store) daemons(ctx context.Context) ([]daemonSummary, error) {
 		return nil, err
 	}
 	rows, err := tx.QueryContext(ctx, `
-		SELECT d.id, d.last_seen, d.harness_name, d.harness_version, d.lost_at, d.labels, d.facts,
+		SELECT d.id, d.last_seen, d.harness_name, d.harness_version, d.lost_at, d.stream_refusal, d.labels, d.facts,
 			(SELECT count(*) FROM tasks t WHERE t.daemon_id = d.id AND t.state IN (?1, ?2, ?3, ?4))
 		FROM daemons d
 		ORDER BY d.id`,
@@ -1342,9 +1365,9 @@ func (s *Store) daemons(ctx context.Context) ([]daemonSummary, error) {
 	var daemons []daemonSummary
 	for rows.Next() {
 		var id, lastSeen, labels, facts string
-		var harnessName, harnessVersion, lostAt sql.NullString
+		var harnessName, harnessVersion, lostAt, refusal sql.NullString
 		var inUse int
-		if err := rows.Scan(&id, &lastSeen, &harnessName, &harnessVersion, &lostAt, &labels, &facts, &inUse); err != nil {
+		if err := rows.Scan(&id, &lastSeen, &harnessName, &harnessVersion, &lostAt, &refusal, &labels, &facts, &inUse); err != nil {
 			return nil, fmt.Errorf("read daemons: %w", err)
 		}
 		daemon := daemonSummary{ID: protocol.DaemonID(id), InUse: inUse}
@@ -1364,6 +1387,12 @@ func (s *Store) daemons(ctx context.Context) ([]daemonSummary, error) {
 				return nil, fmt.Errorf("read daemon %q: %w", id, err)
 			}
 			daemon.LostAt = &at
+		}
+		if refusal.Valid {
+			daemon.StreamRefusal = &streamRefusal{}
+			if err := json.Unmarshal([]byte(refusal.String), daemon.StreamRefusal); err != nil {
+				return nil, fmt.Errorf("read daemon %q: stream refusal: %w", id, err)
+			}
 		}
 		if harnessName.Valid {
 			daemon.Harness = &protocol.Harness{Name: harnessName.String, Version: harnessVersion.String}

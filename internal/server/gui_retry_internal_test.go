@@ -124,14 +124,14 @@ func TestGivenTaskStoppedBeforeItStartedWhenFollowedUpThenItStartsAfreshAndItsOl
 		t.Fatalf("stop: %d %s", status, body)
 	}
 	admitTurns(t, srv.store)
-	if commands, err := srv.store.commandsAfter(t.Context(), "laptop", 0); err != nil || len(commands) != 0 {
+	if commands, err := srv.store.commandsAfter(t.Context(), "laptop", protocol.CommandPosition{}); err != nil || len(commands) != 0 {
 		t.Fatalf("commands after the stop = %v, %v; want none", commands, err)
 	}
 
 	postForTurn(t, srv.url+"/v1/tasks/"+string(turn.TaskID)+"/commands", `{"kind":"prompt","payload":{"text":"Go on."}}`, http.StatusAccepted)
 	admitTurns(t, srv.store)
 
-	commands, err := srv.store.commandsAfter(t.Context(), "laptop", 0)
+	commands, err := srv.store.commandsAfter(t.Context(), "laptop", protocol.CommandPosition{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -154,7 +154,7 @@ func TestGivenRunningTaskWithAWaitingTurnWhenStoppedThenTheTurnIsDroppedAndAFoll
 	if last.Kind != protocol.CommandPrompt || !strings.Contains(string(last.Payload), "After the stop.") {
 		t.Errorf("last command = %s %s, want only the follow-up after the stop", last.Kind, last.Payload)
 	}
-	commands, err := srv.store.commandsAfter(t.Context(), "laptop", 0)
+	commands, err := srv.store.commandsAfter(t.Context(), "laptop", protocol.CommandPosition{})
 	if err != nil {
 		t.Fatal(err)
 	}

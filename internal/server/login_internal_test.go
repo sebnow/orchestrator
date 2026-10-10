@@ -83,7 +83,7 @@ func TestGivenConnectedDaemonWhenTheOwnerLogsItInThroughTheAPIThenTheCommandsAnd
 	if got := daemonLoginView(t, srv, "vps"); got.Phase != loginFinished || !got.OK || got.Error != "" {
 		t.Errorf("login = %+v, want finished ok", got)
 	}
-	stored, err := srv.store.commandsAfter(t.Context(), "vps", login.ID)
+	stored, err := srv.store.commandsAfter(t.Context(), "vps", login.Position())
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -361,8 +361,8 @@ func TestGivenVersionOneDatabaseWhenOpeningStoreThenItIsMigratedAndItsTasksKeepP
 	if err := store.db.QueryRowContext(t.Context(), `SELECT version FROM schema_version`).Scan(&version); err != nil {
 		t.Fatal(err)
 	}
-	if version != schemaVersion || schemaVersion != 28 {
-		t.Errorf("schema version = %d (server knows %d), want 28", version, schemaVersion)
+	if version != schemaVersion || schemaVersion != 29 {
+		t.Errorf("schema version = %d (server knows %d), want 29", version, schemaVersion)
 	}
 	if old := readTask(t, store, "old"); old.Project != "" || old.Purpose != "" {
 		t.Errorf("migrated task project %q, purpose %q; want none", old.Project, old.Purpose)
@@ -577,7 +577,7 @@ func TestGivenCommandsBeforeVersion22WhenMigratedThenTheyStayTheirIdsCarryOnAndA
 	}
 	defer store.Close()
 
-	kept, err := store.commandsAfter(t.Context(), "laptop", 0)
+	kept, err := store.commandsAfter(t.Context(), "laptop", protocol.CommandPosition{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -591,7 +591,7 @@ func TestGivenCommandsBeforeVersion22WhenMigratedThenTheyStayTheirIdsCarryOnAndA
 	if login.ID != 6 {
 		t.Errorf("the next command's id = %d, want 6", login.ID)
 	}
-	all, err := store.commandsAfter(t.Context(), "laptop", 1)
+	all, err := store.commandsAfter(t.Context(), "laptop", protocol.CommandPosition{ID: 1})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -720,7 +720,7 @@ func TestGivenCommandsBeforeVersion27WhenMigratedThenTheyStayWithTheirChildRowsA
 	if err != nil {
 		t.Fatal(err)
 	}
-	all, err := store.commandsAfter(t.Context(), "laptop", 0)
+	all, err := store.commandsAfter(t.Context(), "laptop", protocol.CommandPosition{})
 	if err != nil {
 		t.Fatal(err)
 	}

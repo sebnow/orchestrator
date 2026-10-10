@@ -325,23 +325,31 @@ func (s *Server) getAcks(w http.ResponseWriter, r *http.Request) {
 
 // streamCommands sends the daemon its commands as server-sent events, each
 // with its position, EPOCH:ID, as the event id: first every command after
-// the Last-Event-ID the daemon sent (all of them without one), then each
-// new one as it is issued.
+// the Last-Event-ID the daemon sent (all of them without one), in the
+// order of the database's lineage, then each new one as it is issued. A
+// Last-Event-ID the lineage rules out gets 409 with a
+// protocol.StreamRefused (see openCommandStream).
 func (s *Server) streamCommands(w http.ResponseWriter, r *http.Request) {
 	daemon, ok := daemonFromPath(w, r)
 	if !ok {
 		return
 	}
-	var after uint64
+	var last protocol.CommandPosition
 	if raw := r.Header.Get("Last-Event-ID"); raw != "" {
-		position, err := protocol.ParseCommandPosition(raw)
-		if err != nil {
+		var err error
+		if last, err = protocol.ParseCommandPosition(raw); err != nil {
 			http.Error(w, "Last-Event-ID: "+err.Error(), http.StatusBadRequest)
 			return
 		}
-		after = position.ID
 	}
-	if err := s.store.recordSeen(r.Context(), daemon); err != nil {
+	after, err := s.store.openCommandStream(r.Context(), daemon, last)
+	if refused, ok := errors.AsType[*streamRefusedError](err); ok {
+		s.log.Warn("refused a daemon's command stream", "daemon", daemon, "reason", refused.Reason, "error", refused)
+		s.daemonChanged(daemon)
+		writeJSON(w, http.StatusConflict, protocol.StreamRefused{Reason: refused.Reason, Message: refused.Message})
+		return
+	}
+	if err != nil {
 		s.internalError(w, err)
 		return
 	}
@@ -387,7 +395,7 @@ func (s *Server) streamCommands(w http.ResponseWriter, r *http.Request) {
 			if _, err := fmt.Fprintf(w, "id: %s\ndata: %s\n\n", command.Position(), data); err != nil {
 				return
 			}
-			after = command.ID
+			after = command.Position()
 		}
 		if len(commands) > 0 {
 			if err := sender.Flush(); err != nil {

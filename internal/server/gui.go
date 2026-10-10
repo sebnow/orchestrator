@@ -245,6 +245,9 @@ func (s *Server) dashboardLists(ctx context.Context, showDismissed bool) (html.N
 		if daemon.LostAt != nil {
 			row.LostSince = *daemon.LostAt
 		}
+		if refusal := daemon.StreamRefusal; refusal != nil {
+			row.Refused, row.RefusedAt, row.RefusedMessage = string(refusal.Reason), refusal.At, refusal.Message
+		}
 		row.Harness = daemonHarness(daemon)
 		daemonRows[idx] = component.DaemonRow(row)
 	}

@@ -244,7 +244,7 @@ func TestGivenUnansweredPermissionRequestWhenTaskPageRequestedThenThePromptShows
 
 	requireLacks(t, page, `<h2>Permission requested</h2>`, `name="request_id"`)
 	requireContains(t, page, "Owner denied request toolu_01KYWDtRqQK6PRLSQzHm7bag", "not that file")
-	commands, err := srv.store.commandsAfter(t.Context(), "laptop", 0)
+	commands, err := srv.store.commandsAfter(t.Context(), "laptop", protocol.CommandPosition{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -263,7 +263,7 @@ func TestGivenRunningTaskWhenPauseFormPostedThenAPauseIsIssuedAndTheBrowserSentB
 
 	postForm(t, srv, task, url.Values{"kind": {"pause"}})
 
-	commands, err := srv.store.commandsAfter(t.Context(), "laptop", 0)
+	commands, err := srv.store.commandsAfter(t.Context(), "laptop", protocol.CommandPosition{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -317,7 +317,7 @@ func TestGivenEmptyFollowUpWhenPostedThenTheFormSaysWhyAndNothingIsIssued(t *tes
 	}
 	requireContains(t, plain.body, "<!DOCTYPE html>")
 	requireContains(t, htmx.body, `<div hx-swap-oob="innerHTML:#prompt">`)
-	if commands, _ := srv.store.commandsAfter(t.Context(), "laptop", 0); len(commands) != 1 {
+	if commands, _ := srv.store.commandsAfter(t.Context(), "laptop", protocol.CommandPosition{}); len(commands) != 1 {
 		t.Errorf("issued %d commands, want only the start", len(commands))
 	}
 }

@@ -285,7 +285,7 @@ func TestGivenRunningParentWhenItSpawnsThenTheChildStartsOnItsDaemonWithItsSetti
 	if turn.Kind != turnStart || turn.TaskID != "child" {
 		t.Errorf("turn = %+v, want the start of child", turn)
 	}
-	commands, err := store.commandsAfter(t.Context(), "laptop", 0)
+	commands, err := store.commandsAfter(t.Context(), "laptop", protocol.CommandPosition{})
 	if err != nil {
 		t.Fatal(err)
 	}

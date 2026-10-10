@@ -185,7 +185,7 @@ func TestGivenHostKeysWhenADaemonConnectsThenItGetsThemFirstAndTheLogKeepsOneSet
 		t.Errorf("lines on reconnecting = %q, want the owner's", got)
 	}
 
-	stored, err := srv.store.commandsAfter(t.Context(), "vps", 0)
+	stored, err := srv.store.commandsAfter(t.Context(), "vps", protocol.CommandPosition{})
 	if err != nil {
 		t.Fatal(err)
 	}

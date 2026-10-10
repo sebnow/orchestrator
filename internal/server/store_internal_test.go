@@ -100,7 +100,7 @@ func TestGivenExistingDatabaseWhenReopeningStoreThenItsRecordIsKept(t *testing.T
 	}
 	defer reopened.Close()
 
-	commands, err := reopened.commandsAfter(t.Context(), "laptop", 0)
+	commands, err := reopened.commandsAfter(t.Context(), "laptop", protocol.CommandPosition{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -232,7 +232,7 @@ func TestGivenCommandsForSeveralDaemonsWhenReadingAfterAnIDThenOnlyTheDaemonsLat
 		t.Fatal(err)
 	}
 
-	commands, err := store.commandsAfter(t.Context(), "laptop", 1)
+	commands, err := store.commandsAfter(t.Context(), "laptop", protocol.CommandPosition{ID: 1})
 	if err != nil {
 		t.Fatal(err)
 	}
