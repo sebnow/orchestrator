@@ -360,6 +360,20 @@ func TestGivenUserDataWhenRenderedThenItHoldsTheTokenTheCAAndTheHarnessUserSetUp
 	}
 }
 
+func TestGivenServerTypeWhenRenderingTheDaemonBinaryURLThenArchIsItsArchitecture(t *testing.T) {
+	for _, tt := range []struct {
+		serverType, template, want string
+	}{
+		{"cx23", "https://downloads.example/daemon-{arch}", "https://downloads.example/daemon-amd64"},
+		{"cax21", "https://downloads.example/daemon-{arch}", "https://downloads.example/daemon-arm64"},
+		{"cx23", "https://downloads.example/daemon", "https://downloads.example/daemon"},
+	} {
+		if got := daemonBinaryURL(tt.template, tt.serverType); got != tt.want {
+			t.Errorf("daemonBinaryURL(%q, %q) = %q, want %q", tt.template, tt.serverType, got, tt.want)
+		}
+	}
+}
+
 func TestGivenURLsACommandLineWouldChangeWhenRenderingUserDataThenTheyAreRefused(t *testing.T) {
 	token := protocol.EnrolmentToken{Daemon: "vps-abcdefgh", Secret: "secret"}
 	for _, input := range []userDataInput{

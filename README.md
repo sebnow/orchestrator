@@ -420,7 +420,9 @@ to start if the file is readable by anyone but its owner (use mode
   `daemon` binary from, built for Linux and the server type's
   architecture, such as with `GOOS=linux GOARCH=amd64 go build
   ./cmd/daemon` for `cx` server types (x86) or `GOARCH=arm64` for `cax`
-  types.
+  types. The literal `{arch}` in the URL is replaced with `amd64` or
+  `arm64` according to the server type being provisioned, so one URL
+  template can serve both.
 
 `-hetzner-server-type`, `-hetzner-location` and `-hetzner-image` choose
 the VPS, `cx23` in `fsn1` with `debian-13` by default. For example:

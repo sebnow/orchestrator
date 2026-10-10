@@ -26,8 +26,9 @@ type Provisioning struct {
 	// ServerType, Location and Image name what each VPS is created as,
 	// such as "cx23", "fsn1" and "debian-13".
 	ServerType, Location, Image string
-	// DaemonURL is where a VPS downloads the daemon binary from, built
-	// for the server type's architecture.
+	// DaemonURL is where a VPS downloads the daemon binary from. The
+	// literal "{arch}" is replaced with "amd64" or "arm64" according to
+	// ServerType; a URL without it is used unchanged.
 	DaemonURL string
 	// PublicURL is the server's address as a VPS's daemon dials it.
 	PublicURL string
@@ -227,7 +228,7 @@ func (s *Server) provision(ctx context.Context) (vps, error) {
 	if err != nil {
 		return vps{}, err
 	}
-	userData, err := renderUserData(userDataInput{Token: token, CA: s.ca.CertPEM(), ServerURL: p.PublicURL, DaemonURL: p.DaemonURL})
+	userData, err := renderUserData(userDataInput{Token: token, CA: s.ca.CertPEM(), ServerURL: p.PublicURL, DaemonURL: daemonBinaryURL(p.DaemonURL, p.ServerType)})
 	if err == nil {
 		err = s.createVPS(ctx, daemon, userData)
 	}

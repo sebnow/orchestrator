@@ -107,7 +107,7 @@ func serve(args []string, stderr io.Writer) int {
 	hetznerServerType := flags.String("hetzner-server-type", "cx23", "Hetzner server type of a provisioned VPS")
 	hetznerLocation := flags.String("hetzner-location", "fsn1", "Hetzner location of a provisioned VPS")
 	hetznerImage := flags.String("hetzner-image", "debian-13", "Hetzner image of a provisioned VPS")
-	daemonBinaryURL := flags.String("daemon-binary-url", "", "https URL a provisioned VPS downloads the daemon binary from, built for the server type's architecture")
+	daemonBinaryURL := flags.String("daemon-binary-url", "", "https URL a provisioned VPS downloads the daemon binary from; the literal {arch} is replaced with amd64 or arm64 according to the server type")
 	publicURL := flags.String("public-url", "", "the server's https URL as a provisioned VPS's daemon dials it, such as https://orchestrator.example:8443")
 	permissions := flags.String("permissions", "allow-all", "who answers the agents' permission requests: allow-all, the server, allowing every one at once; or ask, the owner")
 	if err := flags.Parse(args); err != nil {

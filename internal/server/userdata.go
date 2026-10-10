@@ -16,6 +16,19 @@ const maxUserDataBytes = 32 << 10
 // the one test/harness-user/Dockerfile installs.
 const claudeVersion = "2.1.289"
 
+// daemonBinaryURL replaces the literal "{arch}" in template with the
+// architecture serverType provisions: "arm64" for a Hetzner "cax"
+// server type, "amd64" for every other type ("cx" included), since a
+// "cx" and a "cax" server need a daemon binary built for different
+// architectures. A template without "{arch}" is returned unchanged.
+func daemonBinaryURL(template, serverType string) string {
+	arch := "amd64"
+	if strings.HasPrefix(serverType, "cax") {
+		arch = "arm64"
+	}
+	return strings.ReplaceAll(template, "{arch}", arch)
+}
+
 // userDataInput is what a provisioned VPS's user data is made from. It
 // holds the enrolment token and public material only, since every
 // process on the VPS can read its user data
