@@ -103,7 +103,7 @@ func TestGivenAuthStatusThatIsNotAStatusWhenReadThenItFails(t *testing.T) {
 // status in the file status. Its environment, as sudo's, holds only PATH.
 func recordingSudo(args, status string) string {
 	return `#!/bin/sh
-echo "$@" >` + args + `
+printf '%s\n' "$*" >` + args + `
 while [ "$1" != "--" ]; do shift; done
 shift
 FAKE_CLAUDE=1 FAKE_CLAUDE_STATUS=$(cat ` + status + `) exec "$@"
