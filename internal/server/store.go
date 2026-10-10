@@ -292,7 +292,54 @@ var migrations = [...]string{
 	DROP TABLE commands;
 	ALTER TABLE commands_new RENAME TO commands;
 	CREATE INDEX commands_by_daemon ON commands (daemon_id, id);`,
+	// Version 28 gives the database a lineage of epochs
+	// (docs/adr/2026-10-10-server-loss.md). The first epoch is the
+	// database's own; a restore starts another, whose parent is the
+	// backup's latest. Every command belongs to the epoch it was issued
+	// in, those issued before to the first. SQLite cannot add a NOT NULL
+	// column with a reference, so the commands table is rebuilt as
+	// version 27 rebuilt it, its sequence carrying on.
+	`CREATE TABLE epochs (
+		ordinal INTEGER PRIMARY KEY,
+		id TEXT NOT NULL UNIQUE,
+		parent TEXT REFERENCES epochs (id),
+		created_at TEXT NOT NULL,
+		CHECK ((parent IS NULL) = (ordinal = 1))
+	) STRICT;
+	INSERT INTO epochs (ordinal, id, parent, created_at)
+		VALUES (1, ` + newEpochID + `, NULL, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'));
+	CREATE TABLE commands_new (
+		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		epoch TEXT NOT NULL REFERENCES epochs (id),
+		daemon_id TEXT NOT NULL REFERENCES daemons (id),
+		task_id TEXT REFERENCES tasks (id),
+		kind TEXT NOT NULL,
+		time TEXT NOT NULL,
+		payload TEXT,
+		by_policy INTEGER NOT NULL DEFAULT 0 CHECK (by_policy IN (0, 1)),
+		CHECK ((task_id IS NULL) = (kind IN ('login', 'login_code', 'host_keys')))
+	) STRICT;
+	INSERT INTO commands_new (id, epoch, daemon_id, task_id, kind, time, payload, by_policy)
+		SELECT id, (SELECT id FROM epochs WHERE ordinal = 1), daemon_id, task_id, kind, time, payload, by_policy FROM commands;
+	INSERT INTO sqlite_sequence (name, seq) SELECT 'commands_new', 0
+		WHERE NOT EXISTS (SELECT 1 FROM sqlite_sequence WHERE name = 'commands_new');
+	UPDATE sqlite_sequence SET seq = max(seq, coalesce((SELECT seq FROM sqlite_sequence WHERE name = 'commands'), 0))
+		WHERE name = 'commands_new';
+	DROP TABLE commands;
+	ALTER TABLE commands_new RENAME TO commands;
+	CREATE INDEX commands_by_daemon ON commands (daemon_id, id);`,
 }
+
+// newEpochID is the SQL expression that makes an epoch's id: 128 random
+// bits as lowercase hex. Epochs are told apart by id only within one
+// lineage and against what daemons report, so they need to be unique,
+// not secret.
+const newEpochID = `lower(hex(randomblob(16)))`
+
+// currentEpoch is the SQL expression for the id of the database's
+// current epoch, the latest of its lineage, under which every command is
+// issued.
+const currentEpoch = `(SELECT id FROM epochs ORDER BY ordinal DESC LIMIT 1)`
 
 // schemaVersion is the version this server migrates databases to. A
 // database at a later version is refused rather than guessed at.
@@ -307,7 +354,7 @@ const schemaVersion = 1 + len(migrations)
 // Table Schema Changes"). PRAGMA foreign_keys cannot change inside a
 // transaction, so these run on their own connection; see
 // migrateWithoutForeignKeys.
-var noForeignKeys = map[int]bool{22: true, 27: true}
+var noForeignKeys = map[int]bool{22: true, 27: true, 28: true}
 
 var (
 	errUnknownDaemon = errors.New("unknown daemon")
@@ -904,7 +951,7 @@ func insertCommand(ctx context.Context, tx *sql.Tx, daemon protocol.DaemonID, ta
 	}
 	var id int64
 	err = tx.QueryRowContext(ctx, `
-		INSERT INTO commands (daemon_id, task_id, kind, time, payload) VALUES (?, ?, ?, ?, ?) RETURNING id`,
+		INSERT INTO commands (epoch, daemon_id, task_id, kind, time, payload) VALUES (`+currentEpoch+`, ?, ?, ?, ?, ?) RETURNING id`,
 		string(daemon), string(task), string(kind), formatTime(command.Time), stored).Scan(&id)
 	if err != nil {
 		return protocol.Command{}, fmt.Errorf("issue %s for task %q: %w", kind, task, err)
