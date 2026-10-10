@@ -423,6 +423,7 @@ func runDaemonAs(t *testing.T, server *url.URL, stateDir string, adjust func(*Co
 		MaxBackoff:      50 * time.Millisecond,
 		ShutdownTimeout: time.Second,
 		processes:       f.processes,
+		measureSlots:    testSlots,
 	}
 	adjust(&cfg)
 	go func() { f.done <- Serve(ctx, cfg) }()

@@ -211,6 +211,7 @@ func TestGivenDaemonWhenItOpensItsCommandStreamThenItReportsItsFactsFirstAndAgai
 		t.Fatal(err)
 	}
 	want[protocol.FactSSHPublicKey] = key.Blob
+	want[protocol.FactSlots] = "2"
 	if !maps.Equal(facts, want) || facts[protocol.FactOS] != runtime.GOOS || facts[protocol.FactCPUs] == "" || facts[protocol.FactHarness] == "" {
 		t.Errorf("facts = %v, want %v", facts, want)
 	}

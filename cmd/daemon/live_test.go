@@ -603,8 +603,13 @@ func TestLiveGivenRunningFillerOnTheOnlySlotWhenANormalTaskArrivesThenTheFillerY
 	defer cancel()
 	// A threshold of 1 lets filler run at any utilization short of the
 	// whole window, so the test does not depend on the account's usage.
-	sys := startLiveSystem(t, "-slots-per-daemon", "1", "-filler-threshold", "1")
+	sys := startLiveSystem(t, "-filler-threshold", "1")
 	primer := sys.startTaskViaGUI(t, ctx, "Reply with exactly READY.")
+	// The owner's slots label caps the daemon at one slot, whatever its
+	// machine reports.
+	if status, _ := postForm(t, sys.server+"/daemons/live-daemon/labels", url.Values{"labels": {"slots=1"}}); status != http.StatusSeeOther {
+		t.Fatalf("label the daemon: %d", status)
+	}
 	primed := sys.waitForState(t, ctx, primer, "finished", 1, nil)
 	if !slices.ContainsFunc(primed, func(event protocol.Event) bool {
 		return event.Kind == protocol.KindQuotaObserved && strings.Contains(string(event.Payload), `"name":"five_hour"`)

@@ -479,8 +479,6 @@ Server flags:
   `-tls-key` and `-client-ca`.
 - `-default-model`: the model of a task started without one, `haiku`
   by default.
-- `-slots-per-daemon`: how many tasks each daemon runs at once, 2 by
-  default.
 - `-filler-threshold`: the utilization of the account's five-hour quota
   window, from 0 to 1, below which filler tasks run; 0.5 by default
   (see [Scheduling](#scheduling)).
@@ -886,9 +884,9 @@ answers 201 with the queued start; a prompt or resume posted to
 interrupt, stop and permission answers are sent to the daemon at once,
 without queueing.
 
-- **Slots.** Each daemon runs at most `-slots-per-daemon` tasks at once.
-  A task holds a slot from the admission of its turn until its process
-  exits. A task started without a daemon goes to the connected daemon
+- **Slots.** Each daemon runs at most as many tasks at once as its
+  capacity (see [Placement](#placement)). A task holds a slot from the
+  admission of its turn until its process exits. A task started without a daemon goes to the connected daemon
   with the most free slots, and stays on that daemon, where its
   workspace is. Turns for a daemon that is not connected wait until it
   reconnects, or until it is lost (see [Lost daemons](#lost-daemons)).

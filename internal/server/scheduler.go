@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"log/slog"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 
@@ -18,9 +19,6 @@ import (
 // SchedulePolicy is what the scheduler admits turns by
 // (docs/adr/2026-10-08-scheduling.md).
 type SchedulePolicy struct {
-	// SlotsPerDaemon is the slot count of a daemon that has none of its
-	// own.
-	SlotsPerDaemon int
 	// FillerThreshold and LowThreshold are the five-hour window's
 	// utilization, from 0 to 1, that filler and low-priority turns need
 	// to stay below.
@@ -30,11 +28,45 @@ type SchedulePolicy struct {
 	// stream open, before it is lost and its tasks are moved
 	// (docs/adr/2026-10-08-daemon-loss.md). Zero declares no daemon lost.
 	DaemonTimeout time.Duration
+	// unreportedSlots is the capacity of a daemon with neither a slots
+	// fact nor a slots label; zero means one. Tests set it.
+	unreportedSlots int
 }
 
 // DefaultSchedulePolicy is the policy the scheduling and daemon loss
 // records name.
-var DefaultSchedulePolicy = SchedulePolicy{SlotsPerDaemon: 2, FillerThreshold: 0.5, LowThreshold: 0.85, DaemonTimeout: DefaultDaemonTimeout}
+var DefaultSchedulePolicy = SchedulePolicy{FillerThreshold: 0.5, LowThreshold: 0.85, DaemonTimeout: DefaultDaemonTimeout}
+
+// capacity is how many tasks a daemon with facts and the owner's labels
+// runs at once (docs/adr/2026-10-10-agent-models-and-capacity.md): its
+// slots fact, capped by the owner's slots label; the label alone when
+// the daemon reports no slots; and one when neither is set. A value that
+// is not a count is left out.
+func (p SchedulePolicy) capacity(facts, labels Labels) int {
+	reported, hasFact := slotCount(facts)
+	capped, hasLabel := slotCount(labels)
+	switch {
+	case hasFact && hasLabel:
+		return min(reported, capped)
+	case hasFact:
+		return reported
+	case hasLabel:
+		return capped
+	case p.unreportedSlots > 0:
+		return p.unreportedSlots
+	}
+	return 1
+}
+
+// slotCount reads the slots of labels, a count of 0 or more.
+func slotCount(labels Labels) (int, bool) {
+	value, ok := labels[protocol.FactSlots]
+	if !ok {
+		return 0, false
+	}
+	count, err := strconv.Atoi(value)
+	return count, err == nil && count >= 0
+}
 
 // fiveHourWindow names the window the thresholds apply to.
 const fiveHourWindow = "five_hour"
@@ -565,18 +597,13 @@ func readSchedule(ctx context.Context, tx *sql.Tx, policy SchedulePolicy, connec
 		models: make(map[protocol.DaemonID][]string, len(connected)),
 	}
 	for _, daemon := range connected {
-		var slots sql.NullInt64
 		var labels, facts string
-		err := tx.QueryRowContext(ctx, `SELECT slots, labels, facts FROM daemons WHERE id = ?`, string(daemon)).Scan(&slots, &labels, &facts)
+		err := tx.QueryRowContext(ctx, `SELECT labels, facts FROM daemons WHERE id = ?`, string(daemon)).Scan(&labels, &facts)
 		if errors.Is(err, sql.ErrNoRows) {
 			continue
 		}
 		if err != nil {
-			return schedule{}, fmt.Errorf("read slots of daemon %q: %w", daemon, err)
-		}
-		s.slots[daemon] = policy.SlotsPerDaemon
-		if slots.Valid {
-			s.slots[daemon] = int(slots.Int64)
+			return schedule{}, fmt.Errorf("read daemon %q: %w", daemon, err)
 		}
 		owners, err := decodeLabels(labels)
 		if err != nil {
@@ -586,6 +613,7 @@ func readSchedule(ctx context.Context, tx *sql.Tx, policy SchedulePolicy, connec
 		if err != nil {
 			return schedule{}, fmt.Errorf("read facts of daemon %q: %w", daemon, err)
 		}
+		s.slots[daemon] = policy.capacity(reported, owners)
 		s.labels[daemon] = Merge(reported, owners)
 		s.models[daemon] = advertisedModels(reported, owners)
 	}

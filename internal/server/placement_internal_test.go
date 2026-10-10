@@ -82,7 +82,7 @@ func TestGivenTaskRequiringALabelWhenOnlyAFullDaemonHasItThenItWaitsForThatDaemo
 func TestGivenAgentRequiringALabelWhenTheOwnerStartsATaskAsItThenTheTaskWaitsForADaemonWithIt(t *testing.T) {
 	srv := startTestServer(t)
 	createAgents(t, srv.store, Agent{Name: "trainer", Tools: []string{}, Priority: PriorityNormal, Requires: Labels{"gpu": "nvidia"}})
-	doRequest(t, http.MethodPut, srv.url+"/v1/daemons/laptop/facts", `{"os":"darwin","gpu":"apple"}`)
+	doRequest(t, http.MethodPut, srv.url+"/v1/daemons/laptop/facts", `{"os":"darwin","gpu":"apple","slots":"2"}`)
 	connect(t, srv, "laptop")
 
 	task := queueTaskViaForm(t, srv, "", "Train.", url.Values{"agent": {"trainer"}})

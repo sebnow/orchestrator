@@ -141,6 +141,9 @@ func (s *Server) postLabelsForm(w http.ResponseWriter, r *http.Request) {
 	}
 	text := r.PostForm.Get("labels")
 	labels, err := ParseLabels(text)
+	if err == nil {
+		err = validateSlotsLabel(labels)
+	}
 	if err != nil {
 		s.writeDaemonPage(w, http.StatusUnprocessableEntity, daemon, text, "The labels were not saved: "+strings.TrimPrefix(err.Error(), errInvalidLabels.Error()+": ")+".")
 		return
@@ -157,12 +160,24 @@ func (s *Server) postLabelsForm(w http.ResponseWriter, r *http.Request) {
 	redirect(w, r, "/daemons/"+string(daemon.ID))
 }
 
+// validateSlotsLabel refuses an owner's slots label that is not a count
+// of 0 or more, which capacity would leave out.
+func validateSlotsLabel(labels Labels) error {
+	if _, set := labels[protocol.FactSlots]; !set {
+		return nil
+	}
+	if _, ok := slotCount(labels); !ok {
+		return fmt.Errorf("%w: slots must be a count of 0 or more, not %q", errInvalidLabels, labels[protocol.FactSlots])
+	}
+	return nil
+}
+
 // daemonView is a daemon as the owner API reports it. Facts are what the
 // daemon last reported, its ssh_public_key fact the bare key blob; the
 // key is also given whole, as the authorized_keys line SSHPublicKey, and
 // bare, as SSHPublicKeyBlob, both empty when the daemon reported none.
-// Slots is the daemon's slot count, its own or the server's default, and
-// Running counts the tasks holding one. LostSince is set while the
+// Slots is the daemon's capacity, its slots fact capped by the owner's
+// slots label, and Running counts the tasks holding a slot. LostSince is set while the
 // server holds the daemon lost.
 type daemonView struct {
 	ID               protocol.DaemonID `json:"id"`
@@ -183,10 +198,7 @@ func (s *Server) view(daemon daemonSummary, connected bool) daemonView {
 	v := daemonView{
 		ID: daemon.ID, Labels: daemon.Labels, Facts: daemon.Facts, SSHPublicKey: sshKeyLine(daemon),
 		SSHPublicKeyBlob: daemon.Facts[protocol.FactSSHPublicKey], LastSeen: daemon.LastSeen, Connected: connected,
-		Lost: daemon.LostAt != nil, LostSince: daemon.LostAt, Slots: s.sched.policy.SlotsPerDaemon, Running: daemon.InUse,
-	}
-	if daemon.Slots != nil {
-		v.Slots = *daemon.Slots
+		Lost: daemon.LostAt != nil, LostSince: daemon.LostAt, Slots: s.sched.policy.capacity(daemon.Facts, daemon.Labels), Running: daemon.InUse,
 	}
 	return v
 }

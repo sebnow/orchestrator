@@ -1,7 +1,8 @@
 package protocol
 
 // Facts are what a daemon detects about its machine and reports with
-// PUT /v1/daemons/{daemon}/facts each time it opens its command stream
+// PUT /v1/daemons/{daemon}/facts each time it opens its command stream,
+// and again whenever they change
 // (docs/adr/2026-10-09-agents-and-placement.md). The body is a JSON
 // object of string values, which replaces the facts the daemon reported
 // before. The server matches the labels a task requires against them,
@@ -39,4 +40,11 @@ const (
 	// An adapter that cannot list its models, as Claude Code's cannot,
 	// leaves it out.
 	FactModels = "models"
+	// FactSlots is how many tasks the daemon can run at once, in decimal,
+	// as it derives it from the memory its machine has available and its
+	// load average (docs/adr/2026-10-10-agent-models-and-capacity.md).
+	// The daemon reports it again whenever it changes: on a timer, and
+	// when a harness starts or exits. An owner's label of the same key
+	// caps it.
+	FactSlots = "slots"
 )

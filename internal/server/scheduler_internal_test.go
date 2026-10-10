@@ -13,7 +13,7 @@ import (
 // schedNow is the scheduler's clock in the tests of decide.
 var schedNow = time.Date(2026, 10, 8, 12, 0, 0, 0, time.UTC)
 
-var testPolicy = SchedulePolicy{SlotsPerDaemon: 2, FillerThreshold: 0.5, LowThreshold: 0.85}
+var testPolicy = SchedulePolicy{FillerThreshold: 0.5, LowThreshold: 0.85}
 
 // fiveHourAt is a reading with the five-hour window used to utilization,
 // resetting in an hour.
@@ -363,7 +363,7 @@ func schedulerAt(t *testing.T, store *Store, now time.Time) []protocol.Command {
 	if err != nil {
 		t.Fatal(err)
 	}
-	policy := SchedulePolicy{SlotsPerDaemon: 1, FillerThreshold: 0.5, LowThreshold: 0.85}
+	policy := SchedulePolicy{FillerThreshold: 0.5, LowThreshold: 0.85, unreportedSlots: 1}
 	if _, err := store.schedule(t.Context(), policy, now, []protocol.DaemonID{"laptop"}, time.Time{}); err != nil {
 		t.Fatal(err)
 	}

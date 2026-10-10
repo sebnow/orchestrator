@@ -304,7 +304,7 @@ install -d -o orchestrator -g orchestrator -m 0755 $PKI
 install -o orchestrator -g orchestrator -m 0644 $SERVER_DIR/pki/daemons/ct-1/daemon.crt $PKI/daemon.crt
 install -o orchestrator -g orchestrator -m 0600 $SERVER_DIR/pki/daemons/ct-1/daemon.key $PKI/daemon.key
 $BIN/server -insecure-loopback -listen 127.0.0.1:8080 -db $SERVER_DIR/server.db \
-	-permissions allow-all -slots-per-daemon 4 >>"$SERVER_LOG" 2>&1 &
+	-permissions allow-all >>"$SERVER_LOG" 2>&1 &
 wait_until 20 curl -sf -o /dev/null $API/v1/tasks || die "the server did not answer"
 
 # --- Checklist steps 1 to 3.

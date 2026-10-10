@@ -92,9 +92,11 @@ func memTotal(meminfo io.Reader) (uint64, bool) {
 }
 
 // reportFacts sends the server the daemon's facts. The server keeps the
-// latest report, so sending it again changes nothing.
+// latest report, so sending it again changes nothing. Reports may race,
+// each sending the facts of its moment, so the last to arrive may be the
+// older; the next change or connection sends them again.
 func (s *service) reportFacts(ctx context.Context) error {
-	body, err := json.Marshal(s.facts)
+	body, err := json.Marshal(s.currentFacts())
 	if err != nil {
 		return err
 	}

@@ -54,7 +54,7 @@ func queueTask(t *testing.T, store *Store, task newTask) {
 }
 
 // roomyPolicy has room for every turn the store tests queue.
-var roomyPolicy = SchedulePolicy{SlotsPerDaemon: 100, FillerThreshold: 1, LowThreshold: 1}
+var roomyPolicy = SchedulePolicy{FillerThreshold: 1, LowThreshold: 1, unreportedSlots: 100}
 
 // admitTurns runs a scheduler pass with every daemon seen connected and
 // room for every turn.

@@ -14,7 +14,7 @@ import (
 
 func TestGivenRunningTaskTheServerMovedWhileTheDaemonWasAwayWhenTheDaemonReturnsThenItKillsTheHarnessAndForgetsTheTask(t *testing.T) {
 	srv := startServerWith(t, server.Options{Schedule: server.SchedulePolicy{
-		SlotsPerDaemon: 2, FillerThreshold: 0.5, LowThreshold: 0.85, DaemonTimeout: 200 * time.Millisecond,
+		FillerThreshold: 0.5, LowThreshold: 0.85, DaemonTimeout: 200 * time.Millisecond,
 	}})
 	proxy := startProxy(t, srv.url)
 	d := runDaemon(t, proxy.url(), t.TempDir())

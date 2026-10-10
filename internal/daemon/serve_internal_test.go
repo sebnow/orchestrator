@@ -34,6 +34,11 @@ type daemonFixture struct {
 
 // runDaemon serves a daemon with a fake harness until stop or the end of
 // the test.
+// testSlots reports two slots whatever runs, as the server's default slot
+// count was before daemons reported their own, so that tests do not
+// depend on the machine they run on.
+func testSlots(context.Context, int64) (int, bool) { return 2, true }
+
 func runDaemon(t *testing.T, server *url.URL, stateDir string) *daemonFixture {
 	t.Helper()
 	return runDaemonWithClient(t, server, stateDir, nil)
@@ -65,6 +70,7 @@ func runDaemonWithProcesses(t *testing.T, server *url.URL, stateDir string, clie
 			MaxBackoff:      50 * time.Millisecond,
 			ShutdownTimeout: time.Second,
 			processes:       f.processes,
+			measureSlots:    testSlots,
 		})
 	}()
 	t.Cleanup(func() { f.stop(t) })

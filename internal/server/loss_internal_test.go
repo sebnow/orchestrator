@@ -45,7 +45,7 @@ func startLossServer(t *testing.T, clock *testClock) testServer {
 	t.Helper()
 	return startTestServerWith(t, Options{
 		Now:      clock.now,
-		Schedule: SchedulePolicy{SlotsPerDaemon: 2, FillerThreshold: 0.5, LowThreshold: 0.85, DaemonTimeout: lossTimeout},
+		Schedule: SchedulePolicy{FillerThreshold: 0.5, LowThreshold: 0.85, DaemonTimeout: lossTimeout, unreportedSlots: 2},
 	})
 }
 

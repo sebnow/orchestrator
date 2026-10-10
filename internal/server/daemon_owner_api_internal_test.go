@@ -12,15 +12,15 @@ const testSSHKey = "AAAAC3NzaC1lZDI1NTE5AAAAINUZukIJ+vKsP7bTdxRjE93dbMEuScRvX+q1
 
 func TestGivenDaemonsWhenTheOwnerListsAndGetsThemThenEachHasItsLabelsFactsKeySeenLostSlotsAndRunningCount(t *testing.T) {
 	srv := startTestServer(t)
-	doRequest(t, http.MethodPut, srv.url+"/v1/daemons/laptop/facts", `{"os":"darwin","ssh_public_key":"`+testSSHKey+`"}`)
-	if err := srv.store.setLabels(t.Context(), "laptop", Labels{"tier": "dev"}); err != nil {
+	doRequest(t, http.MethodPut, srv.url+"/v1/daemons/laptop/facts", `{"os":"darwin","slots":"3","ssh_public_key":"`+testSSHKey+`"}`)
+	if err := srv.store.setLabels(t.Context(), "laptop", Labels{"tier": "dev", "slots": "2"}); err != nil {
 		t.Fatal(err)
 	}
 	openCommandStream(t, srv, "laptop", "")
 	startedTurn(t, srv)
 	doRequest(t, http.MethodGet, srv.url+"/v1/daemons/vps/acks", "")
 	lostAt := time.Date(2026, 10, 9, 8, 0, 0, 0, time.UTC)
-	if _, err := srv.store.db.ExecContext(t.Context(), `UPDATE daemons SET lost_at = ?, slots = 4 WHERE id = 'vps'`, formatTime(lostAt)); err != nil {
+	if _, err := srv.store.db.ExecContext(t.Context(), `UPDATE daemons SET lost_at = ? WHERE id = 'vps'`, formatTime(lostAt)); err != nil {
 		t.Fatal(err)
 	}
 	if !slices.Contains(srv.connectedDaemons(), "laptop") {
@@ -41,17 +41,17 @@ func TestGivenDaemonsWhenTheOwnerListsAndGetsThemThenEachHasItsLabelsFactsKeySee
 	}
 	delete(laptop, "last_seen")
 	requireJSONEqual(t, laptop, map[string]any{
-		"id": "laptop", "labels": map[string]any{"tier": "dev"},
-		"facts":               map[string]any{"os": "darwin", "ssh_public_key": testSSHKey},
+		"id": "laptop", "labels": map[string]any{"tier": "dev", "slots": "2"},
+		"facts":               map[string]any{"os": "darwin", "slots": "3", "ssh_public_key": testSSHKey},
 		"ssh_public_key":      "ssh-ed25519 " + testSSHKey + " orchestrator@laptop",
 		"ssh_public_key_blob": testSSHKey,
-		"connected":           true, "lost": false, "slots": float64(DefaultSchedulePolicy.SlotsPerDaemon), "running": float64(1),
+		"connected":           true, "lost": false, "slots": float64(2), "running": float64(1),
 	})
 	vps := list[1]
 	delete(vps, "last_seen")
 	requireJSONEqual(t, vps, map[string]any{
 		"id": "vps", "labels": map[string]any{}, "facts": map[string]any{},
-		"connected": false, "lost": true, "lost_since": lostAt.Format(time.RFC3339Nano), "slots": float64(4), "running": float64(0),
+		"connected": false, "lost": true, "lost_since": lostAt.Format(time.RFC3339Nano), "slots": float64(1), "running": float64(0),
 	})
 }
 

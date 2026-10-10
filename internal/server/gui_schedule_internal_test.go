@@ -53,7 +53,7 @@ func (srv testServer) pass(t *testing.T) {
 func TestGivenQueuedTasksAndAReadingWhenTheDashboardIsShownThenItShowsPlacesReasonsPrioritiesTheBudgetAndSlots(t *testing.T) {
 	taken := time.Date(2026, 10, 8, 12, 0, 0, 0, time.UTC)
 	srv := startTestServerWith(t, Options{
-		Schedule: SchedulePolicy{SlotsPerDaemon: 1, FillerThreshold: 0.5, LowThreshold: 0.85},
+		Schedule: SchedulePolicy{FillerThreshold: 0.5, LowThreshold: 0.85, unreportedSlots: 1},
 		Now:      func() time.Time { return taken.Add(5 * time.Minute) },
 	})
 	connect(t, srv, "laptop")
@@ -85,7 +85,7 @@ func TestGivenQueuedTasksAndAReadingWhenTheDashboardIsShownThenItShowsPlacesReas
 }
 
 func TestGivenYieldedFillerWaitingForASlotWhenItsPageIsShownThenItIsYieldedQueuedAndOffersResume(t *testing.T) {
-	srv := startTestServerWith(t, Options{Schedule: SchedulePolicy{SlotsPerDaemon: 1, FillerThreshold: 1, LowThreshold: 1}})
+	srv := startTestServerWith(t, Options{Schedule: SchedulePolicy{FillerThreshold: 1, LowThreshold: 1, unreportedSlots: 1}})
 	connect(t, srv, "laptop")
 	spec := ownersTask("filler", "laptop")
 	spec.Filler = true

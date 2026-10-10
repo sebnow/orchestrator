@@ -62,7 +62,6 @@ func TestGivenSchedulingFlagsOutOfRangeWhenStartingThenTheServerRefusesAndNamesT
 	for _, tc := range []struct {
 		flag, value string
 	}{
-		{"-slots-per-daemon", "0"},
 		{"-filler-threshold", "-0.1"},
 		{"-filler-threshold", "1.5"},
 		{"-low-threshold", "2"},

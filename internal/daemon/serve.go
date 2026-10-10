@@ -6,12 +6,15 @@ import (
 	"fmt"
 	"io/fs"
 	"log/slog"
+	"maps"
 	"net/http"
 	"net/mail"
 	"net/url"
 	"os"
 	"path/filepath"
+	"strconv"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/sebnow/orchestrator/internal/harness"
@@ -63,6 +66,18 @@ type Config struct {
 	// processes finds and kills harness processes; nil uses ps and
 	// signals. Tests set it so that no real process is touched.
 	processes processTable
+	// measureSlots computes the slots fact for running harness
+	// processes, or reports false when it cannot; nil applies the slots
+	// rule to this machine. Tests set it.
+	measureSlots func(ctx context.Context, running int64) (int, bool)
+}
+
+// slots computes the slots fact with running harness processes.
+func (cfg Config) slots(ctx context.Context, running int64) (int, bool) {
+	if cfg.measureSlots != nil {
+		return cfg.measureSlots(ctx, running)
+	}
+	return machineSlots(ctx, running)
 }
 
 // ParseGitIdentity parses s as "Name <email>", the form -git-identity
@@ -101,8 +116,21 @@ type service struct {
 	// copy when saving that failed.
 	applied uint64
 	// facts are what the daemon reports about its machine each time it
-	// opens its command stream.
-	facts protocol.Facts
+	// opens its command stream and whenever they change; factsMu guards
+	// them.
+	factsMu sync.Mutex
+	facts   protocol.Facts
+	// harnesses counts the harness processes running, and
+	// capacityChanged asks watchCapacity to recompute the slots fact.
+	harnesses       atomic.Int64
+	capacityChanged chan struct{}
+}
+
+// currentFacts returns a copy of the daemon's facts.
+func (s *service) currentFacts() protocol.Facts {
+	s.factsMu.Lock()
+	defer s.factsMu.Unlock()
+	return maps.Clone(s.facts)
 }
 
 // worker applies one task's commands in order, on its own goroutine, so
@@ -188,6 +216,9 @@ func Serve(ctx context.Context, cfg Config) error {
 	// No task runs before snd is set: recovery appends to journals
 	// without observing, and the sender learns those tasks from the state.
 	var snd *sender
+	// svc is set before the daemon takes commands, and so before any
+	// harness starts.
+	var svc *service
 	d := New(stateDir, cfg.Harness, cfg.Gateway, func(event protocol.Event) { snd.notify(event.TaskID) })
 	d.forward = forwardTo(cfg.Client, cfg.Server, cfg.ID)
 	d.workspaces = cfg.WorkspaceDir
@@ -219,6 +250,9 @@ func Serve(ctx context.Context, cfg Config) error {
 		}
 	}
 	d.harnessStarted = func(task protocol.TaskID, pid int) {
+		if svc != nil {
+			svc.harnessesChanged(1)
+		}
 		started, err := d.processes.started(pid)
 		if err != nil {
 			cfg.Log.Warn("look up the harness's start time; a restart will leave it alone if it outlives the daemon", "task", task, "pid", pid, "error", err)
@@ -235,17 +269,22 @@ func Serve(ctx context.Context, cfg Config) error {
 	stopping, stop := context.WithCancel(context.Background())
 	defer stop()
 	s := &service{
-		cfg:      cfg,
-		daemon:   d,
-		state:    st,
-		sender:   snd,
-		log:      cfg.Log,
-		stopping: stopping,
-		running:  map[protocol.TaskID]*worker{},
-		applied:  st.lastCommand(),
-		facts:    detectFacts(cfg.Harness.Info()),
+		cfg:             cfg,
+		daemon:          d,
+		state:           st,
+		sender:          snd,
+		log:             cfg.Log,
+		stopping:        stopping,
+		running:         map[protocol.TaskID]*worker{},
+		applied:         st.lastCommand(),
+		facts:           detectFacts(cfg.Harness.Info()),
+		capacityChanged: make(chan struct{}, 1),
 	}
 	s.facts[protocol.FactSSHPublicKey] = key.Blob
+	if slots, ok := cfg.slots(ctx, 0); ok {
+		s.facts[protocol.FactSlots] = strconv.Itoa(slots)
+	}
+	svc = s
 	snd.moved = s.dropMoved
 
 	sendCtx, cancelSend := context.WithCancel(context.Background())
@@ -261,10 +300,16 @@ func Serve(ctx context.Context, cfg Config) error {
 		defer close(received)
 		s.receive(ctx)
 	}()
+	watched := make(chan struct{})
+	go func() {
+		defer close(watched)
+		s.watchCapacity(ctx)
+	}()
 	cfg.Log.Info("serving", "server", cfg.Server.String(), "daemon", cfg.ID, "state_dir", stateDir, "facts", s.facts)
 
 	<-ctx.Done()
 	<-received
+	<-watched
 	cfg.Log.Info("shutting down: stopping tasks")
 	stop()
 	s.workers.Wait()
@@ -484,6 +529,7 @@ func (s *service) processEnded(task protocol.TaskID, t *Task, stopped bool) {
 		s.discardWorkspace(task)
 	}
 	s.sender.notify(task)
+	s.harnessesChanged(-1)
 	s.log.Info("process ended", "task", task, "exit_code", st.Exit.ExitCode, "paused", st.Pause == Paused, "cut_short", st.CutShort, "stopped", stopped)
 }
 

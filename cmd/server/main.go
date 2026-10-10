@@ -96,7 +96,6 @@ func serve(args []string, stderr io.Writer) int {
 	tlsKey := flags.String("tls-key", "", "the server certificate's key (required unless -insecure-loopback)")
 	clientCA := flags.String("client-ca", "", "the CA certificate that daemons' certificates are verified against, from init-ca (required unless -insecure-loopback)")
 	insecure := flags.Bool("insecure-loopback", false, "serve plain HTTP without authentication, for development; -listen must be a loopback IP address")
-	slots := flags.Int("slots-per-daemon", server.DefaultSchedulePolicy.SlotsPerDaemon, "tasks each daemon runs at once")
 	fillerThreshold := flags.Float64("filler-threshold", server.DefaultSchedulePolicy.FillerThreshold, "five-hour window utilization, from 0 to 1, below which filler tasks run")
 	lowThreshold := flags.Float64("low-threshold", server.DefaultSchedulePolicy.LowThreshold, "five-hour window utilization, from 0 to 1, below which low-priority tasks run")
 	daemonTimeout := flags.Duration("daemon-timeout", server.DefaultDaemonTimeout, "how long a daemon may go unseen, with no command stream open, before it is lost and its tasks move to other daemons; at least 1m")
@@ -106,10 +105,6 @@ func serve(args []string, stderr io.Writer) int {
 	}
 	if *dbPath == "" || *defaultModel == "" || flags.NArg() > 0 {
 		flags.Usage()
-		return 2
-	}
-	if *slots < 1 {
-		fmt.Fprintln(stderr, "server: -slots-per-daemon must be at least 1")
 		return 2
 	}
 	// A daemon retries every 30 s at most and notices a dead command
@@ -186,7 +181,7 @@ func serve(args []string, stderr io.Writer) int {
 	srv := server.New(store, log, server.Options{
 		DefaultModel: *defaultModel,
 		Insecure:     *insecure,
-		Schedule: server.SchedulePolicy{SlotsPerDaemon: *slots, FillerThreshold: *fillerThreshold, LowThreshold: *lowThreshold,
+		Schedule: server.SchedulePolicy{FillerThreshold: *fillerThreshold, LowThreshold: *lowThreshold,
 			DaemonTimeout: *daemonTimeout},
 		Permissions: policy,
 	})

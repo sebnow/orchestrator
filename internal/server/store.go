@@ -190,6 +190,10 @@ var migrations = [...]string{
 	// (docs/adr/2026-10-10-agent-models-and-capacity.md).
 	`ALTER TABLE agents ADD COLUMN tool_classes TEXT NOT NULL DEFAULT '[]';
 	ALTER TABLE tasks ADD COLUMN tool_classes TEXT;`,
+	// Version 21 drops each daemon's slot count, which nothing set: a
+	// daemon's capacity is now its slots fact, capped by the owner's
+	// slots label (docs/adr/2026-10-10-agent-models-and-capacity.md).
+	`ALTER TABLE daemons DROP COLUMN slots;`,
 }
 
 // schemaVersion is the version this server migrates databases to. A
@@ -986,8 +990,6 @@ type daemonSummary struct {
 	// observed at QuotaAt; nil when there is none.
 	Quota   *protocol.QuotaObserved
 	QuotaAt time.Time
-	// Slots is the daemon's own slot count; nil for the server's default.
-	Slots *int
 	// InUse counts the tasks holding a slot on the daemon.
 	InUse int
 	// LostAt is when the server declared the daemon lost; nil while it
@@ -1021,7 +1023,7 @@ func (s *Store) daemons(ctx context.Context) ([]daemonSummary, error) {
 				row_number() OVER (PARTITION BY t.daemon_id ORDER BY julianday(e.time) DESC, e.rowid DESC) AS newest
 			FROM events e JOIN tasks t ON t.id = e.task_id
 			WHERE e.kind = ?1)
-		SELECT d.id, d.last_seen, d.harness_name, d.harness_version, r.time, r.payload, d.slots, d.lost_at, d.labels, d.facts,
+		SELECT d.id, d.last_seen, d.harness_name, d.harness_version, r.time, r.payload, d.lost_at, d.labels, d.facts,
 			(SELECT count(*) FROM tasks t WHERE t.daemon_id = d.id AND t.state IN (?2, ?3, ?4, ?5))
 		FROM daemons d LEFT JOIN readings r ON r.daemon_id = d.id AND r.newest = 1
 		ORDER BY d.id`, string(protocol.KindQuotaObserved),
@@ -1034,9 +1036,8 @@ func (s *Store) daemons(ctx context.Context) ([]daemonSummary, error) {
 	for rows.Next() {
 		var id, lastSeen, labels, facts string
 		var harnessName, harnessVersion, quotaTime, quotaPayload, lostAt sql.NullString
-		var slots sql.NullInt64
 		var inUse int
-		if err := rows.Scan(&id, &lastSeen, &harnessName, &harnessVersion, &quotaTime, &quotaPayload, &slots, &lostAt, &labels, &facts, &inUse); err != nil {
+		if err := rows.Scan(&id, &lastSeen, &harnessName, &harnessVersion, &quotaTime, &quotaPayload, &lostAt, &labels, &facts, &inUse); err != nil {
 			return nil, fmt.Errorf("read daemons: %w", err)
 		}
 		daemon := daemonSummary{ID: protocol.DaemonID(id), InUse: inUse}
@@ -1046,10 +1047,6 @@ func (s *Store) daemons(ctx context.Context) ([]daemonSummary, error) {
 		}
 		if daemon.Facts, err = decodeLabels(facts); err != nil {
 			return nil, fmt.Errorf("read daemon %q: %w", id, err)
-		}
-		if slots.Valid {
-			count := int(slots.Int64)
-			daemon.Slots = &count
 		}
 		if daemon.LastSeen, err = parseTime(lastSeen); err != nil {
 			return nil, fmt.Errorf("read daemon %q: %w", id, err)
