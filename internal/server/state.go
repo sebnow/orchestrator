@@ -524,11 +524,12 @@ func (s *Store) taskPrompts(ctx context.Context) (map[protocol.TaskID]string, er
 // back or sent; empty when it has sent none. Branch is the latest
 // branch_pushed the child's daemon reported; nil when none.
 type childSummary struct {
-	ID     protocol.TaskID
-	Agent  string
-	State  TaskState
-	Report string
-	Branch *protocol.BranchPushed
+	ID      protocol.TaskID
+	Purpose string
+	Agent   string
+	State   TaskState
+	Report  string
+	Branch  *protocol.BranchPushed
 }
 
 // children returns the tasks task spawned, oldest first. Stored times do
@@ -541,7 +542,7 @@ func (s *Store) children(ctx context.Context, task protocol.TaskID) ([]childSumm
 	}
 	defer tx.Rollback()
 	rows, err := tx.QueryContext(ctx, `
-		SELECT t.id, coalesce(t.agent, ''), t.state,
+		SELECT t.id, t.purpose, coalesce(t.agent, ''), t.state,
 			coalesce((SELECT m.text FROM messages m WHERE m.from_task = t.id AND m.to_task = ?1 ORDER BY m.id DESC LIMIT 1), '')
 		FROM tasks t WHERE t.parent_id = ?1 ORDER BY julianday(t.created_at), t.rowid`, string(task))
 	if err != nil {
@@ -552,7 +553,7 @@ func (s *Store) children(ctx context.Context, task protocol.TaskID) ([]childSumm
 	for rows.Next() {
 		var child childSummary
 		var id, state string
-		if err := rows.Scan(&id, &child.Agent, &state, &child.Report); err != nil {
+		if err := rows.Scan(&id, &child.Purpose, &child.Agent, &state, &child.Report); err != nil {
 			return nil, fmt.Errorf("read children of task %q: %w", task, err)
 		}
 		child.ID, child.State = protocol.TaskID(id), TaskState(state)

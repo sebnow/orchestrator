@@ -13,10 +13,10 @@ func TestGivenAllowedToolsWhenComposingTheSystemPromptThenItNamesOnlyThoseAndACh
 		tools        []string
 		names, lacks []string
 	}{
-		{nil, []string{"spawn_task", "send_message"}, nil},
-		{[]string{protocol.ToolSpawnTask}, []string{"spawn_task"}, []string{"send_message"}},
-		{[]string{protocol.ToolSendMessage}, []string{"send_message"}, []string{"spawn_task"}},
-		{[]string{}, []string{"no tool that reaches other tasks"}, []string{"spawn_task", "send_message"}},
+		{nil, []string{"spawn_task", "send_message", purposeRule}, nil},
+		{[]string{protocol.ToolSpawnTask}, []string{"spawn_task", purposeRule}, []string{"send_message"}},
+		{[]string{protocol.ToolSendMessage}, []string{"send_message"}, []string{"spawn_task", "purpose"}},
+		{[]string{}, []string{"no tool that reaches other tasks"}, []string{"spawn_task", "send_message", "purpose"}},
 	} {
 		got := systemPrompt(&parent, tc.tools, "Be brief.")
 

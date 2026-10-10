@@ -6,11 +6,11 @@ import (
 	"github.com/sebnow/orchestrator/internal/protocol"
 )
 
-func TestGivenParentWithChildrenWhenItsPageIsShownThenItListsEachChildWithItsAgentStateBranchAndLatestReport(t *testing.T) {
+func TestGivenParentWithChildrenWhenItsPageIsShownThenItListsEachChildWithItsPurposeAgentStateBranchAndLatestReport(t *testing.T) {
 	srv := startTestServer(t)
 	parent := taskIn(t, srv.store, "parent", TaskRunning)
 	createAgents(t, srv.store, Agent{Name: "reviewer", Tools: []string{}, Priority: PriorityNormal, Requires: Labels{}})
-	if _, err := srv.store.spawnTask(t.Context(), "laptop", "parent", "reviewed", protocol.Spawn{Prompt: "Review.", Agent: "reviewer"}); err != nil {
+	if _, err := srv.store.spawnTask(t.Context(), "laptop", "parent", "reviewed", protocol.Spawn{Purpose: "Check the change for bugs.", Prompt: "Review.", Agent: "reviewer"}); err != nil {
 		t.Fatal(err)
 	}
 	admitTurns(t, srv.store)
@@ -26,9 +26,11 @@ func TestGivenParentWithChildrenWhenItsPageIsShownThenItListsEachChildWithItsAge
 
 	requireContains(t, page,
 		`<h2>Children</h2><div id="task-children"><table>`,
-		`<tr><td><a href="/tasks/reviewed">reviewed</a></td><td><a href="/agents/reviewer">reviewer</a></td><td><span class="badge state-finished">finished</span></td><td><code>orchestrator/reviewed</code> at <code>eb69b7b37fad</code></td><td>Looks right.…</td></tr>`,
-		`<tr><td><a href="/tasks/silent">silent</a></td><td></td><td><span class="badge state-pending">pending</span></td><td><span class="empty">none</span></td><td><span class="empty">none yet</span></td></tr>`,
+		`<tr><td><a href="/tasks/reviewed">reviewed</a></td><td>Check the change for bugs.</td><td><a href="/agents/reviewer">reviewer</a></td><td><span class="badge state-finished">finished</span></td><td><code>orchestrator/reviewed</code> at <code>eb69b7b37fad</code></td><td>Looks right.…</td></tr>`,
+		`<tr><td><a href="/tasks/silent">silent</a></td><td><span class="empty">none given</span></td><td></td><td><span class="badge state-pending">pending</span></td><td><span class="empty">none</span></td><td><span class="empty">none yet</span></td></tr>`,
 	)
-	requireContains(t, getPage(t, srv.url+"/tasks/reviewed"), `<dt>Parent</dt><dd><a href="/tasks/parent">parent</a></dd>`)
+	requireContains(t, getPage(t, srv.url+"/tasks/reviewed"), `<dt>Parent</dt><dd><a href="/tasks/parent">parent</a></dd>`,
+		`<dl><dt>Purpose</dt><dd>Check the change for bugs.</dd>`)
+	requireContains(t, getPage(t, srv.url+"/"), `<a href="/tasks/reviewed">Check the change for bugs.</a><span class="reason"> ↳ child of`)
 	requireContains(t, getPage(t, srv.url+"/tasks/silent"), "It has not spawned any tasks.")
 }

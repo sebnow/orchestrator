@@ -136,7 +136,11 @@ func (s *Server) rootTasks(ctx context.Context, id string) (html.Node, error) {
 		if summary.Project != id || summary.ParentID != nil {
 			continue
 		}
-		row := component.RootTask{ID: string(summary.ID), Title: prompts[summary.ID], Agent: summary.Agent, State: string(summary.State), CostUSD: summary.CostUSD}
+		title := prompts[summary.ID]
+		if summary.Purpose != "" {
+			title = summary.Purpose
+		}
+		row := component.RootTask{ID: string(summary.ID), Title: title, Agent: summary.Agent, State: string(summary.State), CostUSD: summary.CostUSD}
 		if summary.Branch != nil {
 			pushed := transcript.BranchPushed(*summary.Branch)
 			row.Branch = &pushed

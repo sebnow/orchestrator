@@ -16,9 +16,15 @@ import (
 const messagingPrompt = "You run as a task of an orchestrator, which can run other agents as tasks alongside you. " +
 	"The orchestrator MCP server gives you two tools for this: spawn_task starts a child task on a prompt you write " +
 	"and returns the child's task id, and send_message sends text to another task by its id. " +
+	purposeRule +
 	"Only these two tools reach other tasks; no other messaging or agent tool does. " +
 	"A message reaches its recipient as its next prompt once its current turn has ended, " +
 	"so to wait for a child's result or a reply, end your turn."
+
+// purposeRule tells an agent allowed spawn_task what the purpose it must
+// give is for (docs/adr/2026-10-10-projects-and-lineage.md).
+const purposeRule = "spawn_task requires a purpose: one line saying why the child exists and what you expect back from it. " +
+	"The owner sees it wherever the child is listed, and the child reads it at the top of its prompt. "
 
 // toolsPrompt is messagingPrompt for an agent allowed the gateway tools
 // tools, as protocol.StartTask.Tools has them: nil allows both.
@@ -31,7 +37,7 @@ func toolsPrompt(tools []string) string {
 		return messagingPrompt
 	case spawn:
 		return intro + "The orchestrator MCP server gives you one tool for this: spawn_task starts a child task on a prompt you write " +
-			"and returns the child's task id. Only this tool reaches other tasks; no other messaging or agent tool does. " +
+			"and returns the child's task id. " + purposeRule + "Only this tool reaches other tasks; no other messaging or agent tool does. " +
 			"A child's report reaches you as your next prompt once your current turn has ended, so to wait for it, end your turn."
 	case send:
 		return intro + "The orchestrator MCP server gives you one tool for this: send_message sends text to another task by its id. " +
@@ -66,4 +72,19 @@ func systemPrompt(parent *protocol.TaskID, tools []string, extra ...string) stri
 		}
 	}
 	return strings.Join(parts, "\n\n")
+}
+
+// oneLine is text with its runs of whitespace, line breaks included, made
+// single spaces, and trimmed: a purpose as it is stored and shown.
+func oneLine(text string) string {
+	return strings.Join(strings.Fields(text), " ")
+}
+
+// withPurpose is prompt with purpose, when it is not empty, at its top as
+// a paragraph of its own (docs/adr/2026-10-10-projects-and-lineage.md).
+func withPurpose(purpose, prompt string) string {
+	if purpose == "" {
+		return prompt
+	}
+	return "Purpose: " + purpose + "\n\n" + prompt
 }

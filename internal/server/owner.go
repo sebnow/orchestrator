@@ -31,6 +31,7 @@ type createTaskRequest struct {
 	DaemonID protocol.DaemonID `json:"daemon_id"`
 	Agent    string            `json:"agent"`
 	Project  string            `json:"project"`
+	Purpose  string            `json:"purpose"`
 	Requires *Labels           `json:"requires"`
 	Priority string            `json:"priority"`
 	Filler   *bool             `json:"filler"`
@@ -68,7 +69,7 @@ func (s *Server) postTask(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	turn, err := s.startTask(r.Context(), taskRequest{
-		Daemon: daemon, Agent: request.Agent, Project: request.Project, Requires: request.Requires, Priority: priority, Filler: request.Filler, Start: request.StartTask,
+		Daemon: daemon, Agent: request.Agent, Project: request.Project, Purpose: request.Purpose, Requires: request.Requires, Priority: priority, Filler: request.Filler, Start: request.StartTask,
 	})
 	if errors.Is(err, errInvalidTask) {
 		http.Error(w, err.Error(), http.StatusBadRequest)
@@ -99,11 +100,14 @@ func (s *Server) postTask(w http.ResponseWriter, r *http.Request) {
 // an empty Priority, a nil Filler, a nil Requires, an empty
 // Start.Model, a nil Start.Tools and zero Start.PauseLimits. Project is
 // the id of the project the task belongs to, if any, whose default agent
-// an empty Agent takes and whose repository the task works in.
+// an empty Agent takes and whose repository the task works in. Purpose,
+// when set, says why the task exists, and is put at the top of its
+// prompt.
 type taskRequest struct {
 	Daemon   protocol.DaemonID
 	Agent    string
 	Project  string
+	Purpose  string
 	Requires *Labels
 	Priority Priority
 	Filler   *bool
@@ -173,6 +177,8 @@ func (s *Server) startTask(ctx context.Context, request taskRequest) (queuedTurn
 		return queuedTurn{}, err
 	}
 	start.SystemPrompt = systemPrompt(nil, start.Tools, spawnable(start.Tools, agents), agentPrompt, start.SystemPrompt)
+	purpose := oneLine(request.Purpose)
+	start.Prompt = withPurpose(purpose, start.Prompt)
 	placed := placementBound
 	if request.Daemon == "" {
 		placed = placementAny
@@ -184,6 +190,7 @@ func (s *Server) startTask(ctx context.Context, request taskRequest) (queuedTurn
 		Placement: placed,
 		Agent:     request.Agent,
 		Project:   request.Project,
+		Purpose:   purpose,
 		Requires:  requires,
 		Priority:  priority,
 		Filler:    filler,

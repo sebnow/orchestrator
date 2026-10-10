@@ -59,7 +59,7 @@ func TestGivenParentWhoseAgentSpawnsAChildWhenTheChildSendsToTheFinishedParentTh
 		t.Errorf("allowed gateway tools = %q", tools)
 	}
 
-	spawnReply := callTool(t, parentProc, SpawnTaskTool, map[string]any{"prompt": "Reply with PEAR and send it to your parent."})
+	spawnReply := callTool(t, parentProc, SpawnTaskTool, map[string]any{"purpose": "Check messaging.", "prompt": "Reply with PEAR and send it to your parent."})
 
 	var child protocol.TaskID
 	for _, task := range srv.tasks(t) {
@@ -71,7 +71,7 @@ func TestGivenParentWhoseAgentSpawnsAChildWhenTheChildSendsToTheFinishedParentTh
 		t.Fatalf("spawn reply %q; tasks %+v", spawnReply, srv.tasks(t))
 	}
 	childProc := d.nextProcess(t)
-	if in := childProc.nextInput(t); in.text != "Reply with PEAR and send it to your parent." {
+	if in := childProc.nextInput(t); in.text != "Purpose: Check messaging.\n\nReply with PEAR and send it to your parent." {
 		t.Errorf("child's prompt = %q", in.text)
 	}
 
@@ -150,7 +150,7 @@ func TestGivenAgentWhenAParentSpawnsAChildAsItThenTheChildRunsWithOnlyTheAgentsT
 	parentProc := d.nextProcess(t)
 	parentProc.nextInput(t)
 
-	callTool(t, parentProc, SpawnTaskTool, map[string]any{"prompt": "Review.", "agent": "reviewer"})
+	callTool(t, parentProc, SpawnTaskTool, map[string]any{"purpose": "Review the change.", "prompt": "Review.", "agent": "reviewer"})
 
 	childProc := d.nextProcess(t)
 	requireOnlyPauseAndPermissionTools(t, childProc)

@@ -50,7 +50,9 @@ func requireRunning(ctx context.Context, tx *sql.Tx, daemon protocol.DaemonID, t
 // an agent of parent running on daemon. The start goes to parent's
 // daemon unless that has no free slot when it is admitted
 // (docs/adr/2026-10-08-scheduling.md). The child works in a fresh copy of
-// parent's workspace. Started as the agent spawn names, it has the
+// parent's workspace, belongs to parent's project, and has spawn's
+// purpose, if any, at the top of its prompt
+// (docs/adr/2026-10-10-projects-and-lineage.md). Started as the agent spawn names, it has the
 // agent's priority and filler flag, the agent's model and pause limits,
 // or else parent's (docs/adr/2026-10-09-agents-and-placement.md), and
 // those of the agent's tools that parent may call; started as none, it
@@ -76,18 +78,19 @@ func (s *Store) spawnTask(ctx context.Context, daemon protocol.DaemonID, parent,
 	if err := requireTool(parent, parentTools, protocol.ToolSpawnTask); err != nil {
 		return queuedTurn{}, err
 	}
-	var model, priority string
+	var model, priority, project string
 	var repo, ref sql.NullString
 	var acknowledge, cleanup int64
 	var filler bool
 	err = tx.QueryRowContext(ctx, `
-		SELECT model, workspace_repo, workspace_ref, pause_acknowledge_ns, pause_cleanup_ns, priority, filler FROM tasks WHERE id = ?`,
-		string(parent)).Scan(&model, &repo, &ref, &acknowledge, &cleanup, &priority, &filler)
+		SELECT model, workspace_repo, workspace_ref, pause_acknowledge_ns, pause_cleanup_ns, priority, filler, coalesce(project, '') FROM tasks WHERE id = ?`,
+		string(parent)).Scan(&model, &repo, &ref, &acknowledge, &cleanup, &priority, &filler, &project)
 	if err != nil {
 		return queuedTurn{}, fmt.Errorf("read task %q: %w", parent, err)
 	}
+	purpose := oneLine(spawn.Purpose)
 	start := protocol.StartTask{
-		Prompt:      spawn.Prompt,
+		Prompt:      withPurpose(purpose, spawn.Prompt),
 		Model:       model,
 		PauseLimits: protocol.PauseLimits{Acknowledge: time.Duration(acknowledge), Cleanup: time.Duration(cleanup)},
 		Tools:       parentTools,
@@ -129,7 +132,7 @@ func (s *Store) spawnTask(ctx context.Context, daemon protocol.DaemonID, parent,
 	}
 	fx := effects{changed: []protocol.TaskID{parent}}
 	turn, err := insertTask(ctx, tx, newTask{
-		ID: child, Parent: &parent, Daemon: daemon, Placement: placementParent, Agent: spawn.Agent, Requires: requires,
+		ID: child, Parent: &parent, Daemon: daemon, Placement: placementParent, Agent: spawn.Agent, Project: project, Purpose: purpose, Requires: requires,
 		Priority: Priority(priority), Filler: filler, Start: start, Origin: originServer,
 	}, &fx)
 	if err != nil {

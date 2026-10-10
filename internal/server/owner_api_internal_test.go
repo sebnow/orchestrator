@@ -3,6 +3,7 @@ package server
 import (
 	"encoding/json"
 	"net/http"
+	"net/url"
 	"testing"
 	"time"
 
@@ -439,4 +440,24 @@ func TestGivenUnknownTaskWhenDismissedThenNotFound(t *testing.T) {
 	if status != http.StatusNotFound {
 		t.Errorf("status = %d (%s), want 404", status, body)
 	}
+}
+
+func TestGivenOwnersTaskWithAPurposeWhenStartedThroughTheAPIOrTheFormThenThePurposeIsKeptAndTopsItsPrompt(t *testing.T) {
+	srv := startTestServer(t)
+	doRequest(t, http.MethodGet, srv.url+"/v1/daemons/laptop/acks", "")
+
+	viaAPI := postForTurn(t, srv.url+"/v1/tasks", `{"daemon_id":"laptop","purpose":"Ship the fix.","prompt":"Fix it.","pause_limits":{"acknowledge":"1m","cleanup":"5m"}}`, http.StatusCreated)
+	viaForm := queueTaskViaForm(t, srv, "laptop", "Write it up.", url.Values{"purpose": {"Tell the owner\nwhat changed."}})
+	without := queueTaskViaForm(t, srv, "laptop", "Plain.", nil)
+
+	for task, want := range map[protocol.TaskID][2]string{
+		viaAPI.TaskID: {"Ship the fix.", "Purpose: Ship the fix.\n\nFix it."},
+		viaForm:       {"Tell the owner what changed.", "Purpose: Tell the owner what changed.\n\nWrite it up."},
+		without:       {"", "Plain."},
+	} {
+		if detail := readTask(t, srv.store, task); detail.Purpose != want[0] || detail.Start.Prompt != want[1] {
+			t.Errorf("task %s: purpose %q, prompt %q; want %q, %q", task, detail.Purpose, detail.Start.Prompt, want[0], want[1])
+		}
+	}
+	requireContains(t, getPage(t, srv.url+"/"), `<a href="/tasks/`+string(viaAPI.TaskID)+`">Ship the fix.</a>`, `<input name="purpose" placeholder="none" type="text" value="">`)
 }

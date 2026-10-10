@@ -112,7 +112,8 @@ func (g *Gateway) register(task protocol.TaskID, allowed []string, handlers gate
 		mcp.AddTool(server, &mcp.Tool{
 			Name: SpawnTaskTool,
 			Description: "Starts a child task: another agent that works on its own on the prompt you give it, " +
-				"and reports back to you with " + SendMessageTool + ". Returns the child's task id. " +
+				"and reports back to you with " + SendMessageTool + ". Give its purpose, one line saying why it exists and what you expect back. " +
+				"Returns the child's task id. " +
 				"You are not blocked; to wait for the child, end your turn, and its message arrives as your next prompt.",
 		}, func(ctx context.Context, req *mcp.CallToolRequest, in spawnTaskInput) (*mcp.CallToolResult, any, error) {
 			text, err := handlers.spawnTask(ctx, in)

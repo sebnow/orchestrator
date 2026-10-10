@@ -43,7 +43,7 @@ func TestGivenServerReplyWhenForwardingAnAgentRequestThenTheReplyIsReturnedAndAF
 func TestGivenDaemonWithoutAServerWhenAnAgentSpawnsThenItIsToldTheDaemonIsNotConnected(t *testing.T) {
 	d := New(t.TempDir(), newFakeHarness(), nil, nil)
 
-	_, err := d.spawnTask("task-1")(context.Background(), spawnTaskInput{Prompt: "Say PEAR."})
+	_, err := d.spawnTask("task-1")(context.Background(), spawnTaskInput{Purpose: "Check a fruit.", Prompt: "Say PEAR."})
 
 	if !errors.Is(err, errNotConnected) {
 		t.Errorf("err = %v, want errNotConnected", err)
@@ -64,14 +64,21 @@ func TestGivenSpawnedChildWhenTheSpawnerIsToldThenSendMessageIsNamedOnlyIfTheChi
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
 			d := New(t.TempDir(), newFakeHarness(), nil, nil)
-			d.forward = func(context.Context, protocol.TaskID, protocol.AgentRequest) (json.RawMessage, error) {
+			var sent protocol.Spawn
+			d.forward = func(_ context.Context, _ protocol.TaskID, request protocol.AgentRequest) (json.RawMessage, error) {
+				if err := json.Unmarshal(request.Payload, &sent); err != nil {
+					return nil, err
+				}
 				return json.RawMessage(tc.reply), nil
 			}
 
-			text, err := d.spawnTask("task-1")(t.Context(), spawnTaskInput{Prompt: "Say PEAR."})
+			text, err := d.spawnTask("task-1")(t.Context(), spawnTaskInput{Purpose: "Check a fruit.", Prompt: "Say PEAR."})
 
 			if err != nil {
 				t.Fatal(err)
+			}
+			if sent.Purpose != "Check a fruit." || sent.Prompt != "Say PEAR." {
+				t.Errorf("spawn sent = %+v, want the purpose and prompt", sent)
 			}
 			if !strings.HasPrefix(text, "Started child task child-1.") {
 				t.Errorf("text = %q, want it to name the child", text)

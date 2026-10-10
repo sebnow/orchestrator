@@ -63,6 +63,7 @@ func guiTask(summary taskSummary, prompt string) component.Task {
 		ID:             string(summary.ID),
 		Agent:          summary.Agent,
 		Project:        summary.Project,
+		Purpose:        summary.Purpose,
 		Requires:       summary.Requires,
 		State:          string(summary.State),
 		Daemon:         string(summary.DaemonID),
@@ -336,6 +337,7 @@ func (s *Server) postTaskForm(w http.ResponseWriter, r *http.Request) {
 	input := component.NewTask{
 		Agent:       r.PostForm.Get("agent"),
 		Project:     r.PostForm.Get("project"),
+		Purpose:     r.PostForm.Get("purpose"),
 		Requires:    strings.TrimSpace(r.PostForm.Get("requires")),
 		Prompt:      r.PostForm.Get("prompt"),
 		Repo:        strings.TrimSpace(r.PostForm.Get("repo")),
@@ -462,7 +464,7 @@ func (s *Server) startTaskFromForm(ctx context.Context, input component.NewTask)
 		}
 		requires = &parsed
 	}
-	turn, err := s.startTask(ctx, taskRequest{Daemon: daemon, Agent: input.Agent, Project: input.Project, Requires: requires, Priority: priority, Filler: filler, Start: start})
+	turn, err := s.startTask(ctx, taskRequest{Daemon: daemon, Agent: input.Agent, Project: input.Project, Purpose: input.Purpose, Requires: requires, Priority: priority, Filler: filler, Start: start})
 	if errors.Is(err, errInvalidTask) {
 		return "", "The task was not started: " + strings.TrimPrefix(err.Error(), errInvalidTask.Error()+": ") + ".", nil
 	}

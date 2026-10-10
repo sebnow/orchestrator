@@ -757,7 +757,7 @@ func TestLiveGivenParentThatSpawnsAChildWhenTheChildReportsThenTheParentIsResume
 	ctx, cancel := context.WithTimeout(t.Context(), 8*time.Minute)
 	defer cancel()
 	sys := startLiveSystem(t)
-	parent := sys.startTaskViaGUI(t, ctx, "Use the spawn_task tool once to start one child task with exactly this prompt: "+
+	parent := sys.startTaskViaGUI(t, ctx, "Use the spawn_task tool once to start one child task with the purpose \"Check that a child reports.\" and exactly this prompt: "+
 		`"Reply with the word PEAR and send it to your parent." `+
 		"Then end your turn at once, without waiting for the child or checking on it. "+
 		"When the child's message arrives, reply with the word it sent.")
@@ -1232,7 +1232,7 @@ func TestLiveGivenParentAgentThatSpawnsAWorkerThatCannotMessageWhenTheWorkerFini
 		time.Sleep(500 * time.Millisecond)
 	}
 
-	parent := sys.startTaskViaGUI(t, ctx, "Use the spawn_task tool once, with agent \"live-worker\" and exactly this prompt: "+
+	parent := sys.startTaskViaGUI(t, ctx, "Use the spawn_task tool once, with agent \"live-worker\", the purpose \"Check the hand-back.\" and exactly this prompt: "+
 		`"Reply with the single word PLUM." `+
 		"Then end your turn at once, without waiting for the child or checking on it. "+
 		"When the child's report arrives, reply with the word it reported.", "agent", "live-brain")

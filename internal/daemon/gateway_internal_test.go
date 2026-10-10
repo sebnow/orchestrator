@@ -281,7 +281,7 @@ func TestGivenSpawnAndSendCallsWhenTheyArriveThenTheTaskGetsTheArgumentsAndTheAg
 	g := startTestGateway(t)
 	task := unusedTask
 	task.spawnTask = func(_ context.Context, in spawnTaskInput) (string, error) {
-		return "spawned " + in.Prompt + " on " + in.Model, nil
+		return "spawned " + in.Prompt + " on " + in.Model + " for " + in.Purpose, nil
 	}
 	task.sendMessage = func(_ context.Context, in sendMessageInput) (string, error) {
 		return "", errors.New("refused: task " + in.To + " has ended")
@@ -289,7 +289,7 @@ func TestGivenSpawnAndSendCallsWhenTheyArriveThenTheTaskGetsTheArgumentsAndTheAg
 	url, _, _ := g.register("task-1", nil, task)
 	session := mustConnect(t, url)
 
-	spawned, err := session.CallTool(t.Context(), &mcp.CallToolParams{Name: SpawnTaskTool, Arguments: map[string]any{"prompt": "Say PEAR.", "model": "haiku"}})
+	spawned, err := session.CallTool(t.Context(), &mcp.CallToolParams{Name: SpawnTaskTool, Arguments: map[string]any{"purpose": "Check a fruit.", "prompt": "Say PEAR.", "model": "haiku"}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -298,10 +298,51 @@ func TestGivenSpawnAndSendCallsWhenTheyArriveThenTheTaskGetsTheArgumentsAndTheAg
 		t.Fatal(err)
 	}
 
-	if spawned.IsError || resultText(t, spawned) != "spawned Say PEAR. on haiku" {
+	if spawned.IsError || resultText(t, spawned) != "spawned Say PEAR. on haiku for Check a fruit." {
 		t.Errorf("spawn result = %+v", spawned)
 	}
 	if !sent.IsError || resultText(t, sent) != "refused: task parent has ended" {
 		t.Errorf("send result = %+v", sent)
+	}
+}
+
+func TestGivenSpawnTaskWhenListedOrCalledWithoutAPurposeThenItsSchemaRequiresOneAndTheCallIsRefused(t *testing.T) {
+	g := startTestGateway(t)
+	task := unusedTask
+	called := false
+	task.spawnTask = func(context.Context, spawnTaskInput) (string, error) {
+		called = true
+		return "spawned", nil
+	}
+	url, _, _ := g.register("task-1", nil, task)
+	session := mustConnect(t, url)
+
+	tools, err := session.ListTools(t.Context(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var schema struct {
+		Required   []string                   `json:"required"`
+		Properties map[string]json.RawMessage `json:"properties"`
+	}
+	for _, tool := range tools.Tools {
+		if tool.Name == SpawnTaskTool {
+			raw, err := json.Marshal(tool.InputSchema)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := json.Unmarshal(raw, &schema); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	if !slices.Contains(schema.Required, "purpose") || !slices.Contains(schema.Required, "prompt") ||
+		!strings.Contains(string(schema.Properties["purpose"]), "why the child exists") {
+		t.Errorf("spawn_task schema: required %q, purpose %s; want purpose required and described", schema.Required, schema.Properties["purpose"])
+	}
+
+	result, err := session.CallTool(t.Context(), &mcp.CallToolParams{Name: SpawnTaskTool, Arguments: map[string]any{"prompt": "Say PEAR."}})
+	if called || (err == nil && !result.IsError) {
+		t.Errorf("a spawn without a purpose reached the daemon: called %t, result %+v, err %v", called, result, err)
 	}
 }

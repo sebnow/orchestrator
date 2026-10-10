@@ -85,7 +85,7 @@ func (v taskView) task() component.Task {
 func (v taskView) childList() html.Node {
 	rows := make([]html.Node, len(v.children))
 	for idx, child := range v.children {
-		row := component.Child{ID: string(child.ID), Agent: child.Agent, State: string(child.State), Report: child.Report}
+		row := component.Child{ID: string(child.ID), Purpose: child.Purpose, Agent: child.Agent, State: string(child.State), Report: child.Report}
 		if child.Branch != nil {
 			pushed := transcript.BranchPushed(*child.Branch)
 			row.Branch = &pushed

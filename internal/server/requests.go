@@ -48,6 +48,10 @@ func (s *Server) postAgentRequest(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "the child task needs a prompt", http.StatusBadRequest)
 			return
 		}
+		if spawn.Purpose = oneLine(spawn.Purpose); spawn.Purpose == "" {
+			http.Error(w, "the child task needs a purpose: one line saying why it exists and what you expect back from it", http.StatusBadRequest)
+			return
+		}
 		// rand.Text uses only letters and digits, so the id is always valid.
 		var turn queuedTurn
 		turn, err = s.store.spawnTask(r.Context(), daemon, task, protocol.TaskID(rand.Text()), spawn)

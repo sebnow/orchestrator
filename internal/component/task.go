@@ -22,6 +22,8 @@ type Task struct {
 	// ProjectName its name; both empty for none. An empty ProjectName
 	// shows the id.
 	Project, ProjectName string
+	// Purpose says why the task exists; empty for none.
+	Purpose string
 	// Requires are the labels the task's daemon must have.
 	Requires       map[string]string
 	State          string
@@ -118,7 +120,7 @@ var TaskColumns = []string{"State", "Prompt", "Agent", "Priority", "Daemon", "Mo
 func TaskRow(task Task) html.Node {
 	return html.El("tr", nil,
 		cell(queueBadges(task), queueReason(task), dismissedMark(task)),
-		cell(link(taskURL(task.ID), excerpt(task.Prompt)), lineage(task.Parent)),
+		cell(link(taskURL(task.ID), title(task.Purpose, task.Prompt)), lineage(task.Parent)),
 		cell(agentLink(task.Agent)),
 		cell(html.Text(priorityLabel(task))),
 		cell(html.Text(task.Daemon)),
@@ -127,6 +129,15 @@ func TaskRow(task Task) html.Node {
 		cell(timestamp(task.LastActivityAt)),
 		cell(branchCell(task.Branch)),
 	)
+}
+
+// title names a task in a list: its purpose when it has one, which says
+// why it exists, or else the start of its prompt.
+func title(purpose, prompt string) string {
+	if purpose != "" {
+		return excerpt(purpose)
+	}
+	return excerpt(prompt)
 }
 
 // agentLink links the agent name, or is empty for none.
@@ -154,15 +165,16 @@ func lineage(parent string) html.Node {
 }
 
 // Child is a task another spawned, as its parent's page lists it.
-// Report is the latest message it sent its parent; empty for none.
-// Branch is what the daemon last pushed of its branch; nil for none.
+// Purpose is why its parent spawned it. Report is the latest message it
+// sent its parent; empty for none. Branch is what the daemon last pushed
+// of its branch; nil for none.
 type Child struct {
-	ID, Agent, State, Report string
-	Branch                   *transcript.BranchPushed
+	ID, Purpose, Agent, State, Report string
+	Branch                            *transcript.BranchPushed
 }
 
 // ChildColumns head a Table of ChildRows.
-var ChildColumns = []string{"Task", "Agent", "State", "Branch", "Latest report"}
+var ChildColumns = []string{"Task", "Purpose", "Agent", "State", "Branch", "Latest report"}
 
 // ChildRow is a child in its parent's list, linking to its page.
 func ChildRow(child Child) html.Node {
@@ -170,8 +182,13 @@ func ChildRow(child Child) html.Node {
 	if child.Report != "" {
 		report = html.Text(excerpt(child.Report))
 	}
+	purpose := html.Node(html.El("span", attrs("class", "empty"), html.Text("none given")))
+	if child.Purpose != "" {
+		purpose = html.Text(child.Purpose)
+	}
 	return html.El("tr", nil,
 		cell(link(taskURL(child.ID), child.ID)),
+		cell(purpose),
 		cell(agentLink(child.Agent)),
 		cell(StateBadge(child.State)),
 		cell(childBranch(child.Branch)),
@@ -223,7 +240,10 @@ func TaskHeader(task Task, controls html.Node) html.Node {
 	term := func(name string, value html.Node) html.Node {
 		return html.Fragment(html.El("dt", nil, html.Text(name)), html.El("dd", nil, value))
 	}
-	var parent, children, queue, dismissed, agent, requires, project html.Node
+	var parent, children, queue, dismissed, agent, requires, project, purpose html.Node
+	if task.Purpose != "" {
+		purpose = term("Purpose", html.Text(task.Purpose))
+	}
 	if task.Project != "" {
 		project = term("Project", projectLink(task.Project, task.ProjectName))
 	}
@@ -259,6 +279,7 @@ func TaskHeader(task Task, controls html.Node) html.Node {
 	return html.El("header", attrs("class", "task-header"),
 		html.El("h1", nil, link(taskURL(task.ID), excerpt(task.Prompt))),
 		html.El("dl", nil,
+			purpose,
 			term("State", queueBadges(task)),
 			queue,
 			project,
@@ -415,6 +436,8 @@ func PromptSubmit(closed string) html.Node {
 // unticked, takes the agent's value, or the default.
 type NewTask struct {
 	Agent, Project string
+	// Purpose says why the task exists; empty for none.
+	Purpose string
 	// Requires are key=value labels the task's daemon must have.
 	Requires                         string
 	Prompt, Repo, Ref, Model, Daemon string
@@ -504,6 +527,7 @@ func taskFields(input NewTask, choices TaskChoices, noAgent string, workspace ht
 	}
 	return []html.Node{
 		Field(FieldSpec{Kind: FieldSelect, Name: "agent", Label: "Agent", Value: input.Agent, Options: agentOptions}),
+		Field(FieldSpec{Name: "purpose", Label: "Purpose, one line on why the task exists; put at the top of its prompt", Value: input.Purpose, Placeholder: "none"}),
 		Field(FieldSpec{Kind: FieldTextarea, Name: "prompt", Label: "Prompt", Value: input.Prompt, Required: true}),
 		workspace,
 		Field(FieldSpec{Name: "model", Label: "Model", Value: input.Model, Placeholder: "the agent's, or " + choices.DefaultModel}),
