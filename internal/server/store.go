@@ -11,7 +11,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io/fs"
 	"net/url"
+	"os"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -427,8 +429,46 @@ func (s *Store) publish(fx *effects) {
 	}
 }
 
+// RestoredMarker is the file beside the database at path that says the
+// database was restored from a backup and has not started an epoch of
+// its own yet (docs/adr/2026-10-10-server-loss.md).
+func RestoredMarker(path string) string {
+	return path + "-restored"
+}
+
+// MarkRestored writes RestoredMarker(path), naming source, the backup,
+// and makes it durable, its directory entry included. Whoever restores
+// the database at path calls it before the restored database appears
+// there, so that OpenStore starts a new epoch even if the process ends
+// right after.
+func MarkRestored(path, source string) error {
+	marker := RestoredMarker(path)
+	f, err := os.OpenFile(marker, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o600)
+	if err != nil {
+		return fmt.Errorf("mark the database restored: %w", err)
+	}
+	_, err = f.WriteString(source + "\n")
+	if err = errors.Join(err, f.Sync(), f.Close()); err != nil {
+		return fmt.Errorf("mark the database restored: %w", err)
+	}
+	dir, err := os.Open(filepath.Dir(marker))
+	if err != nil {
+		return fmt.Errorf("mark the database restored: %w", err)
+	}
+	defer dir.Close()
+	if err := dir.Sync(); err != nil {
+		return fmt.Errorf("mark the database restored: %w", err)
+	}
+	return nil
+}
+
 // OpenStore opens the database at path, creating it and its schema if
-// needed.
+// needed. When RestoredMarker(path) exists, the database was restored,
+// so OpenStore starts a new epoch, a child of the backup's latest, before
+// any command can be issued, and then removes the marker. A crash
+// between the two leaves the marker, and the next open starts one more
+// epoch, under which nothing has been issued; no command is issued
+// under the backup's epoch.
 func OpenStore(ctx context.Context, path string) (*Store, error) {
 	abs, err := filepath.Abs(path)
 	if err != nil {
@@ -450,7 +490,29 @@ func OpenStore(ctx context.Context, path string) (*Store, error) {
 		db.Close()
 		return nil, err
 	}
+	if err := startEpochIfRestored(ctx, db, RestoredMarker(abs)); err != nil {
+		db.Close()
+		return nil, err
+	}
 	return &Store{db: db, now: time.Now}, nil
+}
+
+func startEpochIfRestored(ctx context.Context, db *sql.DB, marker string) error {
+	if _, err := os.Lstat(marker); errors.Is(err, fs.ErrNotExist) {
+		return nil
+	} else if err != nil {
+		return fmt.Errorf("open database: %w", err)
+	}
+	_, err := db.ExecContext(ctx, `
+		INSERT INTO epochs (id, parent, created_at)
+		SELECT `+newEpochID+`, id, ? FROM epochs ORDER BY ordinal DESC LIMIT 1`, formatTime(time.Now().UTC()))
+	if err != nil {
+		return fmt.Errorf("start the restored database's epoch: %w", err)
+	}
+	if err := os.Remove(marker); err != nil {
+		return fmt.Errorf("remove the restore marker after starting the epoch: %w", err)
+	}
+	return nil
 }
 
 func (s *Store) Close() error {

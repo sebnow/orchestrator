@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"database/sql"
 	"os"
 	"path/filepath"
 	"slices"
@@ -71,8 +72,8 @@ func TestGivenBackupFileWhenRestoredToANewPathThenTheDatabaseIsTheBackupsAndOwne
 	if status != 0 || !strings.Contains(stdout, "schema version") {
 		t.Fatalf("status %d, stdout %q, stderr %q", status, stdout, stderr)
 	}
-	if names := dirNames(t, filepath.Dir(dbPath)); !slices.Equal(names, []string{"server.db"}) {
-		t.Errorf("directory holds %v, want only server.db", names)
+	if names := dirNames(t, filepath.Dir(dbPath)); !slices.Equal(names, []string{"server.db", "server.db-restored"}) {
+		t.Errorf("directory holds %v, want only server.db and its restore marker, kept until the server opens it", names)
 	}
 	info, err := os.Stat(dbPath)
 	if err != nil {
@@ -116,8 +117,8 @@ func TestGivenExistingDatabaseWhenRestoredThenItIsReplacedOnlyWithForceAndItsWri
 	if status, _, stderr := runCommand("restore", "-db", dbPath, "-from", backup, "-force"); status != 0 {
 		t.Fatalf("with -force: status %d, stderr %q", status, stderr)
 	}
-	if names := dirNames(t, filepath.Dir(dbPath)); !slices.Equal(names, []string{"server.db"}) {
-		t.Errorf("directory holds %v, want only server.db", names)
+	if names := dirNames(t, filepath.Dir(dbPath)); !slices.Equal(names, []string{"server.db", "server.db-restored"}) {
+		t.Errorf("directory holds %v, want only server.db and its restore marker, kept until the server opens it", names)
 	}
 	if !hasOwnerToken(t, dbPath) {
 		t.Errorf("the restored database lacks the backup's owner token")
@@ -200,5 +201,51 @@ func TestGivenNoSuchFileAndNoBucketWhenRestoredThenItIsRefused(t *testing.T) {
 	status, _, stderr := runCommand("restore", "-db", filepath.Join(t.TempDir(), "server.db"), "-from", "orchestrator/server-2026-10-10T14:30:05Z.db")
 	if status != 1 || !strings.Contains(stderr, "no bucket") {
 		t.Errorf("status %d, stderr %q; want 1 saying no bucket is given", status, stderr)
+	}
+}
+
+// epochs returns the ids of the epochs of the database at path, oldest
+// first, and the parent each records.
+func epochs(t *testing.T, path string) (ids, parents []string) {
+	t.Helper()
+	db, err := sql.Open("sqlite", "file:"+path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	rows, err := db.QueryContext(t.Context(), `SELECT id, coalesce(parent, '') FROM epochs ORDER BY ordinal`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var id, parent string
+		if err := rows.Scan(&id, &parent); err != nil {
+			t.Fatal(err)
+		}
+		ids, parents = append(ids, id), append(parents, parent)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatal(err)
+	}
+	return ids, parents
+}
+
+func TestGivenARestoredDatabaseWhenTheServerOpensItThenItStartsAnEpochWhoseParentIsTheBackups(t *testing.T) {
+	backup := backupWithOwnerToken(t)
+	backupEpochs, _ := epochs(t, backup)
+	dbPath := filepath.Join(t.TempDir(), "server.db")
+	if status, stdout, stderr := runCommand("restore", "-db", dbPath, "-from", backup); status != 0 {
+		t.Fatalf("status %d, stdout %q, stderr %q", status, stdout, stderr)
+	}
+
+	hasOwnerToken(t, dbPath)
+
+	ids, parents := epochs(t, dbPath)
+	if len(ids) != 2 || ids[0] != backupEpochs[0] || parents[1] != backupEpochs[0] {
+		t.Errorf("epochs %q with parents %q, want the backup's %q and a child of it", ids, parents, backupEpochs)
+	}
+	if names := dirNames(t, filepath.Dir(dbPath)); slices.Contains(names, "server.db-restored") {
+		t.Errorf("directory holds %v, want the marker removed", names)
 	}
 }

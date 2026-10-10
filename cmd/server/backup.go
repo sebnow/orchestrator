@@ -130,6 +130,12 @@ func restore(args []string, stdout, stderr io.Writer) int {
 			return fail(err)
 		}
 	}
+	// The restored database starts an epoch of its own when the server
+	// opens it, so that it issues no command under the backup's
+	// (docs/adr/2026-10-10-server-loss.md).
+	if err := server.MarkRestored(*dbPath, *from); err != nil {
+		return fail(err)
+	}
 	if err := os.Rename(tempPath, *dbPath); err != nil {
 		return fail(err)
 	}

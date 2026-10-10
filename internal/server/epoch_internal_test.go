@@ -2,8 +2,12 @@ package server
 
 import (
 	"database/sql"
+	"errors"
+	"io/fs"
 	"net/url"
+	"os"
 	"path/filepath"
+	"slices"
 	"testing"
 
 	"github.com/sebnow/orchestrator/internal/protocol"
@@ -125,5 +129,78 @@ func TestGivenCommandsBeforeVersion28WhenMigratedThenTheyBelongToTheFirstEpochAn
 	defer rows.Close()
 	if rows.Next() {
 		t.Error("the migrated database has foreign key violations")
+	}
+}
+
+// markRestored writes the marker a restore leaves beside the database at
+// path.
+func markRestored(t *testing.T, path string) {
+	t.Helper()
+	if err := MarkRestored(path, "orchestrator/server-2026-10-10T14:30:05Z.db"); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func reopen(t *testing.T, path string) *Store {
+	t.Helper()
+	store, err := OpenStore(t.Context(), path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { store.Close() })
+	return store
+}
+
+func TestGivenARestoredDatabaseWhenOpenedThenItStartsAnEpochOfItsOwnAndIssuesCommandsUnderIt(t *testing.T) {
+	store, path := openTestStore(t)
+	seedTask(t, store, "laptop", "task-1")
+	backupEpochs, _ := lineage(t, store)
+	store.Close()
+	markRestored(t, path)
+
+	restored := reopen(t, path)
+
+	ids, parents := lineage(t, restored)
+	if len(ids) != 2 || ids[0] != backupEpochs[0] || parents[1] != backupEpochs[0] {
+		t.Fatalf("epochs %q with parents %q, want the backup's and a child of it", ids, parents)
+	}
+	if _, err := os.Lstat(RestoredMarker(path)); !errors.Is(err, fs.ErrNotExist) {
+		t.Errorf("the marker is still there: %v", err)
+	}
+	login, err := restored.issueDaemonCommand(t.Context(), "laptop", protocol.CommandLogin, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if epoch := commandEpoch(t, restored, login.ID); epoch != ids[1] {
+		t.Errorf("the command after the restore belongs to epoch %q, want the new %q", epoch, ids[1])
+	}
+}
+
+// A crash after the new epoch is committed and before the marker is
+// removed leaves the marker; the next open starts one more epoch.
+func TestGivenTheMarkerLeftAfterTheEpochStartedWhenOpenedAgainThenAnotherEpochFollowsIt(t *testing.T) {
+	store, path := openTestStore(t)
+	store.Close()
+	markRestored(t, path)
+	reopen(t, path).Close()
+	markRestored(t, path)
+
+	again := reopen(t, path)
+
+	ids, parents := lineage(t, again)
+	if len(ids) != 3 || parents[1] != ids[0] || parents[2] != ids[1] {
+		t.Errorf("epochs %q with parents %q, want a chain of three", ids, parents)
+	}
+}
+
+func TestGivenNoMarkerWhenOpenedAgainThenTheEpochIsKept(t *testing.T) {
+	store, path := openTestStore(t)
+	before, _ := lineage(t, store)
+	store.Close()
+
+	after, _ := lineage(t, reopen(t, path))
+
+	if !slices.Equal(before, after) {
+		t.Errorf("epochs went from %q to %q, want them kept", before, after)
 	}
 }

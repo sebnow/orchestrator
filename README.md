@@ -852,6 +852,10 @@ To restore a backup:
    does not replace an existing database. With `-force`, it also
    deletes the old database's `-wal`, `-shm` and `-journal` files,
    which SQLite would otherwise apply to the backup.
+   Before it replaces the database it writes `FILE-restored` beside it,
+   which the server removes once the restored database has started an
+   epoch of its own (see [Command ids and
+   epochs](#command-ids-and-epochs)).
 3. Start the server. A backup made by an older server is migrated when
    the server starts, as any older database is.
 
