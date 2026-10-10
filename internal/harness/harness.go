@@ -148,6 +148,30 @@ type Decision struct {
 type Login interface {
 	// LoginStatus reads whether the harness, run as user, is logged in.
 	LoginStatus(ctx context.Context, user runas.User) (LoginStatus, error)
+	// StartLogin starts the harness's login as user and returns once
+	// the harness has given the URL to authorise it at. The login ends
+	// when ctx does.
+	StartLogin(ctx context.Context, user runas.User) (LoginSession, error)
+}
+
+// LoginSession is a harness's login under way: it waits for the code
+// that the page its URL leads to shows once the owner authorises it.
+type LoginSession interface {
+	// URL is where the owner authorises the login.
+	URL() string
+	// Submit gives the login code and waits for the outcome: nil once
+	// the harness reports itself logged in, and otherwise why not.
+	// The login has ended either way.
+	Submit(code string) error
+	// Done is closed once the login has ended, with or without a code:
+	// the owner may complete it some other way, such as in a browser on
+	// the daemon's machine.
+	Done() <-chan struct{}
+	// Err is the outcome once Done is closed: nil when the harness
+	// logged in.
+	Err() error
+	// Close ends the login if it has not ended, and waits for it.
+	Close()
 }
 
 // LoginStatus is what a harness reports of its login.

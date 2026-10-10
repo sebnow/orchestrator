@@ -276,6 +276,8 @@ const (
 	// RegionQueued lists a task's prompts that have not reached its
 	// harness yet.
 	RegionQueued Region = "task-queued"
+	// RegionDaemonLogin is a daemon page's login section.
+	RegionDaemonLogin Region = "daemon-login"
 )
 
 // RegionOf is region with children as its content.

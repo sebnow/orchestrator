@@ -135,6 +135,11 @@ func (s *service) receiveCommand(rawID, data string) error {
 		return nil
 	}
 	command.ID = id
+	if command.Kind.IsDaemons() {
+		s.applyDaemonCommand(command)
+		s.recordApplied(id)
+		return nil
+	}
 	if command.Kind == protocol.CommandStartTask {
 		return s.accept(command)
 	}

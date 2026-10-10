@@ -34,6 +34,9 @@ func (s *Server) routeGUI(mux *http.ServeMux) {
 	s.routeProjectsGUI(mux)
 	mux.HandleFunc("GET /daemons/{daemon}", s.getDaemonPage)
 	mux.HandleFunc("POST /daemons/{daemon}/labels", s.postLabelsForm)
+	mux.HandleFunc("POST /daemons/{daemon}/login", s.postLoginForm)
+	mux.HandleFunc("POST /daemons/{daemon}/login/code", s.postLoginCodeForm)
+	mux.HandleFunc("GET /daemons/{daemon}/stream", s.streamDaemon)
 }
 
 // fromHTMX reports whether htmx made the request, in which case the

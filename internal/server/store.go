@@ -194,6 +194,33 @@ var migrations = [...]string{
 	// daemon's capacity is now its slots fact, capped by the owner's
 	// slots label (docs/adr/2026-10-10-agent-models-and-capacity.md).
 	`ALTER TABLE daemons DROP COLUMN slots;`,
+	// Version 22 lets a command be the daemon's rather than a task's,
+	// with task_id NULL: the login commands
+	// (docs/adr/2026-10-10-harness-login.md). SQLite cannot drop a NOT
+	// NULL constraint, so the table is rebuilt. The rows that reference
+	// commands are checked once the new table has its name, and its
+	// AUTOINCREMENT sequence carries on from the old one's, so that no id
+	// a daemon has applied is issued again.
+	`PRAGMA defer_foreign_keys = ON;
+	CREATE TABLE commands_new (
+		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		daemon_id TEXT NOT NULL REFERENCES daemons (id),
+		task_id TEXT REFERENCES tasks (id),
+		kind TEXT NOT NULL,
+		time TEXT NOT NULL,
+		payload TEXT,
+		by_policy INTEGER NOT NULL DEFAULT 0 CHECK (by_policy IN (0, 1)),
+		CHECK ((task_id IS NULL) = (kind IN ('login', 'login_code')))
+	) STRICT;
+	INSERT INTO commands_new (id, daemon_id, task_id, kind, time, payload, by_policy)
+		SELECT id, daemon_id, task_id, kind, time, payload, by_policy FROM commands;
+	INSERT INTO sqlite_sequence (name, seq) SELECT 'commands_new', 0
+		WHERE NOT EXISTS (SELECT 1 FROM sqlite_sequence WHERE name = 'commands_new');
+	UPDATE sqlite_sequence SET seq = max(seq, coalesce((SELECT seq FROM sqlite_sequence WHERE name = 'commands'), 0))
+		WHERE name = 'commands_new';
+	DROP TABLE commands;
+	ALTER TABLE commands_new RENAME TO commands;
+	CREATE INDEX commands_by_daemon ON commands (daemon_id, id);`,
 }
 
 // schemaVersion is the version this server migrates databases to. A
@@ -748,7 +775,8 @@ func (s *Store) commandsAfter(ctx context.Context, daemon protocol.DaemonID, aft
 	var commands []protocol.Command
 	for rows.Next() {
 		var id int64
-		var task, kind, issued string
+		var kind, issued string
+		var task sql.NullString
 		var payload []byte
 		if err := rows.Scan(&id, &task, &kind, &issued, &payload); err != nil {
 			return nil, fmt.Errorf("read commands: %w", err)
@@ -758,7 +786,7 @@ func (s *Store) commandsAfter(ctx context.Context, daemon protocol.DaemonID, aft
 			return nil, fmt.Errorf("read command %d: %w", id, err)
 		}
 		commands = append(commands, protocol.Command{
-			ID: uint64(id), DaemonID: daemon, TaskID: protocol.TaskID(task), Kind: protocol.CommandKind(kind), Time: at, Payload: payload,
+			ID: uint64(id), DaemonID: daemon, TaskID: protocol.TaskID(task.String), Kind: protocol.CommandKind(kind), Time: at, Payload: payload,
 		})
 	}
 	if err := rows.Err(); err != nil {

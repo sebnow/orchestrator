@@ -359,8 +359,8 @@ func TestGivenVersionOneDatabaseWhenOpeningStoreThenItIsMigratedAndItsTasksKeepP
 	if err := store.db.QueryRowContext(t.Context(), `SELECT version FROM schema_version`).Scan(&version); err != nil {
 		t.Fatal(err)
 	}
-	if version != schemaVersion || schemaVersion != 21 {
-		t.Errorf("schema version = %d (server knows %d), want 21", version, schemaVersion)
+	if version != schemaVersion || schemaVersion != 22 {
+		t.Errorf("schema version = %d (server knows %d), want 22", version, schemaVersion)
 	}
 	if old := readTask(t, store, "old"); old.Project != "" || old.Purpose != "" {
 		t.Errorf("migrated task project %q, purpose %q; want none", old.Project, old.Purpose)
@@ -546,5 +546,62 @@ func TestGivenTurnCutShortWhenResumingStartsANewSessionThenItsCostAddsToTheEarli
 				t.Errorf("cost = %v, want %v", p.CostUSD, tc.want)
 			}
 		})
+	}
+}
+
+func TestGivenCommandsBeforeVersion22WhenMigratedThenTheyStayTheirIdsCarryOnAndADaemonsCommandHasNoTask(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "server.db")
+	createVersionOneDatabase(t, path)
+	db, err := sql.Open("sqlite", (&url.URL{Scheme: "file", Path: path, RawQuery: "_pragma=foreign_keys(1)"}).String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Command 5 was issued and is gone, so no id up to 5 may be issued
+	// again.
+	for _, statement := range []string{
+		`INSERT INTO commands (id, daemon_id, task_id, kind, time) VALUES (1, 'laptop', 'old', 'pause', '2026-10-07T10:00:02Z')`,
+		`INSERT INTO commands (id, daemon_id, task_id, kind, time) VALUES (5, 'laptop', 'old', 'resume', '2026-10-07T10:00:03Z')`,
+		`DELETE FROM commands WHERE id = 5`,
+	} {
+		if _, err := db.ExecContext(t.Context(), statement); err != nil {
+			t.Fatalf("%s: %v", statement, err)
+		}
+	}
+	db.Close()
+
+	store, err := OpenStore(t.Context(), path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+
+	kept, err := store.commandsAfter(t.Context(), "laptop", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(kept) != 1 || kept[0].ID != 1 || kept[0].TaskID != "old" || kept[0].Kind != protocol.CommandPause {
+		t.Errorf("commands = %+v, want pause 1 for old", kept)
+	}
+	login, err := store.issueDaemonCommand(t.Context(), "laptop", protocol.CommandLogin, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if login.ID != 6 {
+		t.Errorf("the next command's id = %d, want 6", login.ID)
+	}
+	all, err := store.commandsAfter(t.Context(), "laptop", 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(all) != 1 || all[0].TaskID != "" || all[0].Kind != protocol.CommandLogin {
+		t.Errorf("commands after 1 = %+v, want the login, with no task", all)
+	}
+	rows, err := store.db.QueryContext(t.Context(), `PRAGMA foreign_key_check`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	if rows.Next() {
+		t.Error("the migrated database has foreign key violations")
 	}
 }

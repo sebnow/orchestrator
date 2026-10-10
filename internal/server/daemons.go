@@ -74,6 +74,7 @@ func (s *Server) putFacts(w http.ResponseWriter, r *http.Request) {
 		s.internalError(w, err)
 		return
 	}
+	s.daemonChanged(daemon)
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -105,12 +106,16 @@ func (s *Server) getDaemonPage(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	s.writeDaemonPage(w, http.StatusOK, daemon, daemon.Labels.String(), "")
+	s.writeDaemonPage(w, http.StatusOK, daemon, daemon.Labels.String(), "", "")
 }
 
-func (s *Server) writeDaemonPage(w http.ResponseWriter, status int, daemon daemonSummary, labels, problem string) {
+// writeDaemonPage writes the daemon page, with labels in the labels
+// form, and the problems, when set, saying why the owner's last labels
+// or login request was refused.
+func (s *Server) writeDaemonPage(w http.ResponseWriter, status int, daemon daemonSummary, labels, problem, loginProblem string) {
 	s.writeHTML(w, status, component.Page("Daemon "+string(daemon.ID),
 		component.Section("Daemon "+string(daemon.ID), component.DaemonLabels(string(daemon.ID), daemon.Facts, daemon.Labels, Merge(daemon.Facts, daemon.Labels))),
+		component.DaemonLoginSection(s.daemonLogin(daemon, loginProblem)),
 		component.Section("Labels", component.LabelsForm(string(daemon.ID), labels, problem)),
 		component.Section("Push key", component.DaemonSSHKey(sshKeyLine(daemon))),
 	))
@@ -145,7 +150,7 @@ func (s *Server) postLabelsForm(w http.ResponseWriter, r *http.Request) {
 		err = validateSlotsLabel(labels)
 	}
 	if err != nil {
-		s.writeDaemonPage(w, http.StatusUnprocessableEntity, daemon, text, "The labels were not saved: "+strings.TrimPrefix(err.Error(), errInvalidLabels.Error()+": ")+".")
+		s.writeDaemonPage(w, http.StatusUnprocessableEntity, daemon, text, "The labels were not saved: "+strings.TrimPrefix(err.Error(), errInvalidLabels.Error()+": ")+".", "")
 		return
 	}
 	err = s.store.setLabels(r.Context(), daemon.ID, labels)
@@ -191,6 +196,9 @@ type daemonView struct {
 	LostSince        *time.Time        `json:"lost_since,omitempty"`
 	Slots            int               `json:"slots"`
 	Running          int               `json:"running"`
+	// Login is the daemon's latest login since the server started; nil
+	// for none.
+	Login *loginView `json:"login,omitempty"`
 }
 
 // view is daemon as the owner API reports it, connected or not.
@@ -199,6 +207,9 @@ func (s *Server) view(daemon daemonSummary, connected bool) daemonView {
 		ID: daemon.ID, Labels: daemon.Labels, Facts: daemon.Facts, SSHPublicKey: sshKeyLine(daemon),
 		SSHPublicKeyBlob: daemon.Facts[protocol.FactSSHPublicKey], LastSeen: daemon.LastSeen, Connected: connected,
 		Lost: daemon.LostAt != nil, LostSince: daemon.LostAt, Slots: s.sched.policy.capacity(daemon.Facts, daemon.Labels), Running: daemon.InUse,
+	}
+	if login, ok := s.loginOf(daemon.ID); ok {
+		v.Login = &login
 	}
 	return v
 }

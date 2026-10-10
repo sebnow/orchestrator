@@ -552,3 +552,37 @@ func TestGivenTaskPageWhenTheTaskSpawnsAChildThenItsTreeShowsTheChildsPurposeWit
 	page.WaitTrue(hasText("#task-tree ul.tree > li > ul > li > a", "BROWSER-TREE-1"))
 	requireNotReloaded(t, page)
 }
+
+func TestGivenDaemonPageWhenTheOwnerLogsTheDaemonInThenTheLoginSectionFollowsWithoutAReload(t *testing.T) {
+	srv, requests := startBrowserServer(t)
+	doRequest(t, http.MethodPut, srv.url+"/v1/daemons/vps/facts", `{"login":"no","login_method":"none"}`)
+	commands := openCommandStream(t, srv, "vps", "")
+	waitConnected(t, srv, "vps", true)
+	page := openPage(t)
+	page.Navigate(srv.url + "/daemons/vps")
+	markLoaded(page)
+	page.WaitTrue(`document.querySelector('[sse-connect]')?.['htmx-internal-data']?.sseEventSource?.readyState === 1`)
+	page.WaitTrue(hasText("#daemon-login", "login needed"))
+
+	clickSettled(page, `#daemon-login form[action="/daemons/vps/login"] button`)
+	login := receiveCommandOf(t, commands, protocol.CommandLogin)
+	page.WaitTrue(hasText("#daemon-login", "Waiting for the daemon to start the login."))
+
+	postLoginEventTo(t, srv, "vps", protocol.LoginEvent{Kind: protocol.KindLoginStarted, Login: login.ID, URL: testLoginURL})
+	page.WaitTrue("document.querySelector('#daemon-login a.login-url')?.href === " + js(testLoginURL))
+	page.Type(`#daemon-login input[name="code"]`, "code#STATE")
+	clickSettled(page, `#daemon-login form[action="/daemons/vps/login/code"] button`)
+	code := receiveCommandOf(t, commands, protocol.CommandLoginCode)
+	if string(code.Payload) != `{"login":`+strconv.FormatUint(login.ID, 10)+`,"code":"code#STATE"}` {
+		t.Errorf("code = %s", code.Payload)
+	}
+	page.WaitTrue(hasText("#daemon-login", "Code sent"))
+
+	doRequest(t, http.MethodPut, srv.url+"/v1/daemons/vps/facts", `{"login":"yes","login_method":"claude.ai","account":"owner@example.com/org-1"}`)
+	postLoginEventTo(t, srv, "vps", protocol.LoginEvent{Kind: protocol.KindLoginFinished, Login: login.ID, OK: true})
+	page.WaitTrue(hasText("#daemon-login", "The login succeeded.") + " && " + hasText("#daemon-login", "Logged in, by claude.ai as owner@example.com/org-1."))
+
+	requireNotReloaded(t, page)
+	requireHTMXPosts(t, requests, "/daemons/vps/login", 1)
+	requireHTMXPosts(t, requests, "/daemons/vps/login/code", 1)
+}

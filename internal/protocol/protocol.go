@@ -82,7 +82,29 @@ const (
 	KindPromptHeld Kind = "prompt_held"
 	// KindPromptReleased: PromptReleased.
 	KindPromptReleased Kind = "prompt_released"
+	// KindLoginStarted and KindLoginFinished are a LoginEvent's.
+	KindLoginStarted  Kind = "login_started"
+	KindLoginFinished Kind = "login_finished"
 )
+
+// LoginEvent reports how a login that a CommandLogin started goes
+// (docs/adr/2026-10-10-harness-login.md). It is the daemon's rather than
+// a task's, so it has no seq and is not journaled: the daemon POSTs it
+// to /v1/daemons/{daemon}/login-events, retrying a while when that
+// fails. A login lost with it is started again by the owner.
+//
+// Login is the id of the CommandLogin. A KindLoginStarted carries URL,
+// where the owner authorises the login. A KindLoginFinished ends the
+// login: OK when the harness logged in, and otherwise Error says why.
+// The daemon reports its facts, the login read afresh, before it.
+type LoginEvent struct {
+	Kind  Kind      `json:"kind"`
+	Login uint64    `json:"login"`
+	Time  time.Time `json:"time"`
+	URL   string    `json:"url,omitempty"`
+	OK    bool      `json:"ok,omitempty"`
+	Error string    `json:"error,omitempty"`
+}
 
 // PromptHeld reports that the daemon holds the prompt command Prompt
 // until the running turn ends, rather than send it to the harness, which

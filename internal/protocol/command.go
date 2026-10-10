@@ -33,15 +33,25 @@ const (
 	// what it keeps of the task, its record, journal and workspace. No
 	// payload.
 	CommandDiscard CommandKind = "discard"
+	// CommandLogin asks the daemon to log its harness in
+	// (docs/adr/2026-10-10-harness-login.md). It is the daemon's, not a
+	// task's: its TaskID is empty. The daemon starts the harness's
+	// login, ending one it runs already, and reports LoginStarted with
+	// the URL to authorise at, then LoginFinished. No payload.
+	CommandLogin CommandKind = "login"
+	// CommandLoginCode: LoginCode, the daemon's, as CommandLogin.
+	CommandLoginCode CommandKind = "login_code"
 )
 
 // Command is one entry in a daemon's command log. ID increases with every
 // command the server issues and stays the same when the command is sent
-// again, so the daemon can ignore an ID it has already applied.
+// again, so the daemon can ignore an ID it has already applied. TaskID
+// is empty for a command to the daemon itself, of the kinds IsDaemons
+// names.
 type Command struct {
 	ID       uint64          `json:"id"`
 	DaemonID DaemonID        `json:"daemon_id"`
-	TaskID   TaskID          `json:"task_id"`
+	TaskID   TaskID          `json:"task_id,omitempty"`
 	Kind     CommandKind     `json:"kind"`
 	Time     time.Time       `json:"time"`
 	Payload  json.RawMessage `json:"payload,omitempty"`
@@ -192,4 +202,19 @@ type AnswerPermission struct {
 	RequestID string `json:"request_id"`
 	Allow     bool   `json:"allow"`
 	Message   string `json:"message,omitempty"`
+}
+
+// IsDaemons reports whether commands of kind are to the daemon itself
+// rather than to one of its tasks.
+func (kind CommandKind) IsDaemons() bool {
+	return kind == CommandLogin || kind == CommandLoginCode
+}
+
+// LoginCode is the code the owner copied from the page the
+// authorisation URL led to, for the login that the CommandLogin with id
+// Login started. The daemon gives it to the harness's login, or reports
+// LoginFinished with an error when that login no longer waits for one.
+type LoginCode struct {
+	Login uint64 `json:"login"`
+	Code  string `json:"code"`
 }

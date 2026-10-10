@@ -282,8 +282,42 @@ func unknownRecord(kind string, payload json.RawMessage) transcript.Unknown {
 // watchers signals the readers of a task's transcript that it may have
 // changed.
 type watchers struct {
-	mu     sync.Mutex
-	byTask map[protocol.TaskID]map[chan struct{}]struct{}
+	mu       sync.Mutex
+	byTask   map[protocol.TaskID]map[chan struct{}]struct{}
+	byDaemon map[protocol.DaemonID]map[chan struct{}]struct{}
+}
+
+// WatchDaemon returns a channel that receives a signal whenever
+// daemon's login, facts or connection change. Signals coalesce, as
+// WatchTask's do. stop ends the watch.
+func (s *Server) WatchDaemon(daemon protocol.DaemonID) (changed <-chan struct{}, stop func()) {
+	signal := make(chan struct{}, 1)
+	s.watchers.mu.Lock()
+	defer s.watchers.mu.Unlock()
+	if s.watchers.byDaemon[daemon] == nil {
+		s.watchers.byDaemon[daemon] = make(map[chan struct{}]struct{})
+	}
+	s.watchers.byDaemon[daemon][signal] = struct{}{}
+	return signal, func() {
+		s.watchers.mu.Lock()
+		defer s.watchers.mu.Unlock()
+		delete(s.watchers.byDaemon[daemon], signal)
+		if len(s.watchers.byDaemon[daemon]) == 0 {
+			delete(s.watchers.byDaemon, daemon)
+		}
+	}
+}
+
+// daemonChanged signals every watcher of daemon.
+func (s *Server) daemonChanged(daemon protocol.DaemonID) {
+	s.watchers.mu.Lock()
+	defer s.watchers.mu.Unlock()
+	for signal := range s.watchers.byDaemon[daemon] {
+		select {
+		case signal <- struct{}{}:
+		default:
+		}
+	}
 }
 
 // WatchTask returns a channel that receives a signal whenever an event of

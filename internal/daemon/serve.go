@@ -73,6 +73,9 @@ type Config struct {
 	// loginInterval is how often the daemon reads its harness's login
 	// between connections; zero means loginRefresh. Tests set it.
 	loginInterval time.Duration
+	// loginWait is how long a login waits for its code; zero means
+	// loginTimeout. Tests set it.
+	loginWait time.Duration
 }
 
 // slots computes the slots fact with running harness processes.
@@ -127,6 +130,10 @@ type service struct {
 	// capacityChanged asks watchCapacity to recompute the slots fact.
 	harnesses       atomic.Int64
 	capacityChanged chan struct{}
+	// login is the harness's login the daemon runs, nil for none;
+	// loginMu guards it.
+	loginMu sync.Mutex
+	login   *loginRun
 }
 
 // currentFacts returns a copy of the daemon's facts.

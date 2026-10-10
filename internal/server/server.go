@@ -50,6 +50,10 @@ type Server struct {
 	watchers watchers
 
 	sched *scheduler
+
+	// logins holds each daemon's latest login; loginsMu guards it.
+	loginsMu sync.Mutex
+	logins   map[protocol.DaemonID]loginView
 }
 
 // commandStream is the one open SSE stream of a daemon.
@@ -97,7 +101,8 @@ func New(store *Store, log *slog.Logger, options Options) *Server {
 		mux:          http.NewServeMux(),
 		streams:      make(map[protocol.DaemonID]*commandStream),
 		ended:        make(chan struct{}),
-		watchers:     watchers{byTask: make(map[protocol.TaskID]map[chan struct{}]struct{})},
+		watchers:     watchers{byTask: make(map[protocol.TaskID]map[chan struct{}]struct{}), byDaemon: make(map[protocol.DaemonID]map[chan struct{}]struct{})},
+		logins:       make(map[protocol.DaemonID]loginView),
 	}
 	policy := options.Schedule
 	if policy == (SchedulePolicy{}) {
@@ -119,6 +124,7 @@ func New(store *Store, log *slog.Logger, options Options) *Server {
 	s.mux.Handle("GET /v1/daemons/{daemon}/commands", s.daemonOnly(s.streamCommands))
 	s.mux.Handle("POST /v1/daemons/{daemon}/tasks/{task}/requests", s.daemonOnly(s.postAgentRequest))
 	s.mux.Handle("PUT /v1/daemons/{daemon}/facts", s.daemonOnly(s.putFacts))
+	s.mux.Handle("POST /v1/daemons/{daemon}/login-events", s.daemonOnly(s.postLoginEvent))
 	s.mux.Handle("GET /static/", http.StripPrefix("/static/", http.FileServerFS(component.Static)))
 	s.routeLogin()
 
@@ -135,6 +141,8 @@ func New(store *Store, log *slog.Logger, options Options) *Server {
 	owner.HandleFunc("GET /v1/tasks/{task}/tree", s.getTree)
 	owner.HandleFunc("GET /v1/daemons", s.getDaemons)
 	owner.HandleFunc("GET /v1/daemons/{daemon}", s.getDaemon)
+	owner.HandleFunc("POST /v1/daemons/{daemon}/login", s.postDaemonLogin)
+	owner.HandleFunc("POST /v1/daemons/{daemon}/login/code", s.postDaemonLoginCode)
 	owner.HandleFunc("GET /v1/agents", s.getAgents)
 	owner.HandleFunc("POST /v1/agents", s.postAgent)
 	owner.HandleFunc("GET /v1/agents/{agent}", s.getAgent)
@@ -361,6 +369,7 @@ func (s *Server) openStream(daemon protocol.DaemonID) *commandStream {
 	s.streams[daemon] = stream
 	s.mu.Unlock()
 	s.sched.poke()
+	s.daemonChanged(daemon)
 	return stream
 }
 
@@ -378,6 +387,7 @@ func (s *Server) closeStream(daemon protocol.DaemonID, stream *commandStream) {
 	}
 	s.mu.Unlock()
 	s.sched.poke()
+	s.daemonChanged(daemon)
 }
 
 // connectedDaemons returns the daemons with an open command stream.
@@ -415,7 +425,9 @@ func (s *Server) storeChanged(fx effects) {
 	}
 	for _, command := range fx.issued {
 		s.signalIssued(command.DaemonID)
-		s.taskChanged(command.TaskID)
+		if command.TaskID != "" {
+			s.taskChanged(command.TaskID)
+		}
 	}
 	for _, task := range fx.changed {
 		s.taskChanged(task)
