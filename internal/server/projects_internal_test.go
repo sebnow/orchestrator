@@ -212,8 +212,10 @@ func TestGivenProjectWhenATaskInItAsksForAnotherRepositoryOrTheProjectIsUnknownT
 		`"workspace":{"repo":"ssh://git@host/other.git","ref":"main"},"pause_limits":{"acknowledge":"1m","cleanup":"5m"}}`)
 	unknown, unknownBody := doRequest(t, http.MethodPost, srv.url+"/v1/tasks", `{"daemon_id":"laptop","project":"missing","prompt":"p",`+
 		`"pause_limits":{"acknowledge":"1m","cleanup":"5m"}}`)
-	own := postForTurn(t, srv.url+"/v1/tasks", `{"daemon_id":"laptop","project":"`+bare.ID+`","prompt":"p",`+
-		`"workspace":{"repo":"ssh://git@host/other.git","ref":"dev"},"pause_limits":{"acknowledge":"1m","cleanup":"5m"}}`, http.StatusCreated)
+	named, namedBody := doRequest(t, http.MethodPost, srv.url+"/v1/tasks", `{"daemon_id":"laptop","project":"`+bare.ID+`","prompt":"p",`+
+		`"workspace":{"repo":"ssh://git@host/other.git","ref":"dev"},"pause_limits":{"acknowledge":"1m","cleanup":"5m"}}`)
+	empty := postForTurn(t, srv.url+"/v1/tasks", `{"daemon_id":"laptop","project":"`+bare.ID+`","prompt":"p",`+
+		`"pause_limits":{"acknowledge":"1m","cleanup":"5m"}}`, http.StatusCreated)
 
 	if other != http.StatusBadRequest || !strings.Contains(otherBody, "the project's repository") {
 		t.Errorf("another repository: %d %s, want 400", other, otherBody)
@@ -221,8 +223,11 @@ func TestGivenProjectWhenATaskInItAsksForAnotherRepositoryOrTheProjectIsUnknownT
 	if unknown != http.StatusUnprocessableEntity || !strings.Contains(unknownBody, "unknown project") {
 		t.Errorf("unknown project: %d %s, want 422", unknown, unknownBody)
 	}
-	if detail := readTask(t, srv.store, own.TaskID); detail.Project != bare.ID || detail.Start.Workspace == nil || detail.Start.Workspace.Ref != "dev" {
-		t.Errorf("task in a project without a repository = %+v, start %+v; want its own repository", detail.taskSummary, detail.Start)
+	if named != http.StatusBadRequest || !strings.Contains(namedBody, "empty workspace") {
+		t.Errorf("repository named in a project without one: %d %s, want 400", named, namedBody)
+	}
+	if detail := readTask(t, srv.store, empty.TaskID); detail.Project != bare.ID || detail.Start.Workspace != nil {
+		t.Errorf("task in a project without a repository = %+v, start %+v; want an empty workspace", detail.taskSummary, detail.Start)
 	}
 }
 

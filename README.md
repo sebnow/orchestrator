@@ -675,10 +675,9 @@ agent ([projects and lineage](docs/adr/2026-10-10-projects-and-lineage.md)).
 A task belongs to at most one project, chosen when the owner starts it;
 a child belongs to its parent's. A task in a project:
 
-- works in the project's repository, starting at the project's ref; a
-  request naming another repository is refused. In a project without a
-  repository, the task works in the repository it names, if any, or in
-  an empty directory;
+- works in the project's repository, starting at the project's ref, or
+  in an empty workspace when the project names no repository; a
+  request naming a repository of its own is refused either way;
 - is started as the project's default agent unless it names an agent
   of its own; a child the agent spawns naming no agent still has none;
 - has the project's instructions in its system prompt, after its

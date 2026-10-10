@@ -202,16 +202,17 @@ func (s *Server) startTask(ctx context.Context, request taskRequest) (queuedTurn
 	})
 }
 
-// projectWorkspace is the workspace of a task in project p that asks for
-// asked: the project's repository, or when it has none, asked. A task
-// asking for another repository than its project's is refused with
-// errInvalidTask.
+// projectWorkspace is the workspace of a task in project p: the
+// project's repository, or nil when it has none. A task that names a
+// repository of its own is refused with errInvalidTask, whether the
+// project has a repository or, giving its tasks an empty workspace,
+// none.
 func projectWorkspace(p Project, asked *protocol.Workspace) (*protocol.Workspace, error) {
 	own := p.Workspace()
 	switch {
-	case own == nil:
-		return asked, nil
-	case asked != nil && *asked != *own:
+	case own == nil && asked != nil:
+		return nil, fmt.Errorf("%w: a task in project %s has an empty workspace because the project names no repository; leave the repository out", errInvalidTask, p.Name)
+	case own != nil && asked != nil && *asked != *own:
 		return nil, fmt.Errorf("%w: a task in project %s works in the project's repository, %s at %s; leave the repository out", errInvalidTask, p.Name, own.Repo, own.Ref)
 	}
 	return own, nil
