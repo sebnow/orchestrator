@@ -56,13 +56,10 @@ Living document; revise in place. Decisions live in docs/adr, findings in docs/d
 
 ## Decided, not yet built
 
-- Hetzner Cloud as the VPS provider, with server-driven provisioning and
-  daemon enrolment. Record:
-  [docs/adr/2026-10-10-vps-provisioning.md](adr/2026-10-10-vps-provisioning.md).
-  Source: survey
-  [docs/design/2026-10-10-vps-providers.md](design/2026-10-10-vps-providers.md),
-  follow-up note
-  [docs/design/2026-10-10-vps-providers-followup.md](design/2026-10-10-vps-providers-followup.md).
+- The live Hetzner lifecycle test (`go test -tags live -run Live
+  ./internal/hetzner/`), once a token exists; and host keys for forges on
+  fresh VPSes (owner decision pending: trust on first contact, or keys
+  distributed by the server).
 - SQLite backups to S3-compatible object storage, in-process (`VACUUM
   INTO` plus a stdlib SigV4 PUT), no external tool. Record:
   [docs/adr/2026-10-10-sqlite-backups.md](adr/2026-10-10-sqlite-backups.md).
