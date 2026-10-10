@@ -2,6 +2,7 @@ package server
 
 import (
 	"bytes"
+	"compress/gzip"
 	"context"
 	"database/sql"
 	"encoding/json"
@@ -214,6 +215,9 @@ func TestGivenBucketWhenBackingUpThenTheCopyIsUploadedUnderThePrefixAndTheOldest
 		bucket.SetObject(key, []byte("not a backup of this server"))
 	}
 	start := time.Date(2026, 10, 10, 0, 0, 0, 0, time.UTC)
+	// An earlier server uploaded its copies plain; they count towards
+	// the kept ones, and are deleted as the oldest.
+	bucket.SetObject("orchestrator/"+backupName(start.Add(-time.Hour)), []byte("a plain upload"))
 	b := newBackups(BackupPolicy{Dir: t.TempDir(), Every: time.Hour, Keep: 2, Bucket: bucket.Client(t), Prefix: "orchestrator"}, store, steppingClock(start, time.Hour))
 
 	var last backupAttempt
@@ -223,7 +227,7 @@ func TestGivenBucketWhenBackingUpThenTheCopyIsUploadedUnderThePrefixAndTheOldest
 		}
 	}
 
-	newest := "orchestrator/" + backupName(start.Add(2*time.Hour))
+	newest := "orchestrator/" + backupName(start.Add(2*time.Hour)) + ".gz"
 	if last.UploadedTo != "s3://"+s3test.Bucket+"/"+newest {
 		t.Errorf("uploaded to %q, want s3://%s/%s", last.UploadedTo, s3test.Bucket, newest)
 	}
@@ -234,7 +238,7 @@ func TestGivenBucketWhenBackingUpThenTheCopyIsUploadedUnderThePrefixAndTheOldest
 	}
 	slices.Sort(keys)
 	want := append([]string{"elsewhere/" + backupName(time.Unix(0, 0)), "orchestrator/notes.txt", "orchestrator/old/" + backupName(time.Unix(0, 0))},
-		"orchestrator/"+backupName(start.Add(time.Hour)), newest)
+		"orchestrator/"+backupName(start.Add(time.Hour))+".gz", newest)
 	slices.Sort(want)
 	if !slices.Equal(keys, want) {
 		t.Errorf("bucket holds %q, want %q", keys, want)
@@ -243,8 +247,19 @@ func TestGivenBucketWhenBackingUpThenTheCopyIsUploadedUnderThePrefixAndTheOldest
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !bytes.Equal(objects[newest], local) {
-		t.Errorf("the upload differs from the local copy")
+	zr, err := gzip.NewReader(bytes.NewReader(objects[newest]))
+	if err != nil {
+		t.Fatalf("the upload is not gzipped: %v", err)
+	}
+	uploaded, err := io.ReadAll(zr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(uploaded, local) {
+		t.Errorf("the upload, gunzipped, differs from the local copy")
+	}
+	if entries, _ := os.ReadDir(filepath.Dir(last.File)); len(entries) != 2 {
+		t.Errorf("the backup directory holds %d files, want the two kept copies and no gzipped one", len(entries))
 	}
 }
 

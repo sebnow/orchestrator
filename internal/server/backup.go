@@ -1,10 +1,12 @@
 package server
 
 import (
+	"compress/gzip"
 	"context"
 	"database/sql"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/url"
 	"os"
@@ -138,6 +140,43 @@ func backupTime(name string) (time.Time, bool) {
 	return at, true
 }
 
+// gzipSuffix ends the name of an uploaded copy, which is gzipped
+// (docs/adr/2026-10-10-server-loss.md).
+const gzipSuffix = ".gz"
+
+// uploadTime is when the upload named name was taken; ok is false for a
+// name that is neither a copy's name gzipped, as uploads are named, nor
+// a copy's name, as earlier servers named their plain uploads.
+func uploadTime(name string) (time.Time, bool) {
+	return backupTime(strings.TrimSuffix(name, gzipSuffix))
+}
+
+// gzipped writes the file at path, gzipped, to a temporary file beside it
+// and returns that file, open at its start, which the caller closes and
+// removes.
+func gzipped(path string) (*os.File, error) {
+	src, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer src.Close()
+	dst, err := os.CreateTemp(filepath.Dir(path), "."+filepath.Base(path)+gzipSuffix+".*.tmp")
+	if err != nil {
+		return nil, err
+	}
+	zw := gzip.NewWriter(dst)
+	_, err = io.Copy(zw, src)
+	if err = errors.Join(err, zw.Close()); err == nil {
+		_, err = dst.Seek(0, io.SeekStart)
+	}
+	if err != nil {
+		dst.Close()
+		os.Remove(dst.Name())
+		return nil, err
+	}
+	return dst, nil
+}
+
 // backups writes the server's copies, one at a time.
 type backups struct {
 	policy BackupPolicy
@@ -220,7 +259,7 @@ func (b *backups) backUp(ctx context.Context) backupAttempt {
 		}
 	}
 	if b.policy.Bucket != nil {
-		uploadedTo, err := b.upload(ctx, path, attempt.Size)
+		uploadedTo, err := b.upload(ctx, path)
 		attempt.UploadedTo = uploadedTo
 		if err != nil {
 			errs = append(errs, err)
@@ -232,18 +271,23 @@ func (b *backups) backUp(ctx context.Context) backupAttempt {
 	return attempt
 }
 
-// upload puts the copy at path, of size bytes, into the bucket and
-// deletes the oldest uploaded copies beyond the policy's count. It
-// returns where the copy went, s3://<bucket>/<key>, or "" when it was
-// not uploaded.
-func (b *backups) upload(ctx context.Context, path string, size int64) (string, error) {
-	file, err := os.Open(path)
+// upload puts the copy at path into the bucket, gzipped, and deletes the
+// oldest uploaded copies beyond the policy's count, plain uploads of
+// earlier servers among them. It returns where the copy went,
+// s3://<bucket>/<key>, or "" when it was not uploaded.
+func (b *backups) upload(ctx context.Context, path string) (string, error) {
+	file, err := gzipped(path)
+	if err != nil {
+		return "", fmt.Errorf("upload backup: gzip the copy: %w", err)
+	}
+	defer os.Remove(file.Name())
+	defer file.Close()
+	info, err := file.Stat()
 	if err != nil {
 		return "", fmt.Errorf("upload backup: %w", err)
 	}
-	defer file.Close()
-	key := b.remoteDir + filepath.Base(path)
-	if err := b.policy.Bucket.Put(ctx, key, file, size); err != nil {
+	key := b.remoteDir + filepath.Base(path) + gzipSuffix
+	if err := b.policy.Bucket.Put(ctx, key, file, info.Size()); err != nil {
 		return "", fmt.Errorf("upload backup: %w", err)
 	}
 	uploadedTo := "s3://" + b.policy.Bucket.Bucket() + "/" + key
@@ -253,7 +297,7 @@ func (b *backups) upload(ctx context.Context, path string, size int64) (string, 
 	}
 	var keys []string
 	for _, object := range objects {
-		if _, ok := backupTime(strings.TrimPrefix(object.Key, b.remoteDir)); ok {
+		if _, ok := uploadTime(strings.TrimPrefix(object.Key, b.remoteDir)); ok {
 			keys = append(keys, object.Key)
 		}
 	}

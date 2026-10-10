@@ -1,6 +1,9 @@
 package main
 
 import (
+	"bufio"
+	"bytes"
+	"compress/gzip"
 	"context"
 	"errors"
 	"flag"
@@ -79,7 +82,7 @@ func loopbackHost(host string) bool {
 func restore(args []string, stdout, stderr io.Writer) int {
 	flags := subcommandFlags("restore", "-db FILE -from FILE_OR_KEY [-force] [-backup-s3-endpoint URL -backup-s3-region REGION -backup-s3-bucket BUCKET -backup-s3-credentials FILE]", stderr)
 	dbPath := flags.String("db", "", "the server's SQLite database file to replace; stop the server first (required)")
-	from := flags.String("from", "", "the backup: a file, or, when no such file exists and the bucket flags are given, the key of an object in the bucket, such as orchestrator/server-2026-10-10T14:30:05Z.db (required)")
+	from := flags.String("from", "", "the backup: a file, or, when no such file exists and the bucket flags are given, the key of an object in the bucket, such as orchestrator/server-2026-10-10T14:30:05Z.db.gz; a gzipped backup is gunzipped (required)")
 	force := flags.Bool("force", false, "replace an existing database, and drop its write-ahead log")
 	bucket := addBucketFlags(flags)
 	if status, ok := parseSubcommand(flags, args, dbPath, from); !ok {
@@ -156,7 +159,7 @@ func fetchBackup(ctx context.Context, dest *os.File, from string, client *s3.Cli
 			return fmt.Errorf("download %s from bucket %s: %w", from, client.Bucket(), err)
 		}
 		defer body.Close()
-		if _, err := io.Copy(dest, body); err != nil {
+		if err := copyBackup(dest, body); err != nil {
 			return fmt.Errorf("download %s from bucket %s: %w", from, client.Bucket(), err)
 		}
 		return dest.Sync()
@@ -165,8 +168,36 @@ func fetchBackup(ctx context.Context, dest *os.File, from string, client *s3.Cli
 	default:
 		return err
 	}
-	if _, err := io.Copy(dest, source); err != nil {
+	if err := copyBackup(dest, source); err != nil {
 		return err
 	}
 	return dest.Sync()
+}
+
+// gzipMagic starts every gzip stream (RFC 1952); a SQLite database
+// starts with "SQLite format 3" instead.
+var gzipMagic = []byte{0x1f, 0x8b}
+
+// copyBackup writes the database src holds to dest: gunzipped when src is
+// gzipped, as uploads are, and as it is otherwise, as local copies and
+// the uploads of earlier servers are (docs/adr/2026-10-10-server-loss.md).
+// A gzipped backup's checksum is checked at its end.
+func copyBackup(dest io.Writer, src io.Reader) error {
+	buffered := bufio.NewReader(src)
+	start, err := buffered.Peek(len(gzipMagic))
+	if err != nil && !errors.Is(err, io.EOF) {
+		return err
+	}
+	if !bytes.Equal(start, gzipMagic) {
+		_, err := io.Copy(dest, buffered)
+		return err
+	}
+	zr, err := gzip.NewReader(buffered)
+	if err != nil {
+		return fmt.Errorf("gunzip the backup: %w", err)
+	}
+	if _, err := io.Copy(dest, zr); err != nil {
+		return fmt.Errorf("gunzip the backup: %w", err)
+	}
+	return zr.Close()
 }

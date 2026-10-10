@@ -803,8 +803,11 @@ four flags, all set together:
       secret_key=...
 
 Each copy is uploaded under the key prefix `-backup-s3-prefix`,
-`orchestrator/` by default, as `orchestrator/server-<time>.db`. The
-server deletes only keys of that form directly under the prefix. It
+`orchestrator/` by default, gzipped, as
+`orchestrator/server-<time>.db.gz`; the local copies stay plain. The
+server deletes only keys of that form, and of the plain form
+`server-<time>.db` that servers before gzipping uploaded, directly under
+the prefix, counting both towards `-backup-keep`. It
 addresses the bucket path-style (`<endpoint>/<bucket>/<key>`) and signs
 each request with AWS Signature Version 4 over the payload's hash. The
 secret key is used only to sign requests; it is not sent or logged.
@@ -844,8 +847,10 @@ To restore a backup:
 2. Run `server restore -db FILE -from BACKUP`, where `FILE` is the
    server's `-db`. `BACKUP` is either a backup file or, if the four
    bucket flags above are given, the key of an upload, such as
-   `orchestrator/server-2026-10-10T14:30:05Z.db`. If a file with that
-   name exists, it is used instead of the upload. The command copies or
+   `orchestrator/server-2026-10-10T14:30:05Z.db.gz`. A gzipped backup,
+   as uploads are, is gunzipped; a plain one is used as it is. If a
+   file with that name exists, it is used instead of the upload. The
+   command copies or
    downloads the backup next to the database, checks it with SQLite's
    `PRAGMA integrity_check`, checks that the server supports its schema
    version, and only then replaces the database. Without `-force`, it

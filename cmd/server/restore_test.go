@@ -1,6 +1,8 @@
 package main
 
 import (
+	"bytes"
+	"compress/gzip"
 	"context"
 	"database/sql"
 	"os"
@@ -247,5 +249,93 @@ func TestGivenARestoredDatabaseWhenTheServerOpensItThenItStartsAnEpochWhoseParen
 	}
 	if names := dirNames(t, filepath.Dir(dbPath)); slices.Contains(names, "server.db-restored") {
 		t.Errorf("directory holds %v, want the marker removed", names)
+	}
+}
+
+func gzipBytes(t *testing.T, content []byte) []byte {
+	t.Helper()
+	var buf bytes.Buffer
+	zw := gzip.NewWriter(&buf)
+	if _, err := zw.Write(content); err != nil {
+		t.Fatal(err)
+	}
+	if err := zw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	return buf.Bytes()
+}
+
+// bucketFlagsFor writes the fake bucket's credentials to a file and
+// returns the flags that name the bucket.
+func bucketFlagsFor(t *testing.T, bucket *s3test.Server) []string {
+	t.Helper()
+	credentials := filepath.Join(t.TempDir(), "backup-s3")
+	if err := os.WriteFile(credentials, []byte("access_key="+s3test.Credentials.AccessKey+"\nsecret_key="+s3test.Credentials.SecretKey+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return []string{"-backup-s3-endpoint", bucket.URL, "-backup-s3-region", s3test.Region,
+		"-backup-s3-bucket", s3test.Bucket, "-backup-s3-credentials", credentials}
+}
+
+func TestGivenAGzippedUploadWhenRestoredThenItIsGunzipped(t *testing.T) {
+	content, err := os.ReadFile(backupWithOwnerToken(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	bucket := s3test.NewServer(t)
+	key := "orchestrator/server-2026-10-10T14:30:05Z.db.gz"
+	bucket.SetObject(key, gzipBytes(t, content))
+	dbPath := filepath.Join(t.TempDir(), "server.db")
+
+	status, _, stderr := runCommand(append([]string{"restore", "-db", dbPath, "-from", key}, bucketFlagsFor(t, bucket)...)...)
+
+	if status != 0 {
+		t.Fatalf("status %d, stderr %q", status, stderr)
+	}
+	if !hasOwnerToken(t, dbPath) {
+		t.Errorf("the restored database lacks the backup's owner token")
+	}
+}
+
+func TestGivenAGzippedBackupFileWhenRestoredThenItIsGunzipped(t *testing.T) {
+	content, err := os.ReadFile(backupWithOwnerToken(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	file := filepath.Join(t.TempDir(), "server-2026-10-10T14:30:05Z.db.gz")
+	if err := os.WriteFile(file, gzipBytes(t, content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	dbPath := filepath.Join(t.TempDir(), "server.db")
+
+	status, _, stderr := runCommand("restore", "-db", dbPath, "-from", file)
+
+	if status != 0 {
+		t.Fatalf("status %d, stderr %q", status, stderr)
+	}
+	if !hasOwnerToken(t, dbPath) {
+		t.Errorf("the restored database lacks the backup's owner token")
+	}
+}
+
+func TestGivenATruncatedGzippedBackupWhenRestoredThenItIsRefusedAndNothingWritten(t *testing.T) {
+	content, err := os.ReadFile(backupWithOwnerToken(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	whole := gzipBytes(t, content)
+	file := filepath.Join(t.TempDir(), "server-2026-10-10T14:30:05Z.db.gz")
+	if err := os.WriteFile(file, whole[:len(whole)-8], 0o600); err != nil {
+		t.Fatal(err)
+	}
+	dbPath := filepath.Join(t.TempDir(), "server.db")
+
+	status, _, stderr := runCommand("restore", "-db", dbPath, "-from", file)
+
+	if status != 1 || !strings.Contains(stderr, "gunzip") {
+		t.Errorf("status %d, stderr %q; want 1 naming the gunzip", status, stderr)
+	}
+	if names := dirNames(t, filepath.Dir(dbPath)); len(names) != 0 {
+		t.Errorf("directory holds %v, want nothing", names)
 	}
 }
