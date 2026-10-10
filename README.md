@@ -119,58 +119,190 @@ browsers trust the new `ca.crt`.
 
 ### Running the server on a VPS
 
-To run the server itself on a VPS, rather than on a laptop as above:
+To run the server on a VPS, a deployer produces the binaries, the PKI,
+a Hetzner token and the bucket's credentials, puts them on the VPS, and
+runs the server as a service. The VPS can then be destroyed and
+recreated: a server that
+finds no database restores the newest upload from the bucket, and loses
+what it stored after that upload (see [Backups](#backups)).
 
-1. Build the server, and the daemon for provisioning other VPSes, from
-   the repository root:
+The steps below set up the VPS. Then follow one of [First
+install](#first-install), [Recreated VPS](#recreated-vps) or [Moving
+from a laptop](#moving-from-a-laptop).
 
-       go build ./cmd/server
-       GOOS=linux GOARCH=amd64 go build -o DIR/daemon-linux-amd64 ./cmd/daemon
-       GOOS=linux GOARCH=arm64 go build -o DIR/daemon-linux-arm64 ./cmd/daemon
+1. Cross-compile the server for the VPS's architecture, `amd64` or
+   `arm64`, and the daemon for both, from the repository root. The
+   SQLite driver is pure Go, so no C toolchain is needed:
 
-2. On the VPS, create the PKI: `server init-ca -pki-dir DIR` writes
-   `ca.crt` and `ca.key`; `server issue-server-cert -pki-dir DIR -host
-   <dns name> [-host <ip>]` writes `server.crt` and `server.key`, valid
-   for every name daemons and the browser reach the server by. Keep
-   `ca.key` mode 0600; only `-ca-key` reads it.
-3. `server issue-owner-token -db FILE` prints the owner token once. The
-   GUI's `/login` takes it and sets a 30-day session cookie; scripts
-   send it as `Authorization: Bearer <token>`.
-4. Start the server:
+       GOOS=linux GOARCH=<arch> CGO_ENABLED=0 go build -o <bin>/orchestrator-server ./cmd/server
+       GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -o <bin>/daemon-linux-amd64 ./cmd/daemon
+       GOOS=linux GOARCH=arm64 CGO_ENABLED=0 go build -o <bin>/daemon-linux-arm64 ./cmd/daemon
 
-       server -listen :8443 -db FILE \
-           -tls-cert DIR/server.crt -tls-key DIR/server.key -client-ca DIR/ca.crt \
-           -ca-key DIR/ca.key -public-url https://<name>:8443 \
-           -daemon-binaries-dir <dir> -hetzner-token-file <0600 file> \
-           [-backup-s3-endpoint … -backup-s3-region … -backup-s3-bucket … \
-            -backup-s3-credentials <0600 file>]
+   The server serves the two daemon binaries, from
+   `-daemon-binaries-dir`, to the VPSes it provisions (see [Provisioning
+   a VPS](#provisioning-a-vps)). Also build the server for the machine
+   you work on, `go build -o orchestrator-server ./cmd/server`, for
+   step 2.
+2. Create the PKI on a machine other than the VPS, with that native
+   build. When moving from a laptop, skip this step and use the
+   laptop's `ca.crt` and `ca.key`, which its daemons' certificates chain
+   to; issue only the server certificate for the VPS.
 
-   Open the firewall's listen port to daemons and the browser only;
-   daemons dial out to the server, and nothing dials a daemon.
-5. Three files are secrets, kept in owner-only mode and never in the
-   database: the Hetzner token (`-hetzner-token-file`, or
-   `HETZNER_TOKEN`), the bucket's credentials
-   (`-backup-s3-credentials`), and `ca.key`.
-6. Moving from a laptop server: stop the laptop's server; copy its
-   database file together with its `-wal` and `-shm` files (or back it
-   up and run `server restore` on the VPS, or start the VPS's server
-   with the bucket flags and no `-db` file, which restores the newest
-   upload), and `ca.crt` and
-   `ca.key`. Issue the server certificate again, for the VPS's name.
-   Daemons the laptop server certified keep working, since the CA is
-   unchanged; enrol new machines with `server enrol-token -db FILE -id
-   <daemon>` on the VPS and `daemon -enrol-token <id:secret> -server
-   https://… -ca ca.crt` on each (see [Enrolling a machine by
-   hand](#enrolling-a-machine-by-hand)). The laptop's own daemon, kept
-   running, joins the same way, or with `issue-daemon-cert`; without
-   `-insecure-loopback`, its `-server` must now be the public URL, not
-   loopback.
-7. After the move, set each daemon's `models` label, paste the other
-   forges' host keys on `/settings` (GitHub's are fetched on its own,
-   see [Forge host keys](#forge-host-keys)), log each daemon in from its
-   page (see [Logging a daemon in](#logging-a-daemon-in)), and provision
-   further VPSes from the dashboard (see [Provisioning a
-   VPS](#provisioning-a-vps)).
+       orchestrator-server init-ca -pki-dir <pki>
+       orchestrator-server issue-server-cert -pki-dir <pki> -host <name> [-host <ip>]
+
+   `init-ca` writes `ca.crt` and `ca.key`, and `issue-server-cert`
+   writes `server.crt` and `server.key`. Pass a `-host` for every name
+   daemons and the browser reach the server by, including the host of
+   `-public-url` in step 5. Every daemon certificate chains to the CA,
+   so the CA pair must outlive the VPS: keep the originals on another
+   machine, and copy them to the VPS on each install. The server takes `ca.key` through
+   `-ca-key`; enrolment and provisioning need it.
+3. Create a Hetzner API token used only by this server, in the project
+   the daemon VPSes are to go in, with permission to create and delete
+   servers. The server creates and deletes the daemon VPSes with it. A
+   token of its own can be revoked without touching any other access to
+   the account. Create the bucket too, and an access key pair that can
+   put, get, list and delete objects in it (see [Backups](#backups)).
+4. Create the server's user, `orchestrator`, which the unit and the
+   commands below name, with `useradd --system orchestrator`, and put
+   these on the VPS:
+   - owned by root, mode 0755: the server binary at
+     `/usr/local/bin/orchestrator-server`, and `daemon-linux-amd64` and
+     `daemon-linux-arm64` in `/var/lib/orchestrator/binaries`, the
+     `-daemon-binaries-dir`;
+   - owned by `orchestrator`, mode 0700: the directories
+     `/var/lib/orchestrator`, where the server keeps the database and
+     its `backups/`, and `/etc/orchestrator`;
+   - owned by `orchestrator`, mode 0600, in `/etc/orchestrator`:
+     `ca.crt`, `ca.key`, `server.crt`, `server.key`, the Hetzner token as
+     `hetzner-token`, the bucket's credentials as `backup-s3` (a file of
+     `access_key=` and `secret_key=` lines), and `server.env` for step 5.
+
+   `ca.key`, `server.key`, the Hetzner token and the bucket's
+   credentials are secrets. The server refuses a token or credentials
+   file that any user other than the file's owner can read. Leave the
+   `-db` path, `/var/lib/orchestrator/server.db`, empty unless you are
+   moving a laptop's database: on a recreated VPS the database's
+   absence is what makes the server restore it.
+5. Save this unit as `/etc/systemd/system/orchestrator-server.service`,
+   for a server on port 443 with a Cloudflare R2 bucket:
+
+       [Unit]
+       Description=orchestrator server
+       Wants=network-online.target
+       After=network-online.target
+
+       [Service]
+       User=orchestrator
+       EnvironmentFile=/etc/orchestrator/server.env
+       AmbientCapabilities=CAP_NET_BIND_SERVICE
+       ExecStart=/usr/local/bin/orchestrator-server -listen :443 \
+           -db /var/lib/orchestrator/server.db \
+           -tls-cert /etc/orchestrator/server.crt -tls-key /etc/orchestrator/server.key \
+           -client-ca /etc/orchestrator/ca.crt -ca-key /etc/orchestrator/ca.key \
+           -public-url https://<name> \
+           -daemon-binaries-dir /var/lib/orchestrator/binaries \
+           -hetzner-token-file /etc/orchestrator/hetzner-token -hetzner-location nbg1 \
+           -backup-s3-endpoint ${BACKUP_S3_ENDPOINT} -backup-s3-region auto \
+           -backup-s3-bucket <bucket> -backup-s3-prefix server/ \
+           -backup-s3-credentials /etc/orchestrator/backup-s3
+       Restart=on-failure
+       RestartSec=10
+
+       [Install]
+       WantedBy=multi-user.target
+
+   `server.env` holds `BACKUP_S3_ENDPOINT=https://<account
+   id>.r2.cloudflarestorage.com`, so that the account id stays out of
+   the unit.
+   `CAP_NET_BIND_SERVICE` lets the server's user listen on 443. Allow
+   inbound TCP 443 from anywhere, since a provisioned VPS's address is
+   not known in advance, and SSH for yourself. The server never
+   connects to a daemon, so the daemon VPSes need no inbound port.
+
+#### First install
+
+Start the service, and issue the owner token only once the first start
+has shown that the bucket held no upload:
+
+    systemctl daemon-reload
+    systemctl enable --now orchestrator-server.service
+    journalctl -u orchestrator-server.service -f   # until "no owner token"
+
+With an empty bucket, the first start creates an empty database and
+exits with "no owner token", and systemd starts the server again every
+10 seconds until a token exists. If the log shows a restore instead,
+the database came from the bucket with its token: follow [Recreated
+VPS](#recreated-vps). Then issue the token:
+
+    runuser -u orchestrator -- /usr/local/bin/orchestrator-server \
+        issue-owner-token -db /var/lib/orchestrator/server.db
+    systemctl restart orchestrator-server.service
+
+`issue-owner-token` runs as the server's user, so that the database
+files it writes stay the server's, and the restart makes the server
+start at once rather than at its next retry. It prints the token once;
+keep it somewhere retrievable, such as a password manager. The GUI's
+`/login` takes it and sets a 30-day session cookie; scripts send it as
+`Authorization: Bearer <token>`.
+
+#### Recreated VPS
+
+Point `<name>` at the new VPS, and issue the server certificate again
+(step 2) if it names the old VPS's IP address. Repeat steps 4 and 5
+with the same files, and start the service with `systemctl
+daemon-reload` and `systemctl enable --now
+orchestrator-server.service`. Do not issue an owner token. The server
+restores the newest upload, owner token included, and starts a new
+command epoch, so daemons carry on with it (see [Command ids and
+epochs](#command-ids-and-epochs)). A new token would replace the
+restored one and log out every browser. If the log shows "no owner
+token" instead of a restore, the bucket held no upload: issue a token as
+in [First install](#first-install).
+
+#### Moving from a laptop
+
+1. Stop the laptop's server.
+2. Bring its database to the VPS in one of three ways, before the VPS's
+   server first starts:
+   - copy the database file, with its `-wal` and `-shm` files, to the
+     `-db` path, owned by `orchestrator`;
+   - back it up, copy the backup to the VPS, and restore it there (see
+     [Backups](#backups)):
+
+         runuser -u orchestrator -- /usr/local/bin/orchestrator-server \
+             restore -db /var/lib/orchestrator/server.db -from <backup>
+
+   - with the laptop's server uploading to the same bucket under the
+     same `-backup-s3-prefix`, leave the `-db` path empty, and the VPS's
+     server restores the newest upload, which is the one the laptop's
+     server made as it stopped.
+3. Start the service as for a recreated VPS. The database holds the
+   owner token already, so do not issue one.
+4. Point each existing daemon's `-server` at the VPS's public URL and
+   restart it. Daemons the laptop server certified keep their
+   certificates, since the CA is the same. A daemon that ran beside the
+   laptop's server with `-insecure-loopback` has no certificate. Enrol
+   it, and any new machine: `enrol-token` prints a token `<id:secret>`,
+
+       runuser -u orchestrator -- /usr/local/bin/orchestrator-server \
+           enrol-token -db /var/lib/orchestrator/server.db -id <daemon>
+
+   and on the machine, with `ca.crt` copied to it, the daemon built for
+   it (`daemon-linux-<arch>`, or the native build) runs with
+   `-enrol-token <id:secret> -server https://<name> -ca ca.crt` (see
+   [Enrolling a machine by hand](#enrolling-a-machine-by-hand)).
+
+After a first install, set each daemon's `models` label (see
+[Placement](#placement)), and paste the host keys of any forge other
+than GitHub on `/settings`; the server fetches GitHub's itself (see
+[Forge host keys](#forge-host-keys)). A moved or restored database
+keeps the labels, host keys and VPSes it held, so after a move only the
+daemons enrolled during it need a label. Then log each daemon in from
+its page (see [Logging a daemon in](#logging-a-daemon-in)), and
+provision further VPSes from the dashboard (see [Provisioning a
+VPS](#provisioning-a-vps)).
 
 ### On one machine, for development
 
