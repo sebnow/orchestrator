@@ -5,7 +5,9 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"slices"
 	"strings"
+	"time"
 
 	"github.com/sebnow/orchestrator/internal/component"
 	"github.com/sebnow/orchestrator/internal/protocol"
@@ -153,4 +155,63 @@ func (s *Server) postLabelsForm(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	redirect(w, r, "/daemons/"+string(daemon.ID))
+}
+
+// daemonView is a daemon as the owner API reports it. Facts are what the
+// daemon last reported, its ssh_public_key fact the bare key blob; the
+// key is also given whole, as the authorized_keys line SSHPublicKey, and
+// bare, as SSHPublicKeyBlob, both empty when the daemon reported none.
+// Slots is the daemon's slot count, its own or the server's default, and
+// Running counts the tasks holding one. LostSince is set while the
+// server holds the daemon lost.
+type daemonView struct {
+	ID               protocol.DaemonID `json:"id"`
+	Labels           Labels            `json:"labels"`
+	Facts            Labels            `json:"facts"`
+	SSHPublicKey     string            `json:"ssh_public_key,omitempty"`
+	SSHPublicKeyBlob string            `json:"ssh_public_key_blob,omitempty"`
+	LastSeen         time.Time         `json:"last_seen"`
+	Connected        bool              `json:"connected"`
+	Lost             bool              `json:"lost"`
+	LostSince        *time.Time        `json:"lost_since,omitempty"`
+	Slots            int               `json:"slots"`
+	Running          int               `json:"running"`
+}
+
+// view is daemon as the owner API reports it, connected or not.
+func (s *Server) view(daemon daemonSummary, connected bool) daemonView {
+	v := daemonView{
+		ID: daemon.ID, Labels: daemon.Labels, Facts: daemon.Facts, SSHPublicKey: sshKeyLine(daemon),
+		SSHPublicKeyBlob: daemon.Facts[protocol.FactSSHPublicKey], LastSeen: daemon.LastSeen, Connected: connected,
+		Lost: daemon.LostAt != nil, LostSince: daemon.LostAt, Slots: s.sched.policy.SlotsPerDaemon, Running: daemon.InUse,
+	}
+	if daemon.Slots != nil {
+		v.Slots = *daemon.Slots
+	}
+	return v
+}
+
+// getDaemons lists every daemon the server has seen, by id.
+func (s *Server) getDaemons(w http.ResponseWriter, r *http.Request) {
+	daemons, err := s.store.daemons(r.Context())
+	if err != nil {
+		s.internalError(w, err)
+		return
+	}
+	connected := s.connectedDaemons()
+	views := make([]daemonView, len(daemons))
+	for idx, daemon := range daemons {
+		views[idx] = s.view(daemon, slices.Contains(connected, daemon.ID))
+	}
+	writeJSON(w, http.StatusOK, views)
+}
+
+// getDaemon returns the daemon the path names, or 404 for one the server
+// has not seen.
+func (s *Server) getDaemon(w http.ResponseWriter, r *http.Request) {
+	daemon, ok := s.daemonSummaryOf(w, r)
+	if !ok {
+		return
+	}
+	writeJSON(w, http.StatusOK, s.view(daemon, slices.Contains(s.connectedDaemons(), daemon.ID)))
 }

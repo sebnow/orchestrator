@@ -442,7 +442,12 @@ the projects and the agents and create, edit and delete them; a
 project's page also lists the tasks started in it and starts more.
 Each daemon's row on the dashboard links to the daemon's page, which
 shows the facts it reported and sets the labels the owner gives it (see
-[Placement](#placement)).
+[Placement](#placement)). Scripts read the same with `GET /v1/daemons`
+and `GET /v1/daemons/{daemon}`: each daemon's id, labels and facts, its
+ssh key as an `authorized_keys` line (`ssh_public_key`) and as the bare
+key (`ssh_public_key_blob`), when it was last seen, whether it is
+connected, whether it is lost and since when, its slots, and how many
+tasks hold one.
 
 A `stopped` or `failed` task's page, and a `failed` task among those
 that need attention, have a Dismiss button. A dismissed task no longer
