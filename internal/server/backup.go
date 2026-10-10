@@ -98,8 +98,8 @@ func VerifyBackup(ctx context.Context, path string) (int, error) {
 type BackupPolicy struct {
 	// Dir holds the copies, named by backupName.
 	Dir string
-	// Every is the time between scheduled backups; 0 backs up only on
-	// demand.
+	// Every is the time between scheduled backups; 0 schedules none,
+	// leaving those after a harness exits, at shutdown and on demand.
 	Every time.Duration
 	// Keep is how many copies are kept, at least 1, in Dir and in
 	// Bucket each; older ones are deleted after each backup.
@@ -188,10 +188,14 @@ type backups struct {
 	// mu serializes backups, so that one on demand and one on schedule
 	// do not prune each other's copies.
 	mu sync.Mutex
+	// requests holds a request for a backup made since RunBackups last
+	// took one; one is enough, as the next backup covers every write
+	// before it.
+	requests chan struct{}
 }
 
 func newBackups(policy BackupPolicy, store *Store, now func() time.Time) *backups {
-	return &backups{policy: policy, store: store, now: now, remoteDir: remoteDir(policy.Prefix)}
+	return &backups{policy: policy, store: store, now: now, remoteDir: remoteDir(policy.Prefix), requests: make(chan struct{}, 1)}
 }
 
 // remoteDir is what the key of each copy uploaded under prefix starts
@@ -403,25 +407,57 @@ func (s *Store) lastBackup(ctx context.Context) (*backupAttempt, error) {
 	return &attempt, nil
 }
 
-// RunBackups backs the database up on the policy's schedule until ctx
-// ends; with no schedule it returns at once. The first backup is due an
-// interval after the newest copy, and each later one an interval after
-// the attempt before it, whether that succeeded or not.
-func (s *Server) RunBackups(ctx context.Context) {
-	if s.backups == nil || s.backups.policy.Every <= 0 {
+// requestBackup asks RunBackups for a backup without waiting for it. A
+// request made while a backup runs gets one more backup after it,
+// however many such requests there are
+// (docs/adr/2026-10-10-server-loss.md).
+func (s *Server) requestBackup() {
+	if s.backups == nil {
 		return
 	}
-	next := s.backups.nextBackup()
+	select {
+	case s.backups.requests <- struct{}{}:
+	default:
+	}
+}
+
+// RunBackups backs the database up on the policy's schedule and when a
+// backup is requested, until ctx ends; without a policy it returns at
+// once. The first scheduled backup is due an interval after the newest
+// copy, and each later one an interval after the attempt before it,
+// whether that succeeded or not and whatever started it.
+func (s *Server) RunBackups(ctx context.Context) {
+	if s.backups == nil {
+		return
+	}
+	var due <-chan time.Time
+	var timer *time.Timer
+	if s.backups.policy.Every > 0 {
+		timer = time.NewTimer(time.Until(s.backups.nextBackup()))
+		defer timer.Stop()
+		due = timer.C
+	}
 	for {
-		timer := time.NewTimer(time.Until(next))
 		select {
 		case <-ctx.Done():
-			timer.Stop()
 			return
-		case <-timer.C:
+		case <-due:
+		case <-s.backups.requests:
 		}
 		s.backUpNow(ctx)
-		next = s.backups.now().Add(s.backups.policy.Every)
+		if timer != nil {
+			timer.Reset(time.Until(s.backups.now().Add(s.backups.policy.Every)))
+		}
+	}
+}
+
+// BackUpOnShutdown backs the database up once more, for a server that has
+// ended its streams and stopped RunBackups, so that the last copy holds
+// every write (docs/adr/2026-10-10-server-loss.md). A failure is
+// recorded and logged as any backup's is.
+func (s *Server) BackUpOnShutdown(ctx context.Context) {
+	if s.backups != nil {
+		s.backUpNow(ctx)
 	}
 }
 
@@ -468,9 +504,9 @@ func (s *Server) backupSection(last *backupAttempt) html.Node {
 		return component.Backups(nil, "Backups are off: the server was started without a backup directory.", false)
 	}
 	policy := s.backups.policy
-	schedule := "Backups are written on demand only"
+	schedule := "Backups are written after a task's harness exits, at shutdown and on demand"
 	if policy.Every > 0 {
-		schedule = "Backups are written every " + policy.Every.String()
+		schedule = "Backups are written every " + policy.Every.String() + ", after a task's harness exits, at shutdown and on demand"
 	}
 	schedule += ", keeping the newest " + strconv.Itoa(policy.Keep) + " in " + policy.Dir
 	if policy.Bucket != nil {

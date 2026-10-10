@@ -768,7 +768,13 @@ Scripts use the owner API:
 ### Backups
 
 The server backs up its database on a schedule and on demand
-([SQLite backups](docs/adr/2026-10-10-sqlite-backups.md)). Each backup
+([SQLite backups](docs/adr/2026-10-10-sqlite-backups.md)), and also
+after it stores the event of a task's harness exiting, since the daemon
+may then delete the task's journal and leave the database the only
+copy of its events, and when it shuts down on SIGINT or SIGTERM, after
+the open streams end, waiting up to a minute for it
+([server loss](docs/adr/2026-10-10-server-loss.md)). One backup runs at
+a time; requests during one lead to one more once it finishes. Each backup
 is a consistent copy of the whole database, made with SQLite's `VACUUM
 INTO` while the server runs. It is written to `-backup-dir` as
 `server-<time>.db`, with the time in UTC and RFC 3339 format, for
@@ -777,11 +783,13 @@ example `server-2026-10-10T14:30:05Z.db`. By default the directory is
 each copy readable by their owner only.
 
 `-backup-every` sets the interval between backups, as a duration such
-as `6h`, the default; `0` turns the schedule off and leaves backups on
-demand only. After a start, the first backup is due one interval after
+as `6h`, the default; `0` turns the schedule off and leaves the other
+backups. After a start, the first backup is due one interval after
 the newest copy in the directory, or at once if the directory has none,
 so a server restarted more often than the interval still makes
-backups. After each backup the server deletes the oldest copies beyond
+backups; each later one is due an interval after the backup before it,
+whatever started that one. After each backup the server deletes the
+oldest copies beyond
 `-backup-keep`, 14 by default. It deletes only files named like a
 backup.
 
@@ -1081,7 +1089,8 @@ Server flags:
 - `-backup-dir`: the directory backups are written to, `backups/`
   beside `-db` by default (see [Backups](#backups)).
 - `-backup-every`: the time between scheduled backups, 6 hours by
-  default; 0 backs up only on demand.
+  default; 0 schedules none, leaving the backups after a harness exits,
+  at shutdown and on demand.
 - `-backup-keep`: how many backups to keep, in the directory and in
   the bucket separately; 14 by default, and at least 1.
 - `-backup-s3-endpoint`, `-backup-s3-region`, `-backup-s3-bucket`,

@@ -358,3 +358,101 @@ func TestGivenTwoAttemptsWhenRecordedThenOnlyTheLastIsKept(t *testing.T) {
 		t.Errorf("last %+v, %v; want %+v", last, err, second)
 	}
 }
+
+// runBackups runs srv's backup loop until the test ends.
+func runBackups(t *testing.T, srv *Server) {
+	t.Helper()
+	ctx, cancel := context.WithCancel(t.Context())
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		srv.RunBackups(ctx)
+	}()
+	t.Cleanup(func() {
+		cancel()
+		<-done
+	})
+}
+
+// waitForCopies waits until dir holds count copies.
+func waitForCopies(t *testing.T, dir string, count int) {
+	t.Helper()
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		names, _ := localBackups(dir)
+		if len(names) == count {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("the backup directory holds %v, want %d copies", names, count)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+func harnessExitedEvent(task protocol.TaskID, seq uint64) protocol.Event {
+	exit := event(task, seq, `{"exit_code":0}`)
+	exit.Kind = protocol.KindHarnessExited
+	return exit
+}
+
+func TestGivenNoScheduleWhenAHarnessExitIsStoredThenTheDatabaseIsBackedUp(t *testing.T) {
+	dir := t.TempDir()
+	srv := startTestServerWith(t, Options{Backups: &BackupPolicy{Dir: dir, Keep: 3}})
+	runBackups(t, srv.Server)
+	seedTask(t, srv.store, "laptop", "task-1")
+	status, body := postEvents(t, srv, "laptop", event("task-1", 1, `{}`))
+	requireAcks(t, status, body, map[protocol.TaskID]uint64{"task-1": 1})
+	if names, _ := localBackups(dir); len(names) != 0 {
+		t.Fatalf("a batch without a harness exit was backed up: %v", names)
+	}
+
+	status, body = postEvents(t, srv, "laptop", harnessExitedEvent("task-1", 2))
+
+	requireAcks(t, status, body, map[protocol.TaskID]uint64{"task-1": 2})
+	waitForCopies(t, dir, 1)
+}
+
+// Requests that arrive while a backup runs lead to one more backup, not
+// one each.
+func TestGivenABackupRunningWhenBackupsAreRequestedSeveralTimesThenExactlyOneMoreRuns(t *testing.T) {
+	store, _ := openTestStore(t)
+	dir := t.TempDir()
+	srv := New(store, slog.New(slog.NewTextHandler(io.Discard, nil)), Options{Backups: &BackupPolicy{Dir: dir, Keep: 10}})
+	srv.backups.now = steppingClock(time.Date(2026, 10, 10, 0, 0, 0, 0, time.UTC), time.Minute)
+	ctx, cancel := context.WithCancel(t.Context())
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		srv.RunBackups(ctx)
+	}()
+	// Holding the lock keeps the first backup from finishing.
+	srv.backups.mu.Lock()
+	srv.requestBackup()
+	deadline := time.Now().Add(10 * time.Second)
+	for len(srv.backups.requests) != 0 {
+		if time.Now().After(deadline) {
+			t.Fatal("the backup loop did not take the request")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	for range 5 {
+		srv.requestBackup()
+	}
+	queued := len(srv.backups.requests)
+	srv.backups.mu.Unlock()
+	waitForCopies(t, dir, 2)
+	for len(srv.backups.requests) != 0 {
+		time.Sleep(10 * time.Millisecond)
+	}
+	cancel()
+	<-done
+
+	if queued != 1 {
+		t.Errorf("%d requests queued during the backup, want 1", queued)
+	}
+	if names, _ := localBackups(dir); len(names) != 2 {
+		t.Errorf("the backup directory holds %v, want the first backup and one more", names)
+	}
+}

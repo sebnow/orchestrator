@@ -288,6 +288,12 @@ func (s *Server) postEvents(w http.ResponseWriter, r *http.Request) {
 		s.log.Warn("duplicate event differs from the stored one; kept the stored one",
 			"daemon", daemon, "task", event.TaskID, "seq", event.Seq)
 	}
+	// Once the server holds a task's journal up to its harness exit, the
+	// daemon may delete the journal, and the database is then the only
+	// copy of those events (docs/adr/2026-10-10-server-loss.md).
+	if slices.ContainsFunc(events, func(event protocol.Event) bool { return event.Kind == protocol.KindHarnessExited }) {
+		s.requestBackup()
+	}
 	writeJSON(w, http.StatusOK, held)
 }
 

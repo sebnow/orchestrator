@@ -29,6 +29,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -40,6 +41,10 @@ import (
 // shutdownTimeout bounds how long in-flight requests may take to finish
 // after a signal.
 const shutdownTimeout = 30 * time.Second
+
+// shutdownBackupTimeout bounds the backup made on shutdown, so that a
+// service manager's stop timeout is not spent waiting on the bucket.
+const shutdownBackupTimeout = time.Minute
 
 // minDaemonTimeout is the shortest -daemon-timeout the server accepts.
 const minDaemonTimeout = time.Minute
@@ -112,7 +117,7 @@ func serve(args []string, stderr io.Writer) int {
 	daemonBinariesDir := flags.String("daemon-binaries-dir", "", "directory holding daemon-linux-amd64 and daemon-linux-arm64, which the server serves without authentication at /daemon/linux-amd64 and /daemon/linux-arm64")
 	publicURL := flags.String("public-url", "", "the server's https URL as a provisioned VPS's daemon dials it, such as https://orchestrator.example:8443")
 	backupDir := flags.String("backup-dir", "", "directory the database's backups are written to, created when missing; backups/ beside -db by default")
-	backupEvery := flags.Duration("backup-every", 6*time.Hour, "time between scheduled backups of the database; 0 backs up only on demand")
+	backupEvery := flags.Duration("backup-every", 6*time.Hour, "time between scheduled backups of the database; 0 schedules none, leaving the backups after a task's harness exits, at shutdown and on demand")
 	backupKeep := flags.Int("backup-keep", 14, "how many backups are kept, locally and in the bucket each; older ones are deleted after each backup")
 	bucket := addBucketFlags(flags)
 	backupPrefix := flags.String("backup-s3-prefix", "orchestrator/", "the directory in the bucket that backups are uploaded to")
@@ -275,12 +280,13 @@ func serve(args []string, stderr io.Writer) int {
 	}()
 	// The scheduler, the backups and the host key fetch use the store, so
 	// they stop before the store closes.
-	defer func() {
+	stopBackground := sync.OnceFunc(func() {
 		stopScheduling()
 		<-scheduled
 		<-backedUp
 		<-fetched
-	}()
+	})
+	defer stopBackground()
 	listener, err := net.Listen("tcp", *listen)
 	if err != nil {
 		log.Error("listen", "error", err)
@@ -308,15 +314,21 @@ func serve(args []string, stderr io.Writer) int {
 	log.Info("shutting down")
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
 	defer cancel()
+	status = 0
 	if err := httpServer.Shutdown(shutdownCtx); err != nil {
 		log.Error("shut down", "error", err)
-		return 1
-	}
-	if err := <-served; !errors.Is(err, http.ErrServerClosed) {
+		status = 1
+	} else if err := <-served; !errors.Is(err, http.ErrServerClosed) {
 		log.Error("serve", "error", err)
-		return 1
+		status = 1
 	}
-	return 0
+	// The last backup follows every write: the streams have ended, and
+	// the scheduler and the backups have stopped.
+	stopBackground()
+	backupCtx, cancelBackup := context.WithTimeout(context.Background(), shutdownBackupTimeout)
+	srv.BackUpOnShutdown(backupCtx)
+	cancelBackup()
+	return status
 }
 
 // exitCode is the status of a run whose flags did not parse: 0 when help

@@ -178,3 +178,26 @@ func TestGivenAWriteAheadLogWithoutItsDatabaseWhenTheServerStartsWithABucketThen
 		t.Errorf("the database was written: %v", err)
 	}
 }
+
+func TestGivenNoScheduleWhenTheServerShutsDownThenItBacksUpOnceMoreAndUploadsIt(t *testing.T) {
+	bucket := s3test.NewServer(t)
+	dbPath := filepath.Join(t.TempDir(), "server.db")
+
+	status, logs := serveUntilSignalled(t, serveArgs(t, dbPath, bucket)...)
+
+	if status != 0 {
+		t.Fatalf("status %d, want 0:\n%s", status, logs)
+	}
+	shutdown := strings.Index(logs, "shutting down")
+	backedUp := strings.LastIndex(logs, "backed up database")
+	if shutdown < 0 || backedUp < shutdown {
+		t.Errorf("no backup logged after shutting down:\n%s", logs)
+	}
+	var uploads []string
+	for key := range bucket.Objects() {
+		uploads = append(uploads, key)
+	}
+	if len(uploads) != 1 || !strings.HasPrefix(uploads[0], "orchestrator/server-") || !strings.HasSuffix(uploads[0], ".db.gz") {
+		t.Errorf("the bucket holds %q, want the shutdown's gzipped upload", uploads)
+	}
+}
