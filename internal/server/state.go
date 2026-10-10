@@ -283,7 +283,7 @@ func (p *progress) seeEvent(event protocol.Event) {
 	if !ok {
 		return
 	}
-	for _, body := range normalise(event.Payload) {
+	for _, body := range normalise()(event.Payload) {
 		if turn, ok := body.(transcript.TurnEnded); ok && p.CostBase+turn.TotalCostUSD > p.CostUSD {
 			p.CostUSD = p.CostBase + turn.TotalCostUSD
 		}

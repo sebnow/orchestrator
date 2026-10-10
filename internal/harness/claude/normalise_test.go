@@ -252,3 +252,28 @@ func TestGivenSubagentRunWhenNormalisingThenTheSubagentsBodiesCarryTheSpawningCa
 		t.Errorf("texts = %+v", texts)
 	}
 }
+
+func TestGivenControlRunWhenNormalisedInOrderThenEachTurnsContextIsItsLastCallsNotTheResultsSumOfEveryCall(t *testing.T) {
+	lines := fixtureLines(t, "../../../spikes/mod-vs-stdout/runs/control-1/stdout.jsonl")
+	normaliser := new(claude.Normaliser)
+	var ended []transcript.TurnEnded
+	for _, line := range lines {
+		ended = append(ended, bodiesOf[transcript.TurnEnded](normaliser.Normalise(line))...)
+	}
+
+	if len(ended) == 0 {
+		t.Fatal("no turn ended")
+	}
+	// The first turn made two calls: 10 + 14,167 + 7,162 tokens, then
+	// 8 + 21,329 + 352. Its result sums them, as 18, 35,496 and 7,514.
+	first := ended[0]
+	if first.CacheReadInputTokens != 35496 || first.InputTokens != 18 || first.CacheCreationInputTokens != 7514 {
+		t.Fatalf("first result usage = %d, %d, %d; want the fixture's sums", first.InputTokens, first.CacheReadInputTokens, first.CacheCreationInputTokens)
+	}
+	if first.ContextTokens != 8+21329+352 {
+		t.Errorf("first turn's context = %d, want %d, its last call's", first.ContextTokens, 8+21329+352)
+	}
+	if lone := bodiesOf[transcript.TurnEnded](claude.Normalise(lines[len(lines)-1])); len(lone) != 1 || lone[0].ContextTokens != 0 {
+		t.Errorf("the last result read on its own = %+v, want one turn end without a context: it cannot say", lone)
+	}
+}

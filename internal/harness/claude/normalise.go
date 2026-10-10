@@ -46,7 +46,29 @@ type contentBlock struct {
 // (https://code.claude.com/docs/en/headless.md, "Follow subagent
 // messages"; docs/design/2026-10-09-subagent-stream.md records a run);
 // every body made from it carries that id as its ParentToolUseID.
+//
+// Normalise reads each line on its own, so the turn ends it makes carry
+// no context size; a Normaliser reading a task's lines in order gives
+// them one.
 func Normalise(payload json.RawMessage) []transcript.Body {
+	return new(Normaliser).Normalise(payload)
+}
+
+// Normaliser normalises the lines of one task in order, as Normalise
+// does each line, and remembers what the session's context size was
+// after the main conversation's latest model call, which a result alone
+// does not say: its usage sums every call of the turn
+// (spikes/mod-vs-stdout/runs/control-1: cache_read_input_tokens 35,496
+// in the first result, the sum of the turn's two calls, 14,167 and
+// 21,329).
+type Normaliser struct {
+	contextTokens int64
+}
+
+// Normalise turns one line, the next of its task, into transcript
+// bodies, as the package's Normalise does, and gives the end of a turn
+// the context size of the turn's last call.
+func (n *Normaliser) Normalise(payload json.RawMessage) []transcript.Body {
 	msg, err := Parse(payload)
 	if err != nil {
 		return []transcript.Body{unknownLine(payload)}
@@ -58,7 +80,14 @@ func Normalise(payload json.RawMessage) []transcript.Body {
 		return nil
 	}
 	if result, ok := msg.Result(); ok {
-		return []transcript.Body{turnEnded(msg.Subtype, result)}
+		ended := turnEnded(msg.Subtype, result)
+		ended.ContextTokens = n.contextTokens
+		return []transcript.Body{ended}
+	}
+	if msg.Type == TypeAssistant && parentToolUseID(payload) == "" {
+		if tokens := callContext(payload); tokens > 0 {
+			n.contextTokens = tokens
+		}
 	}
 	var bodies []transcript.Body
 	switch msg.Type {
@@ -80,6 +109,23 @@ func Normalise(payload json.RawMessage) []transcript.Body {
 		}
 	}
 	return bodies
+}
+
+// callContext is the context of the model call an assistant line comes
+// from: the input it read, from the cache or not, and what it wrote to
+// the cache; 0 when the line carries no usage. Claude Code writes one
+// line per content block, each with the call's usage.
+func callContext(line json.RawMessage) int64 {
+	var msg struct {
+		Message struct {
+			Usage Usage `json:"usage"`
+		} `json:"message"`
+	}
+	if err := json.Unmarshal(line, &msg); err != nil {
+		return 0
+	}
+	usage := msg.Message.Usage
+	return usage.InputTokens + usage.CacheReadInputTokens + usage.CacheCreationInputTokens
 }
 
 // parentToolUseID returns the line's parent_tool_use_id, which is null

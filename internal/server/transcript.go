@@ -10,14 +10,15 @@ import (
 	"github.com/sebnow/orchestrator/internal/transcript"
 )
 
-// normaliser turns the payload of one harness_output event into
+// normaliser turns the payload of one harness_output event, the next of
+// its task, into
 // transcript bodies.
 type normaliser func(payload json.RawMessage) []transcript.Body
 
 // normalisers maps the harness name events carry to the normaliser of
 // that harness's output.
-var normalisers = map[string]normaliser{
-	claude.Name: claude.Normalise,
+var normalisers = map[string]func() normaliser{
+	claude.Name: func() normaliser { return new(claude.Normaliser).Normalise },
 }
 
 // Transcript returns the readable history of task, derived from its
@@ -63,9 +64,12 @@ func assemble(task protocol.TaskID, h history) []transcript.Entry {
 		}
 	}
 	var fromEvents []transcript.Entry
+	// One normaliser per harness reads the task's lines in order, so that
+	// what one line says can inform a later one's.
+	normalising := make(map[string]normaliser)
 	for _, event := range h.events {
 		source := transcript.Source{TaskID: event.TaskID, Seq: event.Seq}
-		for _, body := range eventBodies(event) {
+		for _, body := range describeEvent(event, normalising) {
 			fromEvents = append(fromEvents, transcript.Entry{Time: event.Time, Source: source, Body: body})
 		}
 	}
@@ -112,11 +116,26 @@ func mergeByTime(lists ...[]transcript.Entry) []transcript.Entry {
 	return entries
 }
 
-// eventBodies describes one event. A harness line goes to the normaliser
-// of the harness that wrote it.
+// eventBodies describes one event on its own. A harness line goes to a
+// new normaliser of the harness that wrote it.
 func eventBodies(event protocol.Event) []transcript.Body {
+	return describeEvent(event, make(map[string]normaliser))
+}
+
+// describeEvent describes one event. A harness line goes to the
+// normaliser in normalising of the harness that wrote it, made when there
+// is none.
+func describeEvent(event protocol.Event, normalising map[string]normaliser) []transcript.Body {
 	if event.Kind == protocol.KindHarnessOutput {
-		if normalise, ok := normalisers[event.Harness.Name]; ok {
+		normalise, ok := normalising[event.Harness.Name]
+		if !ok {
+			var made func() normaliser
+			if made, ok = normalisers[event.Harness.Name]; ok {
+				normalise = made()
+				normalising[event.Harness.Name] = normalise
+			}
+		}
+		if ok {
 			return normalise(event.Payload)
 		}
 		return []transcript.Body{unknownRecord(string(event.Kind), event.Payload)}

@@ -9,10 +9,12 @@ import (
 	"github.com/sebnow/orchestrator/internal/protocol"
 )
 
-// finishedResult is a result whose usage says the session's context is
-// 18 + 37,544 + 7,518 = 45,080 tokens of a 200,000-token window.
+// finishedResult is a result whose usage sums the turn's two calls, and
+// whose model has a 200,000-token window. The session's context is the
+// last call's, 8 + 37,536 + 7,536 = 45,080 tokens (see taskThatReplied),
+// not the sums.
 const finishedResult = `{"type":"result","subtype":"success","is_error":false,"result":"Done: the fix is on the branch.","total_cost_usd":0.02,` +
-	`"usage":{"input_tokens":18,"output_tokens":329,"cache_creation_input_tokens":7518,"cache_read_input_tokens":37544},` +
+	`"usage":{"input_tokens":18,"output_tokens":329,"cache_creation_input_tokens":11536,"cache_read_input_tokens":57536},` +
 	`"modelUsage":{"claude-haiku-4-5":{"contextWindow":200000}}}`
 
 // taskThatReplied starts a task, through the API with body, whose first
@@ -24,7 +26,10 @@ func taskThatReplied(t *testing.T, srv testServer, body, reply string) protocol.
 	admitTurns(t, srv.store)
 	events := &taskEvents{task: turn.TaskID}
 	events.add(protocol.KindHarnessStarted, `{"pid":7,"model":"haiku","workdir":"/w"}`)
-	events.add(protocol.KindHarnessOutput, `{"type":"assistant","message":{"id":"m1","role":"assistant","content":[{"type":"text","text":`+jsonString(reply)+`}]}}`)
+	events.add(protocol.KindHarnessOutput, `{"type":"assistant","message":{"id":"m0","role":"assistant","content":[{"type":"tool_use","id":"t1","name":"Read","input":{}}],`+
+		`"usage":{"input_tokens":10,"cache_read_input_tokens":20000,"cache_creation_input_tokens":4000}}}`)
+	events.add(protocol.KindHarnessOutput, `{"type":"assistant","message":{"id":"m1","role":"assistant","content":[{"type":"text","text":`+jsonString(reply)+`}],`+
+		`"usage":{"input_tokens":8,"cache_read_input_tokens":37536,"cache_creation_input_tokens":7536}}}`)
 	events.add(protocol.KindHarnessOutput, finishedResult)
 	events.add(protocol.KindHarnessExited, `{"exit_code":0}`)
 	events.ingest(t, srv, "laptop")

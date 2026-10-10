@@ -82,7 +82,7 @@ func (v taskView) task() component.Task {
 	task.ProjectName = v.projectName
 	task.Failure = v.detail.Failure
 	if latest, ok := v.latestTurn(); ok {
-		task.ContextTokens, task.ContextWindow = latest.ContextTokens(), latest.ContextWindow
+		task.ContextTokens, task.ContextWindow = latest.ContextTokens, latest.ContextWindow
 	}
 	if v.detail.Continues != nil {
 		task.Continues = string(*v.detail.Continues)
@@ -252,8 +252,8 @@ func (v taskView) followUp() component.FollowUp {
 		offer.Notes = append(offer.Notes, "The task's harness never started, so it has no session to continue. "+
 			"A prompt starts it afresh, on whichever daemon fits, with its first prompt followed by yours; Retry starts it with its first prompt alone.")
 	case v.detail.State.Idle() && v.detail.State != TaskQueued:
-		if latest, ok := v.latestTurn(); ok && latest.ContextTokens() > 0 {
-			offer.Notes = append(offer.Notes, "Resuming reads about "+component.ContextSize(latest.ContextTokens(), 0)+" of context. "+
+		if latest, ok := v.latestTurn(); ok && latest.ContextTokens > 0 {
+			offer.Notes = append(offer.Notes, "Resuming reads about "+component.ContextSize(latest.ContextTokens, 0)+" of context. "+
 				"On a Claude subscription, within the plan's usage, Claude Code caches the conversation for an hour after its last request, "+
 				"so a resume within the hour reads most of it from the cache "+
 				"(https://code.claude.com/docs/en/prompt-caching#resuming-a-session). "+
