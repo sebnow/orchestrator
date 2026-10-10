@@ -338,7 +338,7 @@ func Serve(ctx context.Context, cfg Config) error {
 		defer close(watchedLogin)
 		s.watchLogin(ctx)
 	}()
-	cfg.Log.Info("serving", "server", cfg.Server.String(), "daemon", cfg.ID, "state_dir", stateDir, "facts", s.facts)
+	cfg.Log.Info("serving", "server", cfg.Server.String(), "daemon", cfg.ID, "state_dir", stateDir, "facts", s.currentFacts())
 
 	<-ctx.Done()
 	<-received
