@@ -891,9 +891,16 @@ its `Last-Event-ID`:
 
 The answer to a refused stream is JSON with the `reason` and a `message`
 that names the server's current epoch. The dashboard's daemon list
-shows the refusal and when it happened, and `GET /v1/daemons` reports it
-as `stream_refused`, until a stream of the daemon's opens. The daemon
-logs the refusal and tries again with backoff.
+shows the refusal and since when the daemon's streams have been
+refused, and `GET /v1/daemons` reports it as `stream_refused`, with
+`since` and the latest refusal's `at`, until a stream of the daemon's
+opens. The daemon logs the refusal and tries again with backoff.
+
+A refused daemon counts as unseen from its first refused stream, however
+often it sends events or asks for acknowledgements, so after
+`-daemon-timeout` it is lost and its tasks move as a lost daemon's do
+(see [Lost daemons](#lost-daemons)). It stays lost until a stream of its
+is accepted.
 
 To reset a daemon refused with `unknown_lineage`, stop it, set
 `command_epoch` in its `state.json` to the current epoch the message
@@ -1666,7 +1673,10 @@ instance to keep room for the machine's own work, with a label such as
 
 A daemon is lost once it has had no command stream open, and made no
 request, for `-daemon-timeout`; time before the server started does not
-count ([daemon loss](docs/adr/2026-10-08-daemon-loss.md)). The
+count ([daemon loss](docs/adr/2026-10-08-daemon-loss.md)). A daemon
+whose command stream the server refuses counts as making no request
+from the first refusal (see [Command ids and
+epochs](#command-ids-and-epochs)). The
 dashboard's list of daemons says since when each lost daemon has been
 lost, until it connects again.
 

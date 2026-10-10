@@ -631,16 +631,17 @@ func taskFields(input NewTask, choices TaskChoices, noAgent string, workspace ht
 // taken at QuotaAt; nil when it has reported none. InUse of its Slots
 // are held by tasks. LostSince is when the server declared it lost; zero
 // while it is not. Refused is the reason the server last refused its
-// command stream, at RefusedAt, with RefusedMessage; empty when none was
-// refused since one opened.
+// command stream and RefusedMessage that refusal's message; RefusedSince
+// is when the first refusal since the daemon's last accepted stream was.
+// Refused is empty while no stream is refused.
 type Daemon struct {
-	ID        string
-	Harness   string
-	LastSeen  time.Time
-	Connected bool
-	LostSince time.Time
-	Refused   string
-	RefusedAt time.Time
+	ID           string
+	Harness      string
+	LastSeen     time.Time
+	Connected    bool
+	LostSince    time.Time
+	Refused      string
+	RefusedSince time.Time
 	// RefusedMessage says why in words.
 	RefusedMessage string
 	Slots          int
@@ -702,7 +703,7 @@ func connection(daemon Daemon) html.Node {
 	if daemon.Refused != "" {
 		refused = html.Fragment(html.Text(" "),
 			html.El("span", attrs("class", "badge refused", "title", daemon.RefusedMessage), html.Text("stream refused: "+daemon.Refused)),
-			html.Text(" at "), timestamp(daemon.RefusedAt))
+			html.Text(" since "), timestamp(daemon.RefusedSince))
 	}
 	if !daemon.Connected && !daemon.LostSince.IsZero() {
 		return html.Fragment(html.Text("no, lost since "), timestamp(daemon.LostSince), refused)

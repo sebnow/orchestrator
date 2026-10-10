@@ -22,11 +22,16 @@ func (e *streamRefusedError) Error() string {
 	return e.Message
 }
 
-// streamRefusal is a refusal as the daemon list keeps it.
+// streamRefusal is a refusal as the daemon list keeps it: the latest's
+// reason and message, when it was, and Since, when the first of the
+// refusals since the daemon's last accepted stream was. The daemon counts
+// as unseen from Since for the daemon-loss timer
+// (docs/adr/2026-10-10-server-loss.md).
 type streamRefusal struct {
 	Reason  protocol.RefusalReason `json:"reason"`
 	Message string                 `json:"message"`
 	At      time.Time              `json:"at"`
+	Since   time.Time              `json:"since"`
 }
 
 // openCommandStream records daemon as seen and decides whether its
@@ -35,7 +40,10 @@ type streamRefusal struct {
 // command applied before commands had epochs, which is in the first
 // epoch. It returns that position when the stream opens, and a
 // *streamRefusedError when it does not, which the daemon list shows
-// until a stream of the daemon's opens.
+// until a stream of the daemon's opens. While a refusal is recorded the
+// daemon counts as unseen since the first refusal, however often it
+// calls, and a daemon declared lost stays lost; an accepted stream ends
+// both.
 //
 //   - In the current epoch, the daemon cannot have applied a command the
 //     server has not issued, so a position past the last issued is
@@ -59,16 +67,29 @@ func (s *Store) openCommandStream(ctx context.Context, daemon protocol.DaemonID,
 	if err != nil {
 		return protocol.CommandPosition{}, err
 	}
-	var stored any
-	if refusal != nil {
-		data, err := json.Marshal(streamRefusal{Reason: refusal.Reason, Message: refusal.Message, At: now.UTC()})
+	if refusal == nil {
+		if _, err := tx.ExecContext(ctx, `UPDATE daemons SET stream_refusal = NULL, lost_at = NULL WHERE id = ?`, string(daemon)); err != nil {
+			return protocol.CommandPosition{}, fmt.Errorf("open command stream: %w", err)
+		}
+	} else {
+		recorded := streamRefusal{Reason: refusal.Reason, Message: refusal.Message, At: now.UTC(), Since: now.UTC()}
+		var previous sql.NullString
+		if err := tx.QueryRowContext(ctx, `SELECT stream_refusal FROM daemons WHERE id = ?`, string(daemon)).Scan(&previous); err != nil {
+			return protocol.CommandPosition{}, fmt.Errorf("record the stream refusal: %w", err)
+		}
+		if previous.Valid {
+			var earlier streamRefusal
+			if err := json.Unmarshal([]byte(previous.String), &earlier); err == nil && !earlier.Since.IsZero() {
+				recorded.Since = earlier.Since
+			}
+		}
+		data, err := json.Marshal(recorded)
 		if err != nil {
 			return protocol.CommandPosition{}, fmt.Errorf("record the stream refusal: %w", err)
 		}
-		stored = string(data)
-	}
-	if _, err := tx.ExecContext(ctx, `UPDATE daemons SET stream_refusal = ? WHERE id = ?`, stored, string(daemon)); err != nil {
-		return protocol.CommandPosition{}, fmt.Errorf("record the stream refusal: %w", err)
+		if _, err := tx.ExecContext(ctx, `UPDATE daemons SET stream_refusal = ? WHERE id = ?`, string(data), string(daemon)); err != nil {
+			return protocol.CommandPosition{}, fmt.Errorf("record the stream refusal: %w", err)
+		}
 	}
 	if err := tx.Commit(); err != nil {
 		return protocol.CommandPosition{}, fmt.Errorf("open command stream: %w", err)

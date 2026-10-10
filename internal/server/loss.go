@@ -25,11 +25,14 @@ type losses struct {
 }
 
 // findLost declares lost, at now, each daemon that has no command stream
-// open, is not among connected, and has not been seen for timeout. Time
-// before upSince, when the server started, does not count, so that a
-// daemon is not declared lost for the server's own absence. A daemon
-// declared lost stays so until it is seen again. A timeout of zero
-// declares no daemon lost.
+// open, is not among connected, and has not been seen for timeout. A
+// daemon whose command stream the server refuses counts as unseen since
+// the first refusal, whatever else it sends
+// (docs/adr/2026-10-10-server-loss.md). Time before upSince, when the
+// server started, does not count, so that a daemon is not declared lost
+// for the server's own absence. A daemon declared lost stays so until it
+// is seen again, or, while refused, until its stream is accepted. A
+// timeout of zero declares no daemon lost.
 func findLost(ctx context.Context, tx *sql.Tx, connected []protocol.DaemonID, now, upSince time.Time, timeout time.Duration) (losses, error) {
 	l := losses{lost: make(map[protocol.DaemonID]bool)}
 	if timeout <= 0 {
@@ -39,7 +42,7 @@ func findLost(ctx context.Context, tx *sql.Tx, connected []protocol.DaemonID, no
 	for _, daemon := range connected {
 		isConnected[daemon] = true
 	}
-	rows, err := tx.QueryContext(ctx, `SELECT id, last_seen, lost_at IS NOT NULL FROM daemons`)
+	rows, err := tx.QueryContext(ctx, `SELECT id, last_seen, lost_at IS NOT NULL, json_extract(stream_refusal, '$.since') FROM daemons`)
 	if err != nil {
 		return losses{}, fmt.Errorf("read daemons: %w", err)
 	}
@@ -51,7 +54,8 @@ func findLost(ctx context.Context, tx *sql.Tx, connected []protocol.DaemonID, no
 	for rows.Next() {
 		var id, lastSeen string
 		var declared bool
-		if err := rows.Scan(&id, &lastSeen, &declared); err != nil {
+		var refusedSince sql.NullString
+		if err := rows.Scan(&id, &lastSeen, &declared, &refusedSince); err != nil {
 			rows.Close()
 			return losses{}, fmt.Errorf("read daemons: %w", err)
 		}
@@ -67,6 +71,16 @@ func findLost(ctx context.Context, tx *sql.Tx, connected []protocol.DaemonID, no
 		if err != nil {
 			rows.Close()
 			return losses{}, fmt.Errorf("read daemon %q: %w", id, err)
+		}
+		if refusedSince.Valid {
+			since, err := parseTime(refusedSince.String)
+			if err != nil {
+				rows.Close()
+				return losses{}, fmt.Errorf("read daemon %q: %w", id, err)
+			}
+			if since.Before(last) {
+				last = since
+			}
 		}
 		away = append(away, seen{id: daemon, last: last})
 	}

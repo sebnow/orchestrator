@@ -488,3 +488,87 @@ func TestGivenTwoPromptsQueuedForAFinishedTaskWhileItsDaemonIsAwayWhenItIsLostTh
 		t.Errorf("transcript's move entry does not list both queued prompts: %+v", entries)
 	}
 }
+
+// refuseStream opens daemon's command stream from an epoch the server's
+// lineage does not hold, which the server refuses.
+func refuseStream(t *testing.T, srv testServer, daemon protocol.DaemonID) {
+	t.Helper()
+	status, body := openStreamOnce(t, srv, daemon, "0123456789abcdef0123456789abcdef:1")
+	requireRefused(t, status, body, protocol.RefusedUnknownLineage)
+}
+
+// keepSeen has daemon ask for its acknowledgements, which any other
+// daemon would count as being seen.
+func keepSeen(t *testing.T, srv testServer, daemon protocol.DaemonID) {
+	t.Helper()
+	if status, body := doRequest(t, http.MethodGet, srv.url+"/v1/daemons/"+string(daemon)+"/acks", ""); status != http.StatusOK {
+		t.Fatalf("acks: %d %s", status, body)
+	}
+}
+
+func TestGivenARefusedStreamWhenTheTimeoutPassesThoughTheDaemonKeepsCallingThenItIsLostAndItsRunningTaskMoves(t *testing.T) {
+	clock := newTestClock()
+	srv := startLossServer(t, clock)
+	vps := connectDaemon(t, srv, "vps")
+	task := runningOn(t, srv, vps, "count to three")
+	vps.vanish()
+	refuseStream(t, srv, "vps")
+
+	clock.advance(lossTimeout - time.Second)
+	keepSeen(t, srv, "vps")
+	srv.pass(t)
+	if lostAt(t, srv, "vps") != nil {
+		t.Fatal("vps is lost before the timeout")
+	}
+	laptop := connectDaemon(t, srv, "laptop")
+	clock.advance(time.Second)
+	keepSeen(t, srv, "vps")
+	refuseStream(t, srv, "vps")
+	srv.pass(t)
+
+	if lostAt(t, srv, "vps") == nil {
+		t.Fatal("vps is not lost a timeout after its first refused stream")
+	}
+	laptop.nextCommand(t, task, protocol.CommandStartTask)
+	keepSeen(t, srv, "vps")
+	if lostAt(t, srv, "vps") == nil {
+		t.Error("a call from the refused daemon made it no longer lost")
+	}
+}
+
+func TestGivenALostRefusedDaemonWhenItsStreamIsAcceptedThenItIsNoLongerLostOrRefused(t *testing.T) {
+	clock := newTestClock()
+	srv := startLossServer(t, clock)
+	connectDaemon(t, srv, "vps").vanish()
+	refuseStream(t, srv, "vps")
+	clock.advance(lossTimeout)
+	srv.pass(t)
+	if lostAt(t, srv, "vps") == nil {
+		t.Fatal("vps is not lost")
+	}
+
+	connectDaemon(t, srv, "vps")
+
+	if at := lostAt(t, srv, "vps"); at != nil {
+		t.Errorf("vps is lost at %v after its stream was accepted", at)
+	}
+	if listed := listedRefusal(t, srv, "vps"); listed != nil {
+		t.Errorf("the daemon list still shows %+v", listed)
+	}
+}
+
+func TestGivenRepeatedRefusalsWhenListedThenTheRefusalCountsFromTheFirst(t *testing.T) {
+	clock := newTestClock()
+	srv := startLossServer(t, clock)
+	connectDaemon(t, srv, "vps").vanish()
+	first := clock.now()
+	refuseStream(t, srv, "vps")
+	clock.advance(5 * time.Minute)
+
+	refuseStream(t, srv, "vps")
+
+	listed := listedRefusal(t, srv, "vps")
+	if listed == nil || !listed.Since.Equal(first) || !listed.At.Equal(first.Add(5*time.Minute)) {
+		t.Errorf("the daemon list shows %+v, want refused since %v, last at %v", listed, first, first.Add(5*time.Minute))
+	}
+}

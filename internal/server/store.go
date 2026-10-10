@@ -668,7 +668,7 @@ func seeDaemon(ctx context.Context, tx *sql.Tx, daemon protocol.DaemonID, at tim
 		VALUES (?1, ?2, ?2, ?3, ?4)
 		ON CONFLICT (id) DO UPDATE SET
 			last_seen = excluded.last_seen,
-			lost_at = NULL,
+			lost_at = CASE WHEN daemons.stream_refusal IS NULL THEN NULL ELSE daemons.lost_at END,
 			harness_name = coalesce(excluded.harness_name, daemons.harness_name),
 			harness_version = coalesce(excluded.harness_version, daemons.harness_version)`,
 		string(daemon), formatTime(at.UTC()), name, version)

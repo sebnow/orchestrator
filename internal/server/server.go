@@ -346,6 +346,8 @@ func (s *Server) streamCommands(w http.ResponseWriter, r *http.Request) {
 	if refused, ok := errors.AsType[*streamRefusedError](err); ok {
 		s.log.Warn("refused a daemon's command stream", "daemon", daemon, "reason", refused.Reason, "error", refused)
 		s.daemonChanged(daemon)
+		// The refusal starts the daemon's loss timer.
+		s.sched.poke()
 		writeJSON(w, http.StatusConflict, protocol.StreamRefused{Reason: refused.Reason, Message: refused.Message})
 		return
 	}
