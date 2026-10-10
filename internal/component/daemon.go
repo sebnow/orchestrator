@@ -117,11 +117,14 @@ func DaemonLogin(view DaemonLoginView) html.Node {
 	case "requested":
 		progress = html.El("p", attrs("class", "notice login-progress"), html.Text("Waiting for the daemon to start the login."))
 	case "started":
+		// Claude Code opens a browser itself when the daemon's machine
+		// has one, and its local callback completes the login without a
+		// code; the code is for a machine without one.
 		progress = html.Fragment(
 			html.El("p", attrs("class", "login-progress"),
-				html.Text("Authorise the login in your browser, then paste the code the page shows: "),
-				html.El("a", attrs("href", view.URL, "target", "_blank", "rel", "noopener noreferrer", "class", "login-url"), html.Text("open the authorisation page")),
-				html.Text(".")),
+				html.Text("If a browser opened on the daemon's machine, authorise there. Otherwise "),
+				html.El("a", attrs("href", view.URL, "target", "_blank", "rel", "noopener noreferrer", "class", "login-url"), html.Text("open this link")),
+				html.Text(", authorise, and paste the code shown.")),
 			Form(daemonURL(view.ID)+"/login/code", "",
 				Field(FieldSpec{Kind: FieldPassword, Name: "code", Label: "Code", Required: true}),
 				Button("Submit code", VariantPrimary, "", "")),
@@ -129,9 +132,14 @@ func DaemonLogin(view DaemonLoginView) html.Node {
 	case "code_sent":
 		progress = html.El("p", attrs("class", "notice login-progress"), html.Text("Code sent; waiting for the harness to finish the login."))
 	case "finished":
-		if view.OK {
-			progress = html.El("p", attrs("class", "notice login-progress login-ok"), html.Text("The login succeeded."))
-		} else {
+		switch {
+		case view.OK && view.Account != "":
+			progress = html.El("p", attrs("class", "notice login-progress login-ok"),
+				html.Text("The login succeeded: logged in as "), html.El("code", nil, html.Text(view.Account)), html.Text("."))
+		case view.OK:
+			progress = html.El("p", attrs("class", "notice login-progress login-ok"),
+				html.Text("The login succeeded; the harness reports no account yet."))
+		default:
 			progress = html.El("p", attrs("class", "problem login-progress login-failed"), html.Text("The login failed: "+view.Error))
 		}
 	}

@@ -585,8 +585,8 @@ makes it by running `claude` as the harness user, the OS user that
 runs tasks: the daemon's own user, or the one `-harness-user` names.
 Claude Code stores the login in that user's configuration. The server
 keeps no login credential; it holds the one-time code only until the
-login ends. You authorise in a browser on your own machine, so the
-daemon's machine does not need one.
+login ends. The daemon's machine does not need a browser: you can
+authorise in one on your own machine.
 
 The daemon runs `claude auth status --json` when it connects, every
 ten minutes, and after each login, and reports the result as facts
@@ -609,19 +609,29 @@ needed", and the server places no turn on it until it is logged in.
 To log a daemon in, open its page from the dashboard and click **Log
 in** in the Login section. The server sends the daemon a `login`
 command; the daemon runs `claude auth login` as the harness user and
-reports the URL Claude Code prints. The Login section shows a link to
-that URL. Open it in your browser and authorise; the page then shows a
-code, which you paste into the Code field. The server sends the code
-as a `login_code` command, and the daemon writes it to the standard
-input of `claude auth login`, runs `claude auth status` again, and
-reports whether the login succeeded. The Login section updates at each
-step without a page reload.
+reports the URL Claude Code prints. The Login section then says: "If a
+browser opened on the daemon's machine, authorise there. Otherwise
+open this link, authorise, and paste the code shown.", with a Code
+field below.
+
+- On a machine with a browser, such as the owner's Mac with the harness
+  user being the account in use there, Claude Code opens the browser
+  itself; authorising in it completes the login through Claude Code's
+  local callback, without a code.
+- On a machine without one, such as a VPS, open the link in your own
+  browser and authorise; the page then shows a code, which you paste
+  into the Code field. The server sends the code as a `login_code`
+  command, and the daemon writes it to the standard input of `claude
+  auth login`.
+
+Either way the daemon runs `claude auth status` again and reports
+whether the login succeeded; the Login section then names the account
+the harness reports, from the `account` fact, or says it reports none
+yet. The Login section updates at each step without a page reload.
 
 The daemon ends a login that receives no code within ten minutes. A
 daemon runs one login at a time: clicking **Log in** during a login
-ends it and starts a new one. When the harness user is the account you
-use on the daemon's machine, Claude Code also opens a browser there;
-authorising in it completes the login without a code.
+ends it and starts a new one.
 
 If Claude Code rejects the code, the login fails with Claude Code's
 message; start a new login. For a malformed code, Claude Code 2.1.289

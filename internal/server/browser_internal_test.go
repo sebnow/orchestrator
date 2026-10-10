@@ -580,7 +580,7 @@ func TestGivenDaemonPageWhenTheOwnerLogsTheDaemonInThenTheLoginSectionFollowsWit
 
 	doRequest(t, http.MethodPut, srv.url+"/v1/daemons/vps/facts", `{"login":"yes","login_method":"claude.ai","account":"owner@example.com/org-1"}`)
 	postLoginEventTo(t, srv, "vps", protocol.LoginEvent{Kind: protocol.KindLoginFinished, Login: login.ID, OK: true})
-	page.WaitTrue(hasText("#daemon-login", "The login succeeded.") + " && " + hasText("#daemon-login", "Logged in, by claude.ai as owner@example.com/org-1."))
+	page.WaitTrue(hasText("#daemon-login", "The login succeeded: logged in as owner@example.com/org-1.") + " && " + hasText("#daemon-login", "Logged in, by claude.ai as owner@example.com/org-1."))
 
 	requireNotReloaded(t, page)
 	requireHTMXPosts(t, requests, "/daemons/vps/login", 1)

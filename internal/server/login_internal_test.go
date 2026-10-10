@@ -159,7 +159,8 @@ func TestGivenDaemonPageWhenTheOwnerLogsInWithFormsThenTheLoginSectionFollowsAnd
 	requireContains(t, receiveEvent(t, stream).data, "Waiting for the daemon")
 
 	postLoginEventTo(t, srv, "vps", protocol.LoginEvent{Kind: protocol.KindLoginStarted, Login: login.ID, URL: testLoginURL})
-	requireContains(t, receiveEvent(t, stream).data, `href="`+strings.ReplaceAll(testLoginURL, "&", "&amp;")+`"`, `hx-post="/daemons/vps/login/code"`)
+	requireContains(t, receiveEvent(t, stream).data, "If a browser opened on the daemon&#39;s machine, authorise there. Otherwise ",
+		`href="`+strings.ReplaceAll(testLoginURL, "&", "&amp;")+`"`, ">open this link</a>, authorise, and paste the code shown.", `hx-post="/daemons/vps/login/code"`)
 
 	plain := send(t, http.MethodPost, srv.url+"/daemons/vps/login/code", url.Values{"code": {"code#STATE"}}, false)
 	if plain.status != http.StatusSeeOther || plain.header.Get("Location") != "/daemons/vps#login" {
@@ -172,6 +173,27 @@ func TestGivenDaemonPageWhenTheOwnerLogsInWithFormsThenTheLoginSectionFollowsAnd
 
 	postLoginEventTo(t, srv, "vps", protocol.LoginEvent{Kind: protocol.KindLoginFinished, Login: login.ID, Error: "Login failed: Request failed with status code 400"})
 	requireContains(t, receiveEvent(t, stream).data, "The login failed: Login failed: Request failed with status code 400")
+}
+
+func TestGivenLoginThatSucceededWhenTheDaemonPageIsShownThenItNamesTheAccountTheHarnessReports(t *testing.T) {
+	for name, tc := range map[string]struct {
+		facts, want string
+	}{
+		"account":    {facts: `{"login":"yes","login_method":"claude.ai","account":"owner@example.com/org-1"}`, want: "The login succeeded: logged in as <code>owner@example.com/org-1</code>."},
+		"no account": {facts: `{"login":"yes","login_method":"claude.ai"}`, want: "The login succeeded; the harness reports no account yet."},
+	} {
+		t.Run(name, func(t *testing.T) {
+			srv := startTestServer(t)
+			d := connectDaemon(t, srv, "vps")
+			doRequest(t, http.MethodPost, srv.url+"/v1/daemons/vps/login", "")
+			login := receiveCommand(t, d.commands)
+
+			doRequest(t, http.MethodPut, srv.url+"/v1/daemons/vps/facts", tc.facts)
+			postLoginEventTo(t, srv, "vps", protocol.LoginEvent{Kind: protocol.KindLoginFinished, Login: login.ID, OK: true})
+
+			requireContains(t, getPage(t, srv.url+"/daemons/vps"), tc.want)
+		})
+	}
 }
 
 // receiveEvent returns the next event of a stream within five seconds.
