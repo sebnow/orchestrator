@@ -195,7 +195,8 @@ func TestGivenDaemonWhenItOpensItsCommandStreamThenItReportsItsFactsFirstAndAgai
 	t.Cleanup(httpServer.Close)
 	serverURL, _ := url.Parse(httpServer.URL)
 
-	runDaemon(t, serverURL, t.TempDir())
+	stateDir := t.TempDir()
+	runDaemon(t, serverURL, stateDir)
 
 	eventually(t, "a second connection", func() bool { return len(stream.connections()) >= 2 })
 	stream.mu.Lock()
@@ -205,6 +206,11 @@ func TestGivenDaemonWhenItOpensItsCommandStreamThenItReportsItsFactsFirstAndAgai
 		t.Errorf("requests = %q, want facts before each connection", order)
 	}
 	want := detectFacts(newFakeHarness().Info())
+	key, err := loadOrCreateSSHKey(stateDir, testDaemon)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want[protocol.FactSSHPublicKey] = key.Blob
 	if !maps.Equal(facts, want) || facts[protocol.FactOS] != runtime.GOOS || facts[protocol.FactCPUs] == "" || facts[protocol.FactHarness] == "" {
 		t.Errorf("facts = %v, want %v", facts, want)
 	}

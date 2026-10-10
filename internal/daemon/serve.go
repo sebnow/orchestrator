@@ -157,6 +157,10 @@ func Serve(ctx context.Context, cfg Config) error {
 		return err
 	}
 	cfg.WorkspaceDir = workspaceDir
+	key, err := loadOrCreateSSHKey(stateDir, cfg.ID)
+	if err != nil {
+		return err
+	}
 	run, err := newRunner(cfg.HarnessUser)
 	if err != nil {
 		return err
@@ -220,6 +224,7 @@ func Serve(ctx context.Context, cfg Config) error {
 		applied:  st.lastCommand(),
 		facts:    detectFacts(cfg.Harness.Info()),
 	}
+	s.facts[protocol.FactSSHPublicKey] = key.Blob
 	snd.moved = s.dropMoved
 
 	sendCtx, cancelSend := context.WithCancel(context.Background())

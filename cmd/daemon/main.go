@@ -48,7 +48,7 @@ func run() int {
 	certPath := flag.String("cert", "", "this daemon's certificate, from the server's issue-daemon-cert; its common name is the daemon's id (required)")
 	keyPath := flag.String("key", "", "the certificate's private key (required)")
 	caPath := flag.String("ca", "", "the CA certificate to verify the server with (required for https)")
-	stateDir := flag.String("state-dir", "", "directory for the daemon's state, task journals and workspaces (required)")
+	stateDir := flag.String("state-dir", "", "directory for the daemon's state, task journals, ssh key and workspaces (required)")
 	workspaceDir := flag.String("workspace-dir", "", "directory for the task workspaces, which must exist and be owned by -harness-user when that is set (required with -harness-user; default <state-dir>/workspaces)")
 	harnessUser := flag.String("harness-user", "", "OS user to run claude and every workspace command as, through sudo; empty runs them as the daemon's own user")
 	claudePath := flag.String("claude", "claude", "path of the claude executable; with -harness-user, the absolute path the sudoers rule names")

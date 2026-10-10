@@ -27,4 +27,9 @@ const (
 	// FactGPU is "nvidia" when nvidia-smi is on the daemon's PATH, and
 	// "apple" on darwin/arm64.
 	FactGPU = "gpu"
+	// FactSSHPublicKey is the public half of the ed25519 key the daemon
+	// pushes with (docs/adr/2026-10-10-daemon-push-identity.md): the
+	// base64 of its ssh wire encoding, the second field of its
+	// authorized_keys line. Its line is "ssh-ed25519 <value>".
+	FactSSHPublicKey = "ssh_public_key"
 )
