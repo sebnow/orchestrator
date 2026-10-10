@@ -49,6 +49,15 @@ type Task struct {
 	Branch *transcript.BranchPushed
 	// Failure says why a failed task failed; empty otherwise.
 	Failure string
+	// ContextTokens is the size of the task's session as of its latest
+	// turn's end, and ContextWindow its model's context window, both in
+	// tokens; zero when unknown.
+	ContextTokens, ContextWindow int64
+	// Continues is the id of the task this one continues, its
+	// predecessor; empty for none. ContinuedBy are the ids of the tasks
+	// that continue this one.
+	Continues   string
+	ContinuedBy []string
 }
 
 // QueuePlace is where a task's waiting turn stands in the scheduler's
@@ -265,22 +274,24 @@ func TaskHeader(task Task, controls html.Node) html.Node {
 	if task.Queue != nil {
 		queue = term("Waits", html.Text(task.Queue.Reason))
 	}
-	var failure html.Node
+	var failure, context, continues, continuedBy html.Node
 	if task.Failure != "" {
 		failure = term("Failure", html.Text(task.Failure))
+	}
+	if task.ContextTokens > 0 {
+		context = term("Context", html.Text(ContextSize(task.ContextTokens, task.ContextWindow)))
+	}
+	if task.Continues != "" {
+		continues = term("Continues", link(taskURL(task.Continues), task.Continues))
+	}
+	if len(task.ContinuedBy) > 0 {
+		continuedBy = term("Continued by", taskLinks(task.ContinuedBy))
 	}
 	if task.Parent != "" {
 		parent = term("Parent", link(taskURL(task.Parent), task.Parent))
 	}
 	if len(task.Children) > 0 {
-		links := make([]html.Node, 0, 2*len(task.Children))
-		for idx, child := range task.Children {
-			if idx > 0 {
-				links = append(links, html.Text(", "))
-			}
-			links = append(links, link(taskURL(child), child))
-		}
-		children = term("Children", html.Fragment(links...))
+		children = term("Children", taskLinks(task.Children))
 	}
 	return html.El("header", attrs("class", "task-header"),
 		html.El("h1", nil, link(taskURL(task.ID), excerpt(task.Prompt))),
@@ -297,11 +308,14 @@ func TaskHeader(task Task, controls html.Node) html.Node {
 			term("Daemon", html.Text(task.Daemon)),
 			term("Model", html.Text(task.Model)),
 			term("Cost", html.Text(cost(task.CostUSD))),
+			context,
 			branch,
 			term("Created", timestamp(task.CreatedAt)),
 			term("Last activity", timestamp(task.LastActivityAt)),
 			parent,
 			children,
+			continues,
+			continuedBy,
 			dismissed,
 		),
 		controls,
@@ -835,4 +849,45 @@ func branchDetail(pushed transcript.BranchPushed) html.Node {
 		html.El("code", nil, html.Text(pushed.Branch)), html.Text(verb), html.El("code", nil, html.Text(shortCommit(pushed.Commit))),
 		html.Text(", "+branchCounts(pushed.Ahead, pushed.Uncommitted)),
 		errorText(pushed.Error))
+}
+
+// taskLinks links each of the tasks ids, separated by commas.
+func taskLinks(ids []string) html.Node {
+	links := make([]html.Node, 0, 2*len(ids))
+	for idx, id := range ids {
+		if idx > 0 {
+			links = append(links, html.Text(", "))
+		}
+		links = append(links, link(taskURL(id), id))
+	}
+	return html.Fragment(links...)
+}
+
+// ContextSize words a session's context of tokens, out of the model's
+// context window when that is known.
+func ContextSize(tokens, window int64) string {
+	if window <= 0 {
+		return groupDigits(tokens) + " tokens"
+	}
+	return groupDigits(tokens) + " of " + groupDigits(window) + " tokens"
+}
+
+// groupDigits writes n with its digits grouped in threes by commas.
+func groupDigits(n int64) string {
+	digits := strconv.FormatInt(n, 10)
+	var out strings.Builder
+	for idx, digit := range digits {
+		if idx > 0 && (len(digits)-idx)%3 == 0 && digits[idx-1] != '-' {
+			out.WriteByte(',')
+		}
+		out.WriteRune(digit)
+	}
+	return out.String()
+}
+
+// ContinueForm starts a new task that continues the task taskID, with
+// its final reply as the new task's prompt.
+func ContinueForm(taskID string) html.Node {
+	return html.El("div", attrs("class", "continue"), PlainForm(taskURL(taskID)+"/continue", "",
+		Button("Continue in a new task", VariantPlain, "", "")))
 }

@@ -188,6 +188,16 @@ type TurnEnded struct {
 	OutputTokens             int64
 	CacheCreationInputTokens int64
 	CacheReadInputTokens     int64
+	// ContextWindow is the context window of the model, in tokens; 0
+	// when the harness does not say.
+	ContextWindow int64
+}
+
+// ContextTokens is the session's context size as of the end of the turn:
+// the input it read, from the cache or not, and what it wrote to the
+// cache.
+func (t TurnEnded) ContextTokens() int64 {
+	return t.InputTokens + t.CacheReadInputTokens + t.CacheCreationInputTokens
 }
 
 // PermissionRequested is the harness asking whether it may run a tool.

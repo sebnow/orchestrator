@@ -81,6 +81,15 @@ func (v taskView) task() component.Task {
 	task := guiTask(v.detail.taskSummary, v.detail.Start.Prompt)
 	task.ProjectName = v.projectName
 	task.Failure = v.detail.Failure
+	if latest, ok := v.latestTurn(); ok {
+		task.ContextTokens, task.ContextWindow = latest.ContextTokens(), latest.ContextWindow
+	}
+	if v.detail.Continues != nil {
+		task.Continues = string(*v.detail.Continues)
+	}
+	for _, successor := range v.detail.ContinuedBy {
+		task.ContinuedBy = append(task.ContinuedBy, string(successor))
+	}
 	for _, child := range v.children {
 		task.Children = append(task.Children, string(child.ID))
 	}
@@ -130,9 +139,12 @@ func (v taskView) header() html.Node {
 	state := v.detail.State
 	live := !state.Idle()
 	dismissed := v.detail.DismissedAt != nil
-	var dismiss html.Node
+	var dismiss, continuation html.Node
 	if state.Ended() && !dismissed {
 		dismiss = component.DismissForm(v.id(), "/tasks/"+v.id())
+	}
+	if state.Idle() && state != TaskQueued {
+		continuation = component.ContinueForm(v.id())
 	}
 	return component.TaskHeader(v.task(), html.Fragment(component.Controls(v.id(), component.ControlSet{
 		Pause:     state == TaskRunning || state == TaskAwaitingPermission,
@@ -140,7 +152,24 @@ func (v taskView) header() html.Node {
 		Retry:     state.Ended() && !v.detail.HasSession && !dismissed,
 		Interrupt: live,
 		Stop:      !state.Ended(),
-	}), dismiss))
+	}), continuation, dismiss))
+}
+
+// latestTurn returns the end of the latest turn of the task's current
+// session, or reports false when the session has ended none: a move or a
+// retry starts a new session.
+func (v taskView) latestTurn() (transcript.TurnEnded, bool) {
+	var latest transcript.TurnEnded
+	found := false
+	for _, entry := range v.entries {
+		switch body := entry.Body.(type) {
+		case transcript.TaskMoved, transcript.TaskRetried:
+			found = false
+		case transcript.TurnEnded:
+			latest, found = body, true
+		}
+	}
+	return latest, found
 }
 
 // postDismissForm dismisses an ended task from the dashboard's lists and
@@ -222,6 +251,14 @@ func (v taskView) followUp() component.FollowUp {
 	case v.detail.State.Ended() && !v.detail.HasSession:
 		offer.Notes = append(offer.Notes, "The task's harness never started, so it has no session to continue. "+
 			"A prompt starts it afresh, on whichever daemon fits, with its first prompt followed by yours; Retry starts it with its first prompt alone.")
+	case v.detail.State.Idle() && v.detail.State != TaskQueued:
+		if latest, ok := v.latestTurn(); ok && latest.ContextTokens() > 0 {
+			offer.Notes = append(offer.Notes, "Resuming reads about "+component.ContextSize(latest.ContextTokens(), 0)+" of context. "+
+				"On a Claude subscription, within the plan's usage, Claude Code caches the conversation for an hour after its last request, "+
+				"so a resume within the hour reads most of it from the cache "+
+				"(https://code.claude.com/docs/en/prompt-caching#resuming-a-session). "+
+				"Continue in a new task starts a fresh session from the final reply instead.")
+		}
 	case v.detail.State == TaskRunning || v.detail.State == TaskAwaitingPermission:
 		offer.Steer = true
 	}

@@ -226,6 +226,15 @@ type Result struct {
 	TotalCostUSD      float64            `json:"total_cost_usd"`
 	Usage             Usage              `json:"usage"`
 	PermissionDenials []PermissionDenial `json:"permission_denials"`
+	// ModelUsage is keyed by the models the process used, its subagents'
+	// included.
+	ModelUsage map[string]ModelUsage `json:"modelUsage"`
+}
+
+// ModelUsage is what a result says of one model the process used.
+// ContextWindow is the model's context window in tokens; 0 when absent.
+type ModelUsage struct {
+	ContextWindow int64 `json:"contextWindow"`
 }
 
 // Usage is the token usage of the turn a result ends.

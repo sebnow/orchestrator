@@ -673,6 +673,21 @@ with a `withdraw` command naming it as `{"prompt": <command id>}`, and
 withdraw a waiting one with `DELETE /v1/tasks/{task}/turns/{turn}`; the
 task's `queued` field lists both.
 
+A task's page gives the size of its session's context as of its latest
+turn: the input, cache read and cache write tokens of that turn's
+`result`, out of the model's context window when the `result` names
+it. Between turns the follow-up form says how much context resuming
+reads; on a Claude subscription, within the plan's usage, Claude Code
+caches the conversation for an hour after its last request
+([prompt caching](https://code.claude.com/docs/en/prompt-caching#resuming-a-session)).
+"Continue in a new task", on the page of a task between turns, starts a
+new task in the same project, as the same agent, whose prompt is the
+task's final reply as a hand-back would carry it: a fresh session that
+reads none of the old one's context. The new task names the old one
+under Continues, and the old one lists it under Continued by; the old
+task is not its parent. Scripts do the same with
+`POST /v1/tasks/{task}/continue`.
+
 The daemon deletes a task's working directory, with everything in it,
 when the task ends for good on that daemon: when the owner dismisses
 it, and when its first start fails, since a follow-up then starts it

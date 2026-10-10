@@ -396,6 +396,10 @@ type taskSummary struct {
 	// the task's work was delivered (docs/adr/2026-10-08-work-delivery.md).
 	// nil until a daemon reports one.
 	Branch *protocol.BranchPushed `json:"branch,omitempty"`
+	// Continues names the task this one continues, its predecessor,
+	// whose final reply it started from; nil for none. A predecessor is
+	// not a parent.
+	Continues *protocol.TaskID `json:"continues,omitempty"`
 }
 
 // taskDetail is one task: its summary and what it was started with.
@@ -404,22 +408,24 @@ type taskSummary struct {
 // without one is started afresh instead. Failure says why a failed task
 // failed, as failureOf words its latest exit; it is empty otherwise.
 // Queued are the owner's prompts that have not reached the harness yet.
+// ContinuedBy names the tasks that continue this one, oldest first.
 type taskDetail struct {
 	taskSummary
-	Start      protocol.StartTask `json:"start"`
-	HasSession bool               `json:"has_session"`
-	Failure    string             `json:"failure,omitempty"`
-	Queued     []queuedPrompt     `json:"queued"`
+	Start       protocol.StartTask `json:"start"`
+	HasSession  bool               `json:"has_session"`
+	Failure     string             `json:"failure,omitempty"`
+	Queued      []queuedPrompt     `json:"queued"`
+	ContinuedBy []protocol.TaskID  `json:"continued_by,omitempty"`
 }
 
-const summaryColumns = `id, daemon_id, placement, parent_id, coalesce(agent, ''), coalesce(project, ''), purpose, requires, state, model, priority, filler, created_at, last_activity_at, cost_usd, dismissed_at`
+const summaryColumns = `id, daemon_id, placement, parent_id, coalesce(agent, ''), coalesce(project, ''), purpose, requires, state, model, priority, filler, created_at, last_activity_at, cost_usd, dismissed_at, continues`
 
 // scanSummary reads summaryColumns, followed by extra destinations.
 func scanSummary(row interface{ Scan(...any) error }, extra ...any) (taskSummary, error) {
 	var summary taskSummary
 	var id, daemon, placed, requires, state, priority, created, lastActivity string
-	var parent, dismissed sql.NullString
-	dest := append([]any{&id, &daemon, &placed, &parent, &summary.Agent, &summary.Project, &summary.Purpose, &requires, &state, &summary.Model, &priority, &summary.Filler, &created, &lastActivity, &summary.CostUSD, &dismissed}, extra...)
+	var parent, dismissed, continues sql.NullString
+	dest := append([]any{&id, &daemon, &placed, &parent, &summary.Agent, &summary.Project, &summary.Purpose, &requires, &state, &summary.Model, &priority, &summary.Filler, &created, &lastActivity, &summary.CostUSD, &dismissed, &continues}, extra...)
 	if err := row.Scan(dest...); err != nil {
 		return taskSummary{}, err
 	}
@@ -434,6 +440,10 @@ func scanSummary(row interface{ Scan(...any) error }, extra ...any) (taskSummary
 	if parent.Valid {
 		parentID := protocol.TaskID(parent.String)
 		summary.ParentID = &parentID
+	}
+	if continues.Valid {
+		predecessor := protocol.TaskID(continues.String)
+		summary.Continues = &predecessor
 	}
 	if summary.CreatedAt, err = parseTime(created); err != nil {
 		return taskSummary{}, fmt.Errorf("task %q created_at: %w", id, err)
@@ -548,6 +558,9 @@ func readTaskDetail(ctx context.Context, tx *sql.Tx, task protocol.TaskID) (task
 		return taskDetail{}, err
 	}
 	if detail.Queued, err = queuedPrompts(ctx, tx, task); err != nil {
+		return taskDetail{}, err
+	}
+	if detail.ContinuedBy, err = successors(ctx, tx, task); err != nil {
 		return taskDetail{}, err
 	}
 	if detail.State == TaskFailed {

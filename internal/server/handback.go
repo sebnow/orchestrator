@@ -37,18 +37,10 @@ func handBack(ctx context.Context, tx *sql.Tx, task protocol.TaskID, fx *effects
 	if p.State.Ended() {
 		return nil
 	}
-	text, err := finalReply(ctx, tx, task)
+	text, err := handBackText(ctx, tx, task)
 	if err != nil {
 		return err
 	}
-	if text == "" {
-		text = fmt.Sprintf("(Task %s finished its turn without writing any text.)", task)
-	}
-	branches, err := latestBranches(ctx, tx, task)
-	if err != nil {
-		return err
-	}
-	text += "\n\n" + branchNote(task, branches[task])
 	if _, err := tx.ExecContext(ctx, `
 		INSERT INTO messages (from_task, to_task, text, created_at, hand_back) VALUES (?, ?, ?, ?, 1)`,
 		string(task), string(to), text, formatTime(time.Now().UTC())); err != nil {
@@ -57,6 +49,24 @@ func handBack(ctx context.Context, tx *sql.Tx, task protocol.TaskID, fx *effects
 	fx.changed = append(fx.changed, task, to)
 	_, err = queueDelivery(ctx, tx, to, fx)
 	return err
+}
+
+// handBackText is what task's hand-back carries: the final reply of its
+// latest process, or a note that it wrote none, followed by what the
+// daemon last reported of its branch.
+func handBackText(ctx context.Context, tx *sql.Tx, task protocol.TaskID) (string, error) {
+	text, err := finalReply(ctx, tx, task)
+	if err != nil {
+		return "", err
+	}
+	if text == "" {
+		text = fmt.Sprintf("(Task %s finished its turn without writing any text.)", task)
+	}
+	branches, err := latestBranches(ctx, tx, task)
+	if err != nil {
+		return "", err
+	}
+	return text + "\n\n" + branchNote(task, branches[task]), nil
 }
 
 // sentThisTurn reports whether task sent a message since its latest turn

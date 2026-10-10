@@ -164,6 +164,11 @@ var migrations = [...]string{
 	UPDATE tasks SET stop_pending = 1
 	WHERE state IN ('pending', 'running', 'awaiting_permission', 'pausing')
 		AND EXISTS (SELECT 1 FROM commands c WHERE c.task_id = tasks.id AND c.kind = 'stop');`,
+	// Version 17 keeps the task each task continues, its predecessor,
+	// NULL for none: the owner started it from the predecessor's final
+	// reply. A predecessor is not a parent.
+	`ALTER TABLE tasks ADD COLUMN continues TEXT REFERENCES tasks (id);
+	CREATE INDEX tasks_by_continues ON tasks (continues);`,
 }
 
 // schemaVersion is the version this server migrates databases to. A

@@ -110,11 +110,11 @@ func TestGivenMCPRunWhenNormalisingThenEachTurnEndsWithItsUsageAndRunningCost(t 
 
 	want := []transcript.TurnEnded{
 		{Outcome: "success", StopReason: "end_turn", NumTurns: 3, Duration: 4084 * time.Millisecond, TotalCostUSD: 0.0204534,
-			InputTokens: 18, OutputTokens: 329, CacheCreationInputTokens: 7518, CacheReadInputTokens: 37544},
+			InputTokens: 18, OutputTokens: 329, CacheCreationInputTokens: 7518, CacheReadInputTokens: 37544, ContextWindow: 200000},
 		{IsError: true, Outcome: "error_during_execution", StopReason: "tool_use", NumTurns: 3, Duration: 4618 * time.Millisecond, TotalCostUSD: 0.0239514,
-			InputTokens: 10, OutputTokens: 172, CacheCreationInputTokens: 179, CacheReadInputTokens: 22700},
+			InputTokens: 10, OutputTokens: 172, CacheCreationInputTokens: 179, CacheReadInputTokens: 22700, ContextWindow: 200000},
 		{Outcome: "success", StopReason: "end_turn", NumTurns: 1, Duration: 844 * time.Millisecond, TotalCostUSD: 0.027040300000000003,
-			InputTokens: 10, OutputTokens: 35, CacheCreationInputTokens: 308, CacheReadInputTokens: 22879},
+			InputTokens: 10, OutputTokens: 35, CacheCreationInputTokens: 308, CacheReadInputTokens: 22879, ContextWindow: 200000},
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("got  %+v\nwant %+v", got, want)
@@ -152,7 +152,7 @@ func TestGivenPauseInterruptRunWhenNormalisingThenTheInterruptedTurnEndsInErrorA
 	}
 	want := transcript.TurnEnded{IsError: true, Outcome: "error_during_execution", StopReason: "tool_use", NumTurns: 3,
 		Duration: 6780 * time.Millisecond, TotalCostUSD: 0.0167917,
-		InputTokens: 10, OutputTokens: 189, CacheCreationInputTokens: 7210, CacheReadInputTokens: 14167}
+		InputTokens: 10, OutputTokens: 189, CacheCreationInputTokens: 7210, CacheReadInputTokens: 14167, ContextWindow: 200000}
 	if got := bodies[5].(transcript.TurnEnded); got != want {
 		t.Errorf("turn = %+v\nwant   %+v", got, want)
 	}

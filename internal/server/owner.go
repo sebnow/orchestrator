@@ -112,6 +112,8 @@ type taskRequest struct {
 	Priority Priority
 	Filler   *bool
 	Start    protocol.StartTask
+	// Continues is the task this one continues; nil for none.
+	Continues *protocol.TaskID
 }
 
 // defaultPauseLimits are the pause limits of a task started as an agent
@@ -199,6 +201,7 @@ func (s *Server) startTask(ctx context.Context, request taskRequest) (queuedTurn
 		Filler:    filler,
 		Start:     start,
 		Origin:    originOwner,
+		Continues: request.Continues,
 	})
 }
 

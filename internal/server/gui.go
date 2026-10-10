@@ -26,6 +26,7 @@ func (s *Server) routeGUI(mux *http.ServeMux) {
 	mux.HandleFunc("GET /tasks/{task}", s.getTaskPage)
 	mux.HandleFunc("POST /tasks/{task}/commands", s.postCommandForm)
 	mux.HandleFunc("POST /tasks/{task}/dismiss", s.postDismissForm)
+	mux.HandleFunc("POST /tasks/{task}/continue", s.postContinueForm)
 	mux.HandleFunc("GET /tasks/{task}/raw", s.getRawPage)
 	mux.HandleFunc("GET /tasks/{task}/stream", s.streamTask)
 	mux.HandleFunc("GET /tasks/{task}/updates", s.getTaskUpdates)

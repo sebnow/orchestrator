@@ -117,8 +117,16 @@ func withParent(body transcript.Body, parent string) transcript.Body {
 	return body
 }
 
+// turnEnded is the end of the turn a result reports. Its context window
+// is the largest of the models the process used, which is the main
+// model's unless a subagent ran a model with a larger window.
 func turnEnded(subtype string, result Result) transcript.TurnEnded {
+	var window int64
+	for _, usage := range result.ModelUsage {
+		window = max(window, usage.ContextWindow)
+	}
 	return transcript.TurnEnded{
+		ContextWindow:            window,
 		IsError:                  result.IsError,
 		Outcome:                  subtype,
 		StopReason:               result.StopReason,
