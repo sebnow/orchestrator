@@ -645,12 +645,109 @@ owner API:
   `started`, `code_sent` and `finished`; `url`, from `started` on; and
   `ok` and `error`, once `finished`.
 
+### Backups
+
+The server backs up its database on a schedule and on demand
+([SQLite backups](docs/adr/2026-10-10-sqlite-backups.md)). Each backup
+is a consistent copy of the whole database, made with SQLite's `VACUUM
+INTO` while the server runs. It is written to `-backup-dir` as
+`server-<time>.db`, with the time in UTC and RFC 3339 format, for
+example `server-2026-10-10T14:30:05Z.db`. By default the directory is
+`backups/` next to the `-db` file. The server creates the directory and
+each copy readable by their owner only.
+
+`-backup-every` sets the interval between backups, as a duration such
+as `6h`, the default; `0` turns the schedule off and leaves backups on
+demand only. After a start, the first backup is due one interval after
+the newest copy in the directory, or at once if the directory has none,
+so a server restarted more often than the interval still makes
+backups. After each backup the server deletes the oldest copies beyond
+`-backup-keep`, 14 by default. It deletes only files named like a
+backup.
+
+If a bucket is configured, the server also uploads each copy to
+S3-compatible object storage, such as Hetzner's, and deletes the
+oldest uploads beyond `-backup-keep` there too. A bucket needs these
+four flags, all set together:
+
+- `-backup-s3-endpoint`: the storage's base URL, such as
+  `https://fsn1.your-objectstorage.com` for a Hetzner bucket in
+  Falkenstein (see the endpoints in [Hetzner Object
+  Storage](https://docs.hetzner.com/storage/object-storage/overview)).
+  Plain `http://` is accepted only for a loopback IP address.
+- `-backup-s3-region`: the region used to sign requests. At Hetzner
+  this is the location, for example `fsn1`.
+- `-backup-s3-bucket`: the bucket's name.
+- `-backup-s3-credentials`: a file readable by its owner only (mode
+  0600), with the bucket's keys on two lines:
+
+      access_key=...
+      secret_key=...
+
+Each copy is uploaded under the key prefix `-backup-s3-prefix`,
+`orchestrator/` by default, as `orchestrator/server-<time>.db`. The
+server deletes only keys of that form directly under the prefix. It
+addresses the bucket path-style (`<endpoint>/<bucket>/<key>`) and signs
+each request with AWS Signature Version 4 over the payload's hash. The
+secret key is used only to sign requests; it is not sent or logged.
+
+The dashboard's Backups section shows the schedule and the last
+backup: when it was made, its size, its file, and where it was
+uploaded, or the error if the backup or its upload failed. The **Back
+up now** button starts a backup at once. Scripts call `POST
+/v1/backup`, which backs up at once and returns a JSON object with
+`at`, `size`, `file`, `uploaded_to` and `error`. The status is 200 on
+success and 500 if the backup or its upload failed. A failure is
+logged and shown on the dashboard, and the server keeps running.
+Failed uploads are not retried: the local copy stays, and the next
+backup uploads its own copy.
+
+A backup is sensitive. It holds everything in the database, including:
+
+- every task's prompts and transcript, which can quote any file an
+  agent read;
+- the command log, with each login code blanked once its login ends
+  (see [Logging a daemon in](#logging-a-daemon-in));
+- the agents and projects;
+- the facts each daemon reported, such as its harness and account;
+- the hashes of the owner token, of the login sessions and of unused
+  enrolment tokens;
+- the record of the previous backup.
+
+The Hetzner token (`-hetzner-token-file`) and the bucket's keys are not
+in the database, so a backup does not hold them. Anyone who can read
+the backup directory or the bucket can read the rest: restrict access
+to the directory, keep the bucket private, and give its keys to this
+server only.
+
+To restore a backup:
+
+1. Stop the server.
+2. Run `server restore -db FILE -from BACKUP`, where `FILE` is the
+   server's `-db`. `BACKUP` is either a backup file or, if the four
+   bucket flags above are given, the key of an upload, such as
+   `orchestrator/server-2026-10-10T14:30:05Z.db`. If a file with that
+   name exists, it is used instead of the upload. The command copies or
+   downloads the backup next to the database, checks it with SQLite's
+   `PRAGMA integrity_check`, checks that the server supports its schema
+   version, and only then replaces the database. Without `-force`, it
+   does not replace an existing database. With `-force`, it also
+   deletes the old database's `-wal`, `-shm` and `-journal` files,
+   which SQLite would otherwise apply to the backup.
+3. Start the server. A backup made by an older server is migrated when
+   the server starts, as any older database is.
+
+Everything recorded after the backup was made is lost. The server does
+not know the tasks started after it, and refuses their daemons' events
+for them.
+
 ### Using the GUI
 
 The dashboard lists the tasks that need attention, every task with the
 agent it was started as, each budget's quota reading, the daemons
-with their labels and login, and the VPSes the server provisioned (see
-[Provisioning a VPS](#provisioning-a-vps)). A task with a purpose is listed by its purpose, and
+with their labels and login, the VPSes the server provisioned (see
+[Provisioning a VPS](#provisioning-a-vps)), and the last backup (see
+[Backups](#backups)). A task with a purpose is listed by its purpose, and
 any other by the start of its prompt. Its form starts a task with:
 
 - the project it belongs to, if any, once a project exists (see
@@ -739,7 +836,7 @@ Server flags:
 - `-db` (required): the SQLite database file, created with its directory
   when missing. It holds every daemon, task, event and command, the
   agents and projects, the owner token's hash and the login sessions.
-  The server brings an older database to its schema, version 25, when it
+  The server brings an older database to its schema, version 26, when it
   starts, and refuses a database of a later version.
 - `-listen`: the address to serve on, `127.0.0.1:8080` by default.
 - `-tls-cert`, `-tls-key` (required unless `-insecure-loopback`): the
@@ -765,6 +862,17 @@ Server flags:
   daemon dials it.
 - `-daemon-binary-url`: the `https://` URL a provisioned VPS downloads
   the daemon binary from.
+- `-backup-dir`: the directory backups are written to, `backups/`
+  beside `-db` by default (see [Backups](#backups)).
+- `-backup-every`: the time between scheduled backups, 6 hours by
+  default; 0 backs up only on demand.
+- `-backup-keep`: how many backups to keep, in the directory and in
+  the bucket separately; 14 by default, and at least 1.
+- `-backup-s3-endpoint`, `-backup-s3-region`, `-backup-s3-bucket`,
+  `-backup-s3-credentials`: the bucket backups are uploaded to; all four
+  or none.
+- `-backup-s3-prefix`: the key prefix of the uploads in the bucket,
+  `orchestrator/` by default.
 - `-default-model`: the model of a task started without one whose
   agent, if any, has no models, `haiku` by default.
 - `-filler-threshold`: the utilization of a budget's five-hour quota
@@ -805,6 +913,10 @@ Server subcommands, each printing its usage with `-h`:
 - `enrol-token -db FILE -id DAEMON [-lifetime DURATION]`: print a token
   with which the daemon DAEMON enrols once, within an hour by default
   (see [Enrolling a machine by hand](#enrolling-a-machine-by-hand)).
+- `restore -db FILE -from BACKUP [-force]`: replace the database with
+  a backup (a file, or a key in the bucket when the `-backup-s3-` flags
+  are given) once it passes the integrity and schema checks; stop the
+  server first (see [Backups](#backups)).
 
 The first three refuse to replace an existing certificate or key.
 
