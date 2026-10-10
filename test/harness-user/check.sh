@@ -32,6 +32,10 @@ BARE=/home/git/repo.git
 MARKS=/tmp/stub-claude
 DAEMON_LOG=/var/log/orch-daemon.log
 SERVER_LOG=/var/log/orch-server.log
+SSHD_LOG=/var/log/sshd.log
+SSH_CALLS=/var/log/ssh-calls.log
+SUDO_LOG=/var/log/sudo.log
+DAEMON_KEY=$STATE/ssh_ed25519
 CLAUDE=/usr/local/bin/claude
 
 passed=0
@@ -96,7 +100,7 @@ finish() {
 		remove_credentials
 	fi
 	if [ -d /out ]; then
-		cp "$DAEMON_LOG" "$SERVER_LOG" /out/ 2>/dev/null
+		cp "$DAEMON_LOG" "$SERVER_LOG" "$SSHD_LOG" "$SSH_CALLS" "$SUDO_LOG" /out/ 2>/dev/null
 	fi
 	echo "# daemon log:"
 	evidence <"$DAEMON_LOG"
@@ -209,6 +213,37 @@ restart_reported() {
 	check "restart: the task is paused" jq_true '.state == "paused"' <<<"$(curl -sf "$API/v1/tasks/$task")"
 }
 
+# mirror_checks TASK BRANCH_PUSHED checks that the task's workspace was
+# cloned from the daemon's mirror, and that its push went from the
+# mirror to the remote as the daemon's user with the daemon's key alone.
+mirror_checks() {
+	local task=$1 pushed=$2 mirror origin out
+	mirror=$STATE/mirrors/$(printf '%s' "$REPO" | sha256sum | cut -d' ' -f1).git
+	origin=$(as_user orch-agent git -C "$WS/$task" config remote.origin.url)
+	echo "# as orch-agent: git -C $WS/$task config remote.origin.url -> $origin"
+	echo "# mirror: $(stat -c '%a %U %n' "$mirror")"
+	check "mirror: the workspace's origin is the daemon's mirror of the repository" test "$origin" = "$mirror"
+	check "mirror: the mirror is owned by orchestrator" test "$(stat -c %U "$mirror")" = orchestrator
+	out=$(as_orch git --git-dir="$mirror" rev-parse --verify --quiet "refs/heads/orchestrator/$task")
+	echo "# mirror: refs/heads/orchestrator/$task = $out"
+	check "mirror: the mirror holds the pushed commit on the task branch" test -n "$out" -a "$out" = "$(jq -r .commit <<<"$pushed")"
+	echo "# $SSH_CALLS:"
+	evidence <"$SSH_CALLS"
+	check "mirror: the push to the remote ran from the mirror as orchestrator, offering the daemon's key alone" \
+		grep -qE "^user=orchestrator parents=.*<git push --quiet origin refs/heads/orchestrator/$task:refs/heads/orchestrator/$task.* args=-i $DAEMON_KEY -o BatchMode=yes -o IdentitiesOnly=yes .*git-receive-pack" "$SSH_CALLS"
+	check "mirror: no user but orchestrator ran ssh" test -z "$(grep -v '^user=orchestrator ' "$SSH_CALLS")"
+	out=$(grep 'Accepted publickey for git' "$SSHD_LOG")
+	echo "# $SSHD_LOG, accepted keys:"
+	evidence <<<"$out"
+	check "mirror: sshd accepted the daemon's key and no other" \
+		test -n "$out" -a -z "$(grep -vF "ED25519 $daemon_key_fp" <<<"$out")"
+	out=$(grep -F "COMMAND=/usr/bin/git upload-pack $WS/$task" "$SUDO_LOG")
+	echo "# $SUDO_LOG, upload-pack:"
+	evidence <<<"$out"
+	check "mirror: the fetch into the mirror ran upload-pack in the workspace as orch-agent through sudo" \
+		grep -q ' orchestrator : .*USER=orch-agent' <<<"$out"
+}
+
 if [ "$REAL" = true ]; then
 	. /usr/local/bin/real-claude.sh
 	install_credentials
@@ -220,19 +255,29 @@ echo "# $(git --version), $(ssh -V 2>&1)"
 echo "# claude: $CLAUDE, $($CLAUDE --version)"
 
 # --- Setup: the git remote over ssh, the daemon user's ssh agent, the
-# server and its PKI.
+# server and its PKI. sshd logs each key it accepts, the image's
+# /usr/local/bin/ssh (ssh-log) logs who runs ssh from which processes,
+# and sudo logs each command it runs, so that the check can
+# tell which user reached the remote, and with which key.
 mkdir -p $MARKS && chmod 1777 $MARKS
 install -m 0600 /dev/null "$DAEMON_LOG"
 install -m 0600 /dev/null "$SERVER_LOG"
+install -m 0622 /dev/null "$SSH_CALLS"
+printf 'Defaults logfile=%s, loglinelen=0\n' "$SUDO_LOG" >/etc/sudoers.d/zz-log
+chmod 0440 /etc/sudoers.d/zz-log
 
 ssh-keygen -A >/dev/null
 mkdir -p /run/sshd
-/usr/sbin/sshd || die "sshd did not start"
+/usr/sbin/sshd -E "$SSHD_LOG" || die "sshd did not start"
 
+# The daemon user's own key, which its ssh agent holds and the relay
+# offers the harness user. The remote does not accept it: the daemon
+# pushes with the key it generates in its state directory, which the
+# remote accepts once the daemon has started.
 as_orch sh -c 'mkdir -p -m 0700 ~/.ssh && ssh-keygen -q -t ed25519 -N "" -C orchestrator@container -f ~/.ssh/id_ed25519' ||
 	die "ssh-keygen for orchestrator"
 install -d -o git -g git -m 0700 /home/git/.ssh
-install -o git -g git -m 0600 $OHOME/.ssh/id_ed25519.pub /home/git/.ssh/authorized_keys
+install -o git -g git -m 0600 /dev/null /home/git/.ssh/authorized_keys
 as_user git sh -c "git init --quiet --bare -b main $BARE &&
 	git init --quiet -b main /tmp/seed &&
 	cd /tmp/seed &&
@@ -242,10 +287,10 @@ as_user git sh -c "git init --quiet --bare -b main $BARE &&
 	git push --quiet $BARE main" || die "seed the bare repository"
 
 # Checklist step 4, the part without Claude Code: known_hosts for the
-# harness user.
-as_user orch-agent sh -c 'mkdir -p -m 0700 ~/.ssh && ssh-keyscan -t ed25519 localhost >~/.ssh/known_hosts 2>/dev/null'
-check "step 4: the harness user's known_hosts lists localhost" \
-	grep -q '^localhost ssh-ed25519 ' /home/orch-agent/.ssh/known_hosts
+# daemon's user, who alone reaches the remote.
+as_orch sh -c 'ssh-keyscan -t ed25519 localhost >~/.ssh/known_hosts 2>/dev/null'
+check "step 4: the daemon user's known_hosts lists localhost" \
+	grep -q '^localhost ssh-ed25519 ' $OHOME/.ssh/known_hosts
 
 as_orch ssh-agent -a $AGENT_SOCK >/dev/null || die "ssh-agent for orchestrator"
 as_orch env SSH_AUTH_SOCK=$AGENT_SOCK ssh-add -q $OHOME/.ssh/id_ed25519 || die "ssh-add for orchestrator"
@@ -311,6 +356,27 @@ echo "# as orch-agent: SSH_AUTH_SOCK=$AGENT_SOCK ssh-add -l"
 evidence <<<"$out"
 check "ssh agent relay: orch-agent cannot open the daemon user's own agent socket" grep -q 'Permission denied' <<<"$out"
 
+# --- Checklist step 6: the daemon's own key, generated at its first
+# start and shown on its page, registered at the remote by the owner.
+echo "# daemon key: $(stat -c '%a %U %n' $DAEMON_KEY $DAEMON_KEY.pub $STATE | tr '\n' ' ')"
+check "daemon key: the private key has mode 0600, owned by orchestrator" test "$(stat -c '%a %U' $DAEMON_KEY)" = "600 orchestrator"
+check "daemon key: the state directory has mode 0711" test "$(stat -c %a $STATE)" = 711
+daemon_key_line=$(cat $DAEMON_KEY.pub)
+daemon_key=$(awk '{print $1, $2}' <<<"$daemon_key_line")
+daemon_key_fp=$(ssh-keygen -lf $DAEMON_KEY.pub | awk '{print $2}')
+echo "# $DAEMON_KEY.pub: $daemon_key_line"
+echo "# fingerprint: $daemon_key_fp"
+check "daemon key: ssh-keygen reads the private key as the public key's pair" \
+	test "$(as_orch ssh-keygen -y -f $DAEMON_KEY | awk '{print $1, $2}')" = "$daemon_key"
+page_key=$(curl -sf $API/daemons/ct-1 | sed -n 's|.*<pre class="ssh-key"><code>\([^<]*\)</code></pre>.*|\1|p')
+echo "# the daemon's page: $page_key"
+check "daemon key: the daemon's page shows its public key" test "$page_key" = "$daemon_key orchestrator@ct-1"
+printf '%s\n' "$page_key" >/home/git/.ssh/authorized_keys
+out=$(sudo -u orch-agent -i cat $DAEMON_KEY 2>&1)
+echo "# as orch-agent: cat $DAEMON_KEY"
+evidence <<<"$out"
+check "daemon key: orch-agent cannot read the daemon's ssh key" grep -q 'Permission denied' <<<"$out"
+
 if [ "$REAL" = true ]; then
 	real_checks
 	finish
@@ -348,6 +414,7 @@ check "step 7: the bare repository holds orchestrator/$A at the pushed commit" \
 	test -n "$remote" -a "$remote" = "$(jq -r .commit <<<"$pushed")"
 as_user git git --git-dir=$BARE log -1 --format='# commit %h by %an <%ae>: %s' "refs/heads/orchestrator/$A"
 check "step 7: harness_exited with exit code 0" jq_true '.exit_code == 0' <<<"$exited"
+mirror_checks "$A" "$pushed"
 check "step 7: the task page shows the branch" \
 	sh -c "curl -sf $API/tasks/$A | grep -qF 'orchestrator/$A'"
 
@@ -374,6 +441,10 @@ out=$(sudo -u orch-agent -i ls $STATE 2>&1)
 echo "# as orch-agent: ls $STATE"
 evidence <<<"$out"
 check "step 9: orch-agent cannot list the daemon's state directory" grep -q 'Permission denied' <<<"$out"
+out=$(sudo -u orch-agent -i cat $STATE/state.json 2>&1)
+echo "# as orch-agent: cat $STATE/state.json"
+evidence <<<"$out"
+check "step 9: orch-agent cannot read the daemon's state, though it may pass through its directory" grep -q 'Permission denied' <<<"$out"
 out=$(sudo -u orch-agent -i cat $OHOME/.ssh/id_ed25519 2>&1)
 echo "# as orch-agent: cat $OHOME/.ssh/id_ed25519"
 evidence <<<"$out"

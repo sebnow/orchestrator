@@ -3,7 +3,7 @@
 # git, the path of ssh://git@HOST:PORT/orchestrator.git. The repository is
 # moved there in a layer of its own so that the host keys, generated in the
 # layer before, survive a rebuild from cache. remote.sh passes the public key
-# that may push as the build argument AUTHORIZED_KEY.
+# that may push, the daemon's, as the build argument AUTHORIZED_KEY.
 FROM debian:trixie-slim
 
 RUN apt-get update \

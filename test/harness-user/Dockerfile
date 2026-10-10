@@ -53,6 +53,10 @@ RUN install -d -o orch-agent -m 0755 /srv/orchestrator/workspaces
 COPY check.sh real-claude.sh /usr/local/bin/
 RUN chmod 0755 /usr/local/bin/check.sh /usr/local/bin/real-claude.sh
 
+# ssh as every user runs it from PATH, logging each run first.
+COPY ssh-log /usr/local/bin/ssh
+RUN chmod 0755 /usr/local/bin/ssh
+
 CMD ["/usr/local/bin/check.sh"]
 
 FROM base AS real

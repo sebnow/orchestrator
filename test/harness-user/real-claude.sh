@@ -235,6 +235,7 @@ real_checks() {
 		test -n "$remote" -a "$remote" = "$(jq -r .commit <<<"$pushed")"
 	as_user git git --git-dir=$BARE log -1 --format='# commit %h by %an <%ae>: %s' "refs/heads/orchestrator/$A"
 	check "step 7: harness_exited with exit code 0" jq_true '.exit_code == 0' <<<"$exited"
+	mirror_checks "$A" "$pushed"
 
 	# --- Step 11 with claude: SIGTERM to sudo from the daemon's user,
 	# under the README's rule, where secure_path sets claude's PATH.
