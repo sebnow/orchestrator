@@ -38,9 +38,11 @@ Chromium only for Linux. A failing step saves a screenshot, which
 
 The server stores daemons, tasks and their events, and serves the GUI.
 The daemon runs the tasks with Claude Code, so `claude` must be
-installed and logged in for the user who runs it: the user who starts
-the daemon, or the harness user with `-harness-user` (see [Running the
-harness as another user](#running-the-harness-as-another-user)). The daemon
+installed for the user who runs it: the user who starts the daemon, or
+the harness user with `-harness-user` (see [Running the harness as
+another user](#running-the-harness-as-another-user)). That user's
+Claude Code must be logged in; the owner logs it in from the daemon's
+page (see [Logging a daemon in](#logging-a-daemon-in)). The daemon
 mirrors a task's repository, clones the task's workspace from the
 mirror, and pushes the task's branch to the repository, with the `git`
 on the daemon's `PATH`, so
@@ -289,10 +291,13 @@ remote only the daemon's key, not the keys in its ssh agent;
 `known_hosts` must list the repository's host in the daemon user's
 `~/.ssh` or in the system's `/etc/ssh/ssh_known_hosts`.
 
-The harness user logs in to Claude Code once on each machine, and tasks
-spend that account's quota; the daemon does not manage the login. On
-Linux Claude Code keeps it under the user's home, in
-`~/.claude/.credentials.json`. On macOS, see step 5 of the checklist
+The harness user's Claude Code is logged in from the daemon's page (see
+[Logging a daemon in](#logging-a-daemon-in)), and tasks spend that
+account's quota. The daemon runs `claude auth status --json` and
+`claude auth login` as the harness user through the same sudoers rule
+as `claude` itself, which names the path alone and so allows any
+arguments. On Linux Claude Code keeps the login under the user's home,
+in `~/.claude/.credentials.json`. On macOS, see step 5 of the checklist
 below.
 
 sudo relays SIGTERM to the command it runs but not SIGKILL (sudo(8),
@@ -311,7 +316,14 @@ sends sudo SIGTERM when a stopped harness outlasts the 30 s timeout,
 and that a restarted daemon terminates the harness its previous run
 left. It checks the private key's mode and that the harness user
 cannot read it, that the daemon's page shows the public key, and that
-the workspace's `origin` is the mirror. From the logs of sshd, sudo and
+the workspace's `origin` is the mirror. The stub starts logged out:
+the check sees the daemon report `login=no`, the dashboard flag it, and
+a task for it wait; it then logs the daemon in through the owner API,
+checks that the daemon reported the stub's URL without the hyperlink's
+escapes, submits the code, and sees `login_finished` succeed, the
+facts report the stub's account, sudo's log show `claude auth login`
+and `claude auth status --json` run as the harness user, and the
+waiting task run. From the logs of sshd, sudo and
 an ssh wrapper, it checks that the push left the mirror as the daemon's
 user offering only the daemon's key, and that the fetch into the
 mirror ran `upload-pack` as the harness user. The test remote accepts
@@ -332,12 +344,14 @@ that account's quota. It covers step 4's login check (`claude -p` as
 `orch-agent` finds a copied login under sudo), steps 7, 8 and 11 with
 `claude`, the permission gateway, the `PATH` with and without the
 `!secure_path` line above, and a stop and a daemon restart with
-`claude` running a tool. Step 10 is not run with `claude`: it sends
+`claude` running a tool, and that the daemon reports the copied login
+as `login=yes` with a method; it makes no login. Step 10 is not run
+with `claude`: it sends
 `claude` the same SIGTERM from `orch-agent` instead of through sudo,
 so step 11's result is expected to carry over (not tested). Its
 [findings](docs/design/2026-10-09-harness-user-real-claude.md) record
-a run. The interactive `/login` of step 4, step 5, and the macOS forms
-of steps 1 and 3 stay manual.
+a run. The browser authorisation of step 4's login, step 5, and the
+macOS forms of steps 1 and 3 stay manual.
 
 1. Create the harness user, such as with `sudo useradd --create-home
    orch-agent` on Linux or `sudo sysadminctl -addUser orch-agent` on
@@ -349,8 +363,9 @@ of steps 1 and 3 stay manual.
    orch-agent -m 0755 /srv/orchestrator/workspaces` on Linux. macOS's
    system volume is read-only; use a directory such as
    `/Users/Shared/orchestrator-workspaces` there.
-4. Log `orch-agent` in to Claude Code: `sudo -u orch-agent -i`, then
-   `claude` and `/login`. As `orchestrator`, add each repository host's
+4. Once the daemon runs (step 6), log `orch-agent` in to Claude Code
+   from the daemon's page (see [Logging a daemon
+   in](#logging-a-daemon-in)). As `orchestrator`, add each repository host's
    key to `~/.ssh/known_hosts`, such as with `ssh-keyscan HOST >>
    ~/.ssh/known_hosts`, after comparing its fingerprint with the one
    the host publishes.
@@ -362,8 +377,9 @@ of steps 1 and 3 stay manual.
    `-harness-user orch-agent -workspace-dir
    /srv/orchestrator/workspaces -claude /usr/local/bin/claude` and the
    usual flags. The log has a line "running tasks as the harness user"
-   with the user, the git and rm paths, and `ssh_agent=true`. The
-   daemon's page shows its push key; register it at the forge (see
+   with the user, the git and rm paths, and `ssh_agent=true`, and a
+   line "login" with what `claude auth status` reported. The daemon's
+   page shows its push key; register it at the forge (see
    [Tasks](#tasks)).
 7. Start a task with a repository and a prompt that commits a file.
    The task page shows the branch pushed. In the workspace, as
@@ -380,11 +396,83 @@ of steps 1 and 3 stay manual.
 11. With another task running, `kill -TERM <sudo pid>` as
     `orchestrator` ends both sudo and `claude`.
 
+### Logging a daemon in
+
+Each daemon has its own Claude Code login
+([harness login](docs/adr/2026-10-10-harness-login.md)). The daemon
+makes it by running `claude` as the harness user, the OS user that
+runs tasks: the daemon's own user, or the one `-harness-user` names.
+Claude Code stores the login in that user's configuration. The server
+keeps no login credential; it holds the one-time code only until the
+login ends. You authorise in a browser on your own machine, so the
+daemon's machine does not need one.
+
+The daemon runs `claude auth status --json` when it connects, every
+ten minutes, and after each login, and reports the result as facts
+(see [Placement](#placement)):
+
+- `login`: `yes` or `no`.
+- `login_method`: how Claude Code is logged in, such as `claude.ai`;
+  `none` when logged out.
+- `account`: Claude Code's `email` and `orgId` joined by `/`, or the
+  one of them it reports; left out when it reports neither. It
+  includes both because a usage limit applies to one seat in one
+  organisation, and one email address can hold seats in several
+  organisations. Claude Code 2.1.289 given only a copied
+  `.credentials.json` reported neither until it had first run a prompt
+  with it.
+
+The dashboard flags a daemon whose `login` is `no` with "login
+needed", and the server places no turn on it until it is logged in.
+
+To log a daemon in, open its page from the dashboard and click **Log
+in** in the Login section. The server sends the daemon a `login`
+command; the daemon runs `claude auth login` as the harness user and
+reports the URL Claude Code prints. The Login section shows a link to
+that URL. Open it in your browser and authorise; the page then shows a
+code, which you paste into the Code field. The server sends the code
+as a `login_code` command, and the daemon writes it to the standard
+input of `claude auth login`, runs `claude auth status` again, and
+reports whether the login succeeded. The Login section updates at each
+step without a page reload.
+
+The daemon ends a login that receives no code within ten minutes. A
+daemon runs one login at a time: clicking **Log in** during a login
+ends it and starts a new one. When the harness user is the account you
+use on the daemon's machine, Claude Code also opens a browser there;
+authorising in it completes the login without a code.
+
+If Claude Code rejects the code, the login fails with Claude Code's
+message; start a new login. For a malformed code, Claude Code 2.1.289
+printed "Invalid code" and waited for another, so the daemon ends such
+a login five seconds after the message and reports it.
+
+Claude Code decides when a login expires. Within ten minutes of
+expiry the daemon reports `login` as `no` and the dashboard flags the
+daemon. A turn running at expiry fails or pauses, depending on the
+error Claude Code returns. Log the daemon in again the same way.
+
+The server keeps each daemon's login progress in memory only, and
+blanks the code in its command log once the login ends. If the server
+or the daemon restarts during a login, start the login again; a
+completed login stays in Claude Code's configuration. Scripts use the
+owner API:
+
+- `POST /v1/daemons/{daemon}/login` starts a login. It answers 202, or
+  409 if the daemon is not connected.
+- `POST /v1/daemons/{daemon}/login/code` with the body `{"code":
+  "..."}` submits the code. It answers 202, or 409 if no login is
+  waiting for a code.
+- `GET /v1/daemons/{daemon}` reports the latest login as the object
+  `login`, apart from the `login` fact: `phase`, one of `requested`,
+  `started`, `code_sent` and `finished`; `url`, from `started` on; and
+  `ok` and `error`, once `finished`.
+
 ### Using the GUI
 
 The dashboard lists the tasks that need attention, every task with the
-agent it was started as, the account's quota reading, and the daemons
-with their labels. A task with a purpose is listed by its purpose, and
+agent it was started as, each budget's quota reading, and the daemons
+with their labels and login. A task with a purpose is listed by its purpose, and
 any other by the start of its prompt. Its form starts a task with:
 
 - the project it belongs to, if any, once a project exists (see
@@ -447,13 +535,14 @@ ticked for every tool. Until a task of an agent with models is placed,
 its model reads as the candidates, such as "fable or sonnet, once
 placed".
 Each daemon's row on the dashboard links to the daemon's page, which
-shows the facts it reported and sets the labels the owner gives it (see
-[Placement](#placement)). Scripts read the same with `GET /v1/daemons`
+shows the facts it reported, logs its harness in (see [Logging a
+daemon in](#logging-a-daemon-in)), and sets the labels the owner gives
+it (see [Placement](#placement)). Scripts read the same with `GET /v1/daemons`
 and `GET /v1/daemons/{daemon}`: each daemon's id, labels and facts, its
 ssh key as an `authorized_keys` line (`ssh_public_key`) and as the bare
 key (`ssh_public_key_blob`), when it was last seen, whether it is
-connected, whether it is lost and since when, its capacity as `slots`, and how
-many tasks hold one as `running`.
+connected, whether it is lost and since when, its capacity as `slots`, how
+many tasks hold one as `running`, and its latest login as `login`.
 
 A `stopped` or `failed` task's page, and a `failed` task among those
 that need attention, have a Dismiss button. A dismissed task no longer
@@ -485,7 +574,7 @@ Server flags:
   `-tls-key` and `-client-ca`.
 - `-default-model`: the model of a task started without one whose
   agent, if any, has no models, `haiku` by default.
-- `-filler-threshold`: the utilization of the account's five-hour quota
+- `-filler-threshold`: the utilization of a budget's five-hour quota
   window, from 0 to 1, below which filler tasks run; 0.5 by default
   (see [Scheduling](#scheduling)).
 - `-low-threshold`: the same for low-priority tasks; 0.85 by default.
@@ -980,15 +1069,22 @@ without queueing.
   started last. That task shows as `yielded`, and the scheduler queues
   its resume as a filler turn. An owner's resume of a `yielded` task is
   a non-filler turn.
-- **Budget.** Daemons report the account's quota, a status and each
+- **Budget.** Daemons report their account's quota, a status and each
   window's utilization, from an undocumented Claude Code event seen once
-  per process, so the newest reading from any daemon is only as fresh
-  as the newest turn. Filler runs only while the five-hour window's
-  utilization is below `-filler-threshold`, and low priority below
-  `-low-threshold`. With no reading, or once the reading's five-hour
-  window has reset, filler waits and everything else runs. A reading
-  with status `rejected` holds every turn until the earliest of its
-  windows resets. The dashboard shows the reading and its age.
+  per process, so a reading is only as fresh as the newest turn on its
+  account. Each account has a budget of its own: the server keeps the
+  newest reading per harness and `account` fact, as the daemon that
+  sent it reported them when the reading arrived, and a daemon that
+  reports no account has a budget of its own, by its id. A turn is
+  checked against the budget of the daemon it would go to, so a task
+  started without a daemon goes to one whose budget allows it. Filler
+  runs only while the five-hour window's utilization is below
+  `-filler-threshold`, and low priority below `-low-threshold`. With no
+  reading, or once the reading's five-hour window has reset, filler
+  waits and everything else runs. A reading with status `rejected`
+  holds every turn on that budget's daemons until the earliest of its
+  windows resets. The dashboard shows each budget's reading, named by
+  its harness and account or daemon, and its age.
 
 A task whose turn waits shows a `queued` badge with its place in the
 queue and the reason it waits.
@@ -1003,9 +1099,11 @@ again whenever they change: `os` and `arch` as Go names them, such as
 `darwin` and `arm64`; `cpus`; `memory` in bytes, on Linux and macOS;
 `harness` and `harness_version`, such as `claude-code` and `2.1.289`;
 `gpu`, `nvidia` when `nvidia-smi` is on its `PATH` or `apple` on
-darwin/arm64, and absent otherwise; `slots`, its capacity (below); and
+darwin/arm64, and absent otherwise; `slots`, its capacity (below);
 `ssh_public_key`, the base64 of its push key's public key, the `<key>`
-of the line shown in [Tasks](#tasks). The owner sets labels on the
+of the line shown in [Tasks](#tasks); and `login`, `login_method` and
+`account`, its harness's login (see [Logging a daemon
+in](#logging-a-daemon-in)). The owner sets labels on the
 daemon's page; where a label and a fact share a key, the label wins,
 but for `models` and `slots`. Keys are letters, digits, `.`, `_` and
 `-`; values are printable characters other than space, `,` and `=`.
@@ -1019,6 +1117,14 @@ matches only that size; set a label such as `size=large` to place by
 size. If no connected daemon qualifies, the task waits with the reason "no
 daemon has" followed by the pairs that no connected daemon has. A task
 bound to a daemon that lacks them says what that daemon lacks.
+
+No turn goes to a daemon whose `login` is `no`, whether its fact says
+so or the owner's label does. A task bound to such a daemon waits with
+the reason "daemon <id> is not logged in". A task started without a
+daemon goes to another daemon, or waits with that reason when only
+daemons that are not logged in could take it. The server places turns
+on a daemon that reports no `login` fact, such as one whose harness
+cannot report its login.
 
 A daemon provides the models its owner lists in a `models` label,
 separated by `;` since a label's value holds no comma, such as
