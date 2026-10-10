@@ -95,12 +95,18 @@ the daemon from that directory:
 
 Open https://orchestrator.example:8443/ and log in with the owner
 token. The browser warns about the server's certificate until it trusts
-`ca.crt`. Scripts call the owner API, `/v1/tasks`, `/v1/agents` and
-`/v1/projects`, with the header `Authorization: Bearer <token>`.
+`ca.crt`. Scripts call the owner API (`/v1/tasks`, `/v1/agents`,
+`/v1/projects`, `/v1/daemons`, `/v1/provision` and `/v1/vpses`) with
+the header `Authorization: Bearer <token>`. Daemons call their routes
+under `/v1/daemons/{daemon}/` with their certificates, and
+`/v1/enrol` with an enrolment token (see [Provisioning a
+VPS](#provisioning-a-vps)).
 
 Whoever holds `ca.key` can issue any daemon's certificate, and a server
-certificate that the daemons trust. The running server does not read
-it, so it can be kept elsewhere between issuing certificates.
+certificate that the daemons trust. The server reads `ca.key` only when
+started with `-ca-key`, which enrolment and provisioning require. A
+server that uses neither does not need `ca.key` on its machine, which
+can then be kept elsewhere and brought out only to issue certificates.
 
 Server and daemon certificates last a year, the CA ten. To renew a
 certificate, delete its `.crt` and `.key`, issue it again, and restart
@@ -396,6 +402,175 @@ macOS forms of steps 1 and 3 stay manual.
 11. With another task running, `kill -TERM <sudo pid>` as
     `orchestrator` ends both sudo and `claude`.
 
+### Provisioning a VPS
+
+The server can create a Hetzner Cloud server for a daemon, and destroy
+it again ([VPS provisioning](docs/adr/2026-10-10-vps-provisioning.md)).
+Provisioning is on when the server has a Hetzner Cloud API token,
+either in the file named by `-hetzner-token-file` or, without that
+flag, in the environment variable `HETZNER_TOKEN`. The server refuses
+to start if the file is readable by anyone but its owner (use mode
+0600). Provisioning also needs:
+
+- `-ca-key`: the CA's key, `ca.key` from `init-ca`, so that the server
+  can issue each new daemon its certificate.
+- `-public-url`: the server's `https://` URL as the VPS dials it. The
+  server's certificate must name this URL's host.
+- `-daemon-binary-url`: an `https://` URL the VPS downloads the
+  `daemon` binary from, built for Linux and the server type's
+  architecture, such as with `GOOS=linux GOARCH=amd64 go build
+  ./cmd/daemon` for `cx` server types (x86) or `GOARCH=arm64` for `cax`
+  types.
+
+`-hetzner-server-type`, `-hetzner-location` and `-hetzner-image` choose
+the VPS, `cx23` in `fsn1` with `debian-13` by default. For example:
+
+    ./server -listen :8443 -db ~/.local/state/orchestrator/server.db \
+        -tls-cert ~/.local/state/orchestrator/pki/server.crt \
+        -tls-key ~/.local/state/orchestrator/pki/server.key \
+        -client-ca ~/.local/state/orchestrator/pki/ca.crt \
+        -ca-key ~/.local/state/orchestrator/pki/ca.key \
+        -hetzner-token-file ~/.config/orchestrator/hetzner-token \
+        -public-url https://orchestrator.example:8443 \
+        -daemon-binary-url https://downloads.example/daemon-linux-amd64
+
+The dashboard's VPSes section has a "Provision a VPS" button, and
+scripts call `POST /v1/provision`. Either way the server:
+
+1. chooses the daemon's id: `vps-` followed by eight random lowercase
+   letters and digits. The Hetzner server gets the same name;
+2. makes an enrolment token for that id, valid for an hour;
+3. creates the server with the labels `orchestrator=1` and
+   `daemon=<id>` and the cloud-init user data described below;
+4. records the VPS as `creating` and answers 201 with it.
+
+It answers 404 when provisioning is off, and 502 with Hetzner's error
+code and message when the request to create the server fails. The VPS
+is then not recorded, and since a request that failed, such as by
+timing out, may still have created a server, the server deletes every
+server labelled with the VPS's daemon id.
+
+On its first boot, cloud-init gives the VPS:
+
+- the packages `ca-certificates`, `curl`, `git`, `jq` and `sudo`;
+- the daemon's user `orchestrator` and the harness user `orch-agent`,
+  each with a home directory (see [Running the harness as another
+  user](#running-the-harness-as-another-user));
+- Claude Code's native Linux binary at `/usr/local/bin/claude`, of the
+  version set by `claudeVersion` in `internal/server/userdata.go`,
+  checked against the release manifest's checksum, as
+  `test/harness-user/Dockerfile` installs it;
+- the daemon at `/usr/local/bin/orchestrator-daemon`, from
+  `-daemon-binary-url`;
+- the CA certificate at `/etc/orchestrator/ca.crt`;
+- the sudoers rule of [Running the harness as another
+  user](#running-the-harness-as-another-user), with `/usr/bin/git` and
+  `/usr/bin/rm` and the `!secure_path` line for `claude`, at
+  `/etc/sudoers.d/orchestrator`, as in `test/harness-user/sudoers`;
+- the state directory `/var/lib/orchestrator`, owned by
+  `orchestrator`, and the workspace directory
+  `/srv/orchestrator/workspaces`, owned by `orch-agent`;
+- the systemd unit `orchestrator-daemon.service`, which runs the
+  daemon as `orchestrator` with `-server`, `-ca`, `-enrol-token`,
+  `-state-dir`, `-harness-user orch-agent`, `-workspace-dir` and
+  `-claude /usr/local/bin/claude`, and restarts it 10 seconds after it
+  fails;
+- `ssh_pwauth: false`, which asks cloud-init to turn ssh password
+  login off. The server does not give Hetzner an ssh key, so Hetzner
+  generates a root password and returns it in its answer ([API
+  reference](https://docs.hetzner.cloud/reference/cloud), "Create a
+  Server"); the server discards it.
+
+On its first start the daemon makes its key, enrols, writes
+`daemon.crt` and `daemon.key` to `/var/lib/orchestrator`, and
+connects. The VPS's state is then `enrolled`, shown as `connected`
+while its daemon has its command stream open; log the daemon in from
+its page like any other (see [Logging a daemon
+in](#logging-a-daemon-in)). Later starts use the stored certificate and
+ignore the spent token. Provisioning does not add a `known_hosts`
+entry for the repository host, which step 4 of the checklist in
+[Running the harness as another
+user](#running-the-harness-as-another-user) asks for; add it before
+running tasks that push.
+
+Each VPS row has a Destroy button, and scripts call `POST
+/v1/daemons/{daemon}/destroy`. The VPS is `destroying` while the
+server asks Hetzner to delete its server and any other server labelled
+`daemon=<id>`; then it is `destroyed`, its daemon's unused enrolment
+tokens are deleted, and the dashboard stops listing it. A server
+Hetzner no longer has counts as deleted. If Hetzner fails, the VPS
+stays `destroying` and destroying it again retries. The route answers
+404 for a daemon that is not a provisioned VPS and 409 for one already
+destroyed. The daemon's tasks move to other daemons once it is lost
+(see [Lost daemons](#lost-daemons)). `GET /v1/vpses` lists every VPS,
+destroyed ones included, with its `daemon`, `server_id`,
+`server_type`, `location`, `created_at` and `state`.
+
+A VPS is billed by the hour for as long as it exists. The server does
+not destroy a VPS on its own, even a lost or idle one; destroy it when
+it is no longer needed.
+
+#### Enrolling a machine by hand
+
+A machine the server did not create can enrol too, so that its private
+key stays on the machine: the daemon sends only a certificate signing
+request, where `issue-daemon-cert` makes the key on the server's
+machine. On the server's
+machine, with the server started with `-ca-key`:
+
+    ./server enrol-token -db ~/.local/state/orchestrator/server.db -id build-box
+
+It prints the token, `build-box:<secret>`; save it, as the server keeps
+only a hash and cannot show it again. The token works once, within an
+hour; `-lifetime` sets a different expiry. Copy `ca.crt` and a `daemon`
+binary to the machine and start the daemon without `-cert` and `-key`:
+
+    ./daemon -server https://orchestrator.example:8443 -ca ca.crt \
+        -enrol-token 'build-box:<secret>' \
+        -state-dir ~/.local/state/orchestrator/daemon
+
+The daemon makes its key, enrols, writes `daemon.crt` and `daemon.key`,
+the key readable by its user only, to the state directory, and
+connects. Later starts read them from there; omit `-enrol-token`,
+`-cert` and `-key`.
+
+#### The enrolment route
+
+`POST /v1/enrol` is the only route that needs neither a client
+certificate nor the owner's token. It takes `{"token":
+"<id>:<secret>", "csr": "<PEM certificate signing request>"}`, whose
+common name must be the token's id and whose key must be ECDSA P-256,
+and answers 200 with `{"certificate": "...", "ca": "..."}`, both PEM.
+It issues the same certificate as `issue-daemon-cert`, a
+client-authentication certificate valid for a year. It answers 401 for
+a token that is unknown, used, expired or another daemon's; 400 for a
+malformed request or a CSR naming another daemon, which leaves the
+token unspent; and 404 when the server was started without `-ca-key`.
+The server keeps only the SHA-256 of each token's secret, and spends a
+token when it issues its certificate.
+
+#### Security notes
+
+- The only secret in the user data is the enrolment token; the rest,
+  the CA certificate included, is public. Every process on the VPS can
+  read its user data through the metadata service ([VPS
+  provisioning](docs/adr/2026-10-10-vps-provisioning.md)), and Hetzner
+  stores it ([API reference](https://docs.hetzner.cloud/reference/cloud),
+  "Create a Server"). The systemd unit that carries the token is
+  readable by every local user on the VPS, the agent included. The
+  token is spent by the daemon's first start, before any task runs,
+  and expires within an hour if unused. If a VPS stays `creating`,
+  another process may have enrolled with its token; destroy the VPS.
+- The daemon sends the token only over TLS, to a server it verified
+  against `ca.crt`.
+- The Hetzner token can create, read and delete every resource in its
+  project. The server reads it from an owner-only file or the
+  environment, and does not store it, log it or include it in errors.
+- With `-ca-key` the server's machine holds `ca.key`, with which
+  anyone who reads it can issue any daemon's certificate.
+- A destroyed VPS's certificate stays valid until it expires, as any
+  daemon's does; the server does not check revocation.
+
 ### Logging a daemon in
 
 Each daemon has its own Claude Code login
@@ -471,8 +646,9 @@ owner API:
 ### Using the GUI
 
 The dashboard lists the tasks that need attention, every task with the
-agent it was started as, each budget's quota reading, and the daemons
-with their labels and login. A task with a purpose is listed by its purpose, and
+agent it was started as, each budget's quota reading, the daemons
+with their labels and login, and the VPSes the server provisioned (see
+[Provisioning a VPS](#provisioning-a-vps)). A task with a purpose is listed by its purpose, and
 any other by the start of its prompt. Its form starts a task with:
 
 - the project it belongs to, if any, once a project exists (see
@@ -561,7 +737,7 @@ Server flags:
 - `-db` (required): the SQLite database file, created with its directory
   when missing. It holds every daemon, task, event and command, the
   agents and projects, the owner token's hash and the login sessions.
-  The server brings an older database to its schema, version 21, when it
+  The server brings an older database to its schema, version 25, when it
   starts, and refuses a database of a later version.
 - `-listen`: the address to serve on, `127.0.0.1:8080` by default.
 - `-tls-cert`, `-tls-key` (required unless `-insecure-loopback`): the
@@ -569,9 +745,24 @@ Server flags:
 - `-client-ca` (required unless `-insecure-loopback`): the CA
   certificate, `ca.crt` from `init-ca`, that daemons' certificates are
   verified against.
+- `-ca-key`: the key of the `-client-ca` certificate, `ca.key` from
+  `init-ca`. It turns on enrolment, where daemons get their
+  certificates from the server, and is required for provisioning (see
+  [Provisioning a VPS](#provisioning-a-vps)).
 - `-insecure-loopback`: serve plain HTTP without authentication; only
   with a loopback IP address as `-listen`, and without `-tls-cert`,
-  `-tls-key` and `-client-ca`.
+  `-tls-key`, `-client-ca` and `-ca-key`.
+- `-hetzner-token-file`: the file holding the Hetzner Cloud API token,
+  readable by its owner only; without it, the environment variable
+  `HETZNER_TOKEN`. Either turns provisioning on, which then needs
+  `-ca-key`, `-public-url` and `-daemon-binary-url`.
+- `-hetzner-server-type`, `-hetzner-location`, `-hetzner-image`: the
+  server type, location and image of a provisioned VPS, `cx23`, `fsn1`
+  and `debian-13` by default.
+- `-public-url`: the server's `https://` URL as a provisioned VPS's
+  daemon dials it.
+- `-daemon-binary-url`: the `https://` URL a provisioned VPS downloads
+  the daemon binary from.
 - `-default-model`: the model of a task started without one whose
   agent, if any, has no models, `haiku` by default.
 - `-filler-threshold`: the utilization of a budget's five-hour quota
@@ -609,6 +800,9 @@ Server subcommands, each printing its usage with `-h`:
   once the daemon has connected, the new-task form offers it by this id.
 - `issue-owner-token -db FILE`: print a new owner token and keep its
   hash in place of the previous token's.
+- `enrol-token -db FILE -id DAEMON [-lifetime DURATION]`: print a token
+  with which the daemon DAEMON enrols once, within an hour by default
+  (see [Enrolling a machine by hand](#enrolling-a-machine-by-hand)).
 
 The first three refuse to replace an existing certificate or key.
 
@@ -616,11 +810,19 @@ Daemon flags:
 
 - `-server` (required): the server's base URL. Plain `http://` is
   accepted only for a loopback IP address.
-- `-cert`, `-key` (required): the daemon's certificate and key from
+- `-cert`, `-key`: the daemon's certificate and key from
   `issue-daemon-cert`. The certificate's name is the daemon's id.
+  Without them the daemon uses `daemon.crt` and `daemon.key` in
+  `-state-dir`, which enrolment writes.
+- `-enrol-token`: a token from the server, `<id>:<secret>`, with which
+  the daemon enrols when `-state-dir` holds no `daemon.crt` yet; it
+  needs an `https://` `-server` and `-ca`. Use it instead of `-cert`
+  and `-key`; the daemon refuses to start with both. A daemon that is
+  enrolled already ignores it.
 - `-ca` (required for `https://`): the CA certificate to verify the
   server with.
-- `-state-dir` (required): created when missing. It holds `state.json`,
+- `-state-dir` (required): created when missing. It holds, once the
+  daemon has enrolled, `daemon.crt` and `daemon.key`; `state.json`,
   which records what each task needs to be resumed, one journal per task
   under `journal/`, without `-harness-user` each running harness's
   system prompt under `harness/`, which the daemon empties when it
