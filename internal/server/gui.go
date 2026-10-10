@@ -197,9 +197,7 @@ func (s *Server) dashboardLists(ctx context.Context, showDismissed bool) (html.N
 		if daemon.LostAt != nil {
 			row.LostSince = *daemon.LostAt
 		}
-		if daemon.Harness != nil {
-			row.Harness = daemon.Harness.Name + " " + daemon.Harness.Version
-		}
+		row.Harness = daemonHarness(daemon)
 		daemonRows[idx] = component.DaemonRow(row)
 	}
 	return html.Fragment(
@@ -209,6 +207,20 @@ func (s *Server) dashboardLists(ctx context.Context, showDismissed bool) (html.N
 		component.Section("Budget", s.budget(reading)),
 		component.Section("Daemons", component.Table(component.DaemonColumns, "No daemon has connected yet.", daemonRows...)),
 	), ids, nil
+}
+
+// daemonHarness names daemon's harness and its version: those of the
+// latest event the daemon sent, or before it has sent any, those it
+// reported among its facts when it connected; "" when neither says.
+func daemonHarness(daemon daemonSummary) string {
+	if daemon.Harness != nil {
+		return daemon.Harness.Name + " " + daemon.Harness.Version
+	}
+	name, version := daemon.Facts[protocol.FactHarness], daemon.Facts[protocol.FactHarnessVersion]
+	if name == "" || version == "" {
+		return name
+	}
+	return name + " " + version
 }
 
 // budget shows the account's quota reading as the scheduler uses it.
