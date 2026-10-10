@@ -330,8 +330,8 @@ func TestGivenDaemonThatDiedWithATaskRunningWhenANewOneStartsOnItsStateThenTheTa
 	if len(second.harness.started) != 0 {
 		t.Error("the new daemon started another harness")
 	}
-	if got := mustLoadState(t, crashed).lastCommand(); got <= pause.ID {
-		t.Errorf("last command = %d, want past the pause %d", got, pause.ID)
+	if got := mustLoadState(t, crashed).lastCommand(); got.Epoch != pause.Epoch || got.ID <= pause.ID {
+		t.Errorf("last command = %s, want past the pause %s", got, pause.Position())
 	}
 
 	srv.command(t, task, protocol.CommandResume, nil)

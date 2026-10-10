@@ -11,7 +11,6 @@ import (
 	"math"
 	"net/http"
 	"slices"
-	"strconv"
 	"sync"
 	"time"
 
@@ -325,9 +324,9 @@ func (s *Server) getAcks(w http.ResponseWriter, r *http.Request) {
 }
 
 // streamCommands sends the daemon its commands as server-sent events, each
-// with its command id as the event id: first every command after the
-// Last-Event-ID the daemon sent (all of them without one), then each new
-// one as it is issued.
+// with its position, EPOCH:ID, as the event id: first every command after
+// the Last-Event-ID the daemon sent (all of them without one), then each
+// new one as it is issued.
 func (s *Server) streamCommands(w http.ResponseWriter, r *http.Request) {
 	daemon, ok := daemonFromPath(w, r)
 	if !ok {
@@ -335,11 +334,12 @@ func (s *Server) streamCommands(w http.ResponseWriter, r *http.Request) {
 	}
 	var after uint64
 	if raw := r.Header.Get("Last-Event-ID"); raw != "" {
-		var err error
-		if after, err = strconv.ParseUint(raw, 10, 63); err != nil {
-			http.Error(w, "Last-Event-ID is not a command id", http.StatusBadRequest)
+		position, err := protocol.ParseCommandPosition(raw)
+		if err != nil {
+			http.Error(w, "Last-Event-ID: "+err.Error(), http.StatusBadRequest)
 			return
 		}
+		after = position.ID
 	}
 	if err := s.store.recordSeen(r.Context(), daemon); err != nil {
 		s.internalError(w, err)
@@ -384,7 +384,7 @@ func (s *Server) streamCommands(w http.ResponseWriter, r *http.Request) {
 				s.log.Error("encode command", "daemon", daemon, "command", command.ID, "error", err)
 				return
 			}
-			if _, err := fmt.Fprintf(w, "id: %d\ndata: %s\n\n", command.ID, data); err != nil {
+			if _, err := fmt.Fprintf(w, "id: %s\ndata: %s\n\n", command.Position(), data); err != nil {
 				return
 			}
 			after = command.ID

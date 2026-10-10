@@ -22,13 +22,15 @@ func StatePath(stateDir string) string {
 
 // savedState is the daemon's record on disk, beside the journals.
 //
-// LastCommand is the id of the last command the daemon applied; it is sent
-// as Last-Event-ID so that a restarted daemon is not sent commands it has
-// already applied. Tasks holds every task the daemon has accepted and not
-// yet forgotten.
+// LastCommand is the id of the last command the daemon applied and
+// CommandEpoch the epoch it was issued in, empty for a command applied
+// before commands had epochs. Together they are sent as Last-Event-ID so
+// that a restarted daemon is not sent commands it has already applied.
+// Tasks holds every task the daemon has accepted and not yet forgotten.
 type savedState struct {
-	LastCommand uint64                         `json:"last_command"`
-	Tasks       map[protocol.TaskID]taskRecord `json:"tasks"`
+	LastCommand  uint64                         `json:"last_command"`
+	CommandEpoch protocol.Epoch                 `json:"command_epoch,omitempty"`
+	Tasks        map[protocol.TaskID]taskRecord `json:"tasks"`
 }
 
 // taskRecord is what the daemon keeps about a task across its processes
@@ -150,10 +152,10 @@ func loadState(stateDir string) (*state, error) {
 	return s, nil
 }
 
-func (s *state) lastCommand() uint64 {
+func (s *state) lastCommand() protocol.CommandPosition {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.saved.LastCommand
+	return protocol.CommandPosition{Epoch: s.saved.CommandEpoch, ID: s.saved.LastCommand}
 }
 
 // known reports whether the daemon has accepted task and not forgotten it.
@@ -181,16 +183,16 @@ func (s *state) tasks() []protocol.TaskID {
 	return slices.Sorted(maps.Keys(s.saved.Tasks))
 }
 
-// recordCommand records that command id has been applied.
-func (s *state) recordCommand(id uint64) error {
-	return s.update(func(saved *savedState) { saved.LastCommand = id })
+// recordCommand records that the command at position has been applied.
+func (s *state) recordCommand(position protocol.CommandPosition) error {
+	return s.update(func(saved *savedState) { saved.CommandEpoch, saved.LastCommand = position.Epoch, position.ID })
 }
 
-// recordStart records, in one write, that the start_task command id has
-// been applied and that task is now known.
-func (s *state) recordStart(id uint64, task protocol.TaskID) error {
+// recordStart records, in one write, that the start_task command at
+// position has been applied and that task is now known.
+func (s *state) recordStart(position protocol.CommandPosition, task protocol.TaskID) error {
 	return s.update(func(saved *savedState) {
-		saved.LastCommand = id
+		saved.CommandEpoch, saved.LastCommand = position.Epoch, position.ID
 		saved.Tasks[task] = taskRecord{}
 	})
 }
@@ -313,7 +315,7 @@ func (s *state) update(change func(*savedState)) error {
 }
 
 func (s *state) updateLocked(change func(*savedState)) error {
-	next := savedState{LastCommand: s.saved.LastCommand, Tasks: maps.Clone(s.saved.Tasks)}
+	next := savedState{LastCommand: s.saved.LastCommand, CommandEpoch: s.saved.CommandEpoch, Tasks: maps.Clone(s.saved.Tasks)}
 	change(&next)
 	data, err := json.Marshal(next)
 	if err != nil {

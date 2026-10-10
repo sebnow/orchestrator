@@ -150,7 +150,14 @@ func sseCommand(t *testing.T, id uint64, task protocol.TaskID, kind protocol.Com
 	if payload != "" {
 		data += `,"payload":` + payload
 	}
-	return fmt.Sprintf("id: %d\ndata: %s}\n\n", id, data)
+	return fmt.Sprintf("id: %s:%d\ndata: %s}\n\n", testEpoch, id, data)
+}
+
+// sseCommandIn is sseCommand in epoch.
+func sseCommandIn(t *testing.T, epoch protocol.Epoch, id uint64, task protocol.TaskID, kind protocol.CommandKind, payload string) string {
+	t.Helper()
+	command := sseCommand(t, id, task, kind, payload)
+	return strings.Replace(command, "id: "+string(testEpoch)+":", "id: "+string(epoch)+":", 1)
 }
 
 const startPayload = `{"prompt":"Do the work.","pause_limits":{"acknowledge":"2m0s","cleanup":"5m0s"}}`
@@ -181,11 +188,42 @@ func TestGivenCommandsSentAgainWhenReconnectingThenLastEventIDIsTheLastAppliedAn
 		t.Errorf("inputs = %q, want %q", inputs, want)
 	}
 	eventually(t, "a third connection", func() bool { return len(stream.connections()) >= 3 })
-	if got := stream.connections()[:3]; !slices.Equal(got, []string{"", "6", "7"}) {
+	if got := stream.connections()[:3]; !slices.Equal(got, []string{"", "E1:6", "E1:7"}) {
 		t.Errorf("Last-Event-ID per connection = %q", got)
 	}
 	if len(d.harness.started) != 0 {
 		t.Error("the start_task sent again started a second harness")
+	}
+}
+
+// After a restore the server issues under a new epoch, and its ids may
+// be ones the daemon has applied in the old one.
+func TestGivenACommandOfANewEpochWithAnIdAlreadyAppliedWhenReceivedThenItIsAppliedAndItsPositionSentNext(t *testing.T) {
+	stream := &scriptedStream{scripts: []string{
+		sseCommand(t, 5, "task-1", protocol.CommandStartTask, startPayload) +
+			sseCommand(t, 6, "task-1", protocol.CommandInterrupt, ""),
+		sseCommandIn(t, "E2", 6, "task-1", protocol.CommandPause, "") +
+			sseCommandIn(t, "E2", 6, "task-1", protocol.CommandPause, ""),
+	}}
+	httpServer := httptest.NewServer(stream)
+	t.Cleanup(httpServer.Close)
+	serverURL, _ := url.Parse(httpServer.URL)
+
+	d := runDaemon(t, serverURL, t.TempDir())
+
+	proc := d.nextProcess(t)
+	var inputs []string
+	for range 3 {
+		in := proc.nextInput(t)
+		inputs = append(inputs, in.kind+" "+in.text)
+	}
+	want := []string{"prompt Do the work.", "interrupt ", "prompt " + pausePrompt}
+	if !slices.Equal(inputs, want) {
+		t.Errorf("inputs = %q, want %q", inputs, want)
+	}
+	eventually(t, "a third connection", func() bool { return len(stream.connections()) >= 3 })
+	if got := stream.connections()[:3]; !slices.Equal(got, []string{"", "E1:6", "E2:6"}) {
+		t.Errorf("Last-Event-ID per connection = %q", got)
 	}
 }
 

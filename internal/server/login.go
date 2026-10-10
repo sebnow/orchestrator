@@ -94,8 +94,8 @@ func (s *Store) issueDaemonCommand(ctx context.Context, daemon protocol.DaemonID
 		stored = string(payload)
 	}
 	var id int64
-	err = tx.QueryRowContext(ctx, `INSERT INTO commands (epoch, daemon_id, kind, time, payload) VALUES (`+currentEpoch+`, ?, ?, ?, ?) RETURNING id`,
-		string(daemon), string(kind), formatTime(command.Time), stored).Scan(&id)
+	err = tx.QueryRowContext(ctx, `INSERT INTO commands (epoch, daemon_id, kind, time, payload) VALUES (`+currentEpoch+`, ?, ?, ?, ?) RETURNING id, epoch`,
+		string(daemon), string(kind), formatTime(command.Time), stored).Scan(&id, &command.Epoch)
 	if err != nil {
 		return protocol.Command{}, fmt.Errorf("issue %s to daemon %q: %w", kind, daemon, err)
 	}

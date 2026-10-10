@@ -2,7 +2,10 @@ package protocol
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
+	"strconv"
+	"strings"
 	"time"
 )
 
@@ -49,11 +52,15 @@ const (
 
 // Command is one entry in a daemon's command log. ID increases with every
 // command the server issues and stays the same when the command is sent
-// again, so the daemon can ignore an ID it has already applied. TaskID
-// is empty for a command to the daemon itself, of the kinds IsDaemons
-// names.
+// again. Epoch is the epoch of the server database's lineage the command
+// was issued in (docs/adr/2026-10-10-server-loss.md); a restored database
+// issues under a new epoch, and may issue ids again in it. A daemon
+// ignores a command whose epoch is that of the last command it applied
+// and whose ID is at most that command's. TaskID is empty for a command
+// to the daemon itself, of the kinds IsDaemons names.
 type Command struct {
 	ID       uint64          `json:"id"`
+	Epoch    Epoch           `json:"epoch,omitempty"`
 	DaemonID DaemonID        `json:"daemon_id"`
 	TaskID   TaskID          `json:"task_id,omitempty"`
 	Kind     CommandKind     `json:"kind"`
@@ -229,4 +236,64 @@ type HostKeys struct {
 type LoginCode struct {
 	Login uint64 `json:"login"`
 	Code  string `json:"code"`
+}
+
+// Position is where command is in the server's command log.
+func (c Command) Position() CommandPosition {
+	return CommandPosition{Epoch: c.Epoch, ID: c.ID}
+}
+
+// Epoch names one epoch of a server database's lineage: the database's
+// first, or one started by a restore (docs/adr/2026-10-10-server-loss.md).
+type Epoch string
+
+// ParseEpoch returns raw as an Epoch: 1 to 64 ASCII letters and digits.
+func ParseEpoch(raw string) (Epoch, error) {
+	if raw == "" || len(raw) > 64 {
+		return "", fmt.Errorf("epoch %q is not 1 to 64 letters and digits", raw)
+	}
+	for _, c := range []byte(raw) {
+		if !('0' <= c && c <= '9' || 'a' <= c && c <= 'z' || 'A' <= c && c <= 'Z') {
+			return "", fmt.Errorf("epoch %q is not 1 to 64 letters and digits", raw)
+		}
+	}
+	return Epoch(raw), nil
+}
+
+// CommandPosition is a command's place in the server's command log, the
+// epoch it was issued in and its id. The command stream sends it as each
+// command's event id, EPOCH:ID, and the daemon sends the position of the
+// last command it applied as Last-Event-ID. A position without an Epoch
+// is one a daemon recorded before commands had epochs, and is written as
+// the bare ID.
+type CommandPosition struct {
+	Epoch Epoch
+	ID    uint64
+}
+
+func (p CommandPosition) String() string {
+	if p.Epoch == "" {
+		return strconv.FormatUint(p.ID, 10)
+	}
+	return string(p.Epoch) + ":" + strconv.FormatUint(p.ID, 10)
+}
+
+// ParseCommandPosition parses EPOCH:ID, or a bare ID, which has no Epoch.
+func ParseCommandPosition(raw string) (CommandPosition, error) {
+	rawEpoch, rawID, hasEpoch := strings.Cut(raw, ":")
+	if !hasEpoch {
+		rawID = rawEpoch
+	}
+	id, err := strconv.ParseUint(rawID, 10, 63)
+	if err != nil {
+		return CommandPosition{}, errors.New("command position " + strconv.Quote(raw) + " is not EPOCH:ID")
+	}
+	if !hasEpoch {
+		return CommandPosition{ID: id}, nil
+	}
+	epoch, err := ParseEpoch(rawEpoch)
+	if err != nil {
+		return CommandPosition{}, fmt.Errorf("command position %q: %w", raw, err)
+	}
+	return CommandPosition{Epoch: epoch, ID: id}, nil
 }

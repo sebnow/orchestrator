@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"strconv"
 	"strings"
 	"time"
 
@@ -70,7 +69,7 @@ func (s *service) receive(ctx context.Context) {
 }
 
 // streamCommands reads the harness's login and reports the daemon's
-// facts, then opens the command stream, sending the id of the last
+// facts, then opens the command stream, sending the position of the last
 // command applied as Last-Event-ID, and applies each command the stream
 // carries. It resets b once the
 // server has accepted the stream. Facts the server does not take are
@@ -91,8 +90,8 @@ func (s *service) streamCommands(ctx context.Context, b *backoff) error {
 		return err
 	}
 	req.Header.Set("Accept", "text/event-stream")
-	if last := s.lastApplied(); last > 0 {
-		req.Header.Set("Last-Event-ID", strconv.FormatUint(last, 10))
+	if last := s.lastApplied(); last != (protocol.CommandPosition{}) {
+		req.Header.Set("Last-Event-ID", last.String())
 	}
 	resp, err := s.cfg.Client.Do(req)
 	if err != nil {
@@ -116,28 +115,32 @@ func (s *service) streamCommands(ctx context.Context, b *backoff) error {
 	return err
 }
 
-// receiveCommand applies one command from the stream unless its id has
-// been applied already. A command that cannot be decoded is logged and
+// receiveCommand applies one command from the stream unless it has been
+// applied already: its epoch is that of the last command applied and its
+// id is at most that command's. A command of another epoch is applied,
+// since the server issued it after a restore or before this daemon's last
+// command; the stream sends the commands past the daemon's in the order
+// of the server's lineage. A command that cannot be decoded is logged and
 // skipped. An error ends the stream, so that the command is sent again.
 func (s *service) receiveCommand(rawID, data string) error {
-	id, err := strconv.ParseUint(rawID, 10, 64)
+	position, err := protocol.ParseCommandPosition(rawID)
 	if err != nil {
-		s.log.Error("command without a valid id; skipped", "id", rawID)
+		s.log.Error("command without a valid id; skipped", "id", rawID, "error", err)
 		return nil
 	}
-	if id <= s.lastApplied() {
+	if last := s.lastApplied(); position.Epoch == last.Epoch && position.ID <= last.ID {
 		return nil
 	}
 	var command protocol.Command
 	if err := json.Unmarshal([]byte(data), &command); err != nil {
-		s.log.Error("command not decodable; skipped", "command", id, "error", err)
-		s.recordApplied(id)
+		s.log.Error("command not decodable; skipped", "command", position, "error", err)
+		s.recordApplied(position)
 		return nil
 	}
-	command.ID = id
+	command.ID, command.Epoch = position.ID, position.Epoch
 	if command.Kind.IsDaemons() {
 		s.applyDaemonCommand(command)
-		s.recordApplied(id)
+		s.recordApplied(position)
 		return nil
 	}
 	if command.Kind == protocol.CommandStartTask {

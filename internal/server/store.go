@@ -1013,8 +1013,8 @@ func insertCommand(ctx context.Context, tx *sql.Tx, daemon protocol.DaemonID, ta
 	}
 	var id int64
 	err = tx.QueryRowContext(ctx, `
-		INSERT INTO commands (epoch, daemon_id, task_id, kind, time, payload) VALUES (`+currentEpoch+`, ?, ?, ?, ?, ?) RETURNING id`,
-		string(daemon), string(task), string(kind), formatTime(command.Time), stored).Scan(&id)
+		INSERT INTO commands (epoch, daemon_id, task_id, kind, time, payload) VALUES (`+currentEpoch+`, ?, ?, ?, ?, ?) RETURNING id, epoch`,
+		string(daemon), string(task), string(kind), formatTime(command.Time), stored).Scan(&id, &command.Epoch)
 	if err != nil {
 		return protocol.Command{}, fmt.Errorf("issue %s for task %q: %w", kind, task, err)
 	}
@@ -1053,7 +1053,7 @@ func yieldTask(ctx context.Context, tx *sql.Tx, daemon protocol.DaemonID, task p
 // in id order.
 func (s *Store) commandsAfter(ctx context.Context, daemon protocol.DaemonID, after uint64) ([]protocol.Command, error) {
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT id, task_id, kind, time, payload FROM commands WHERE daemon_id = ? AND id > ? ORDER BY id`,
+		SELECT id, epoch, task_id, kind, time, payload FROM commands WHERE daemon_id = ? AND id > ? ORDER BY id`,
 		string(daemon), int64(after))
 	if err != nil {
 		return nil, fmt.Errorf("read commands: %w", err)
@@ -1062,10 +1062,11 @@ func (s *Store) commandsAfter(ctx context.Context, daemon protocol.DaemonID, aft
 	var commands []protocol.Command
 	for rows.Next() {
 		var id int64
+		var epoch protocol.Epoch
 		var kind, issued string
 		var task sql.NullString
 		var payload []byte
-		if err := rows.Scan(&id, &task, &kind, &issued, &payload); err != nil {
+		if err := rows.Scan(&id, &epoch, &task, &kind, &issued, &payload); err != nil {
 			return nil, fmt.Errorf("read commands: %w", err)
 		}
 		at, err := parseTime(issued)
@@ -1073,7 +1074,7 @@ func (s *Store) commandsAfter(ctx context.Context, daemon protocol.DaemonID, aft
 			return nil, fmt.Errorf("read command %d: %w", id, err)
 		}
 		commands = append(commands, protocol.Command{
-			ID: uint64(id), DaemonID: daemon, TaskID: protocol.TaskID(task.String), Kind: protocol.CommandKind(kind), Time: at, Payload: payload,
+			ID: uint64(id), Epoch: epoch, DaemonID: daemon, TaskID: protocol.TaskID(task.String), Kind: protocol.CommandKind(kind), Time: at, Payload: payload,
 		})
 	}
 	if err := rows.Err(); err != nil {

@@ -118,9 +118,9 @@ type service struct {
 	// mu guards running and every worker's queue.
 	mu      sync.Mutex
 	running map[protocol.TaskID]*worker
-	// applied is the id of the last command applied. It leads the state's
-	// copy when saving that failed.
-	applied uint64
+	// applied is the position of the last command applied. It leads the
+	// state's copy when saving that failed.
+	applied protocol.CommandPosition
 	// facts are what the daemon reports about its machine each time it
 	// opens its command stream and whenever they change; factsMu guards
 	// them.
@@ -380,15 +380,15 @@ func (s *service) accept(command protocol.Command) error {
 	}
 	if _, err := os.Stat(JournalPath(s.cfg.StateDir, task)); s.state.known(task) || err == nil {
 		s.log.Warn("start_task for a task this daemon has already run; skipped", "command", command.ID, "task", task)
-		s.recordApplied(command.ID)
+		s.recordApplied(command.Position())
 		return nil
 	}
-	if err := s.state.recordStart(command.ID, task); err != nil {
+	if err := s.state.recordStart(command.Position(), task); err != nil {
 		return err
 	}
 	s.mu.Lock()
 	s.spawnLocked(task, command)
-	s.applied = command.ID
+	s.applied = command.Position()
 	s.mu.Unlock()
 	return nil
 }
@@ -416,7 +416,7 @@ func (s *service) route(command protocol.Command) {
 		s.log.Warn("command for a task this daemon does not know; skipped",
 			"command", command.ID, "kind", command.Kind, "task", command.TaskID)
 	}
-	s.recordApplied(command.ID)
+	s.recordApplied(command.Position())
 }
 
 // spawnLocked starts a worker for task with command queued. s.mu must be
@@ -427,18 +427,18 @@ func (s *service) spawnLocked(task protocol.TaskID, command protocol.Command) {
 	s.workers.Go(func() { s.work(task, w) })
 }
 
-func (s *service) recordApplied(id uint64) {
+func (s *service) recordApplied(position protocol.CommandPosition) {
 	s.mu.Lock()
-	s.applied = id
+	s.applied = position
 	s.mu.Unlock()
-	// A command id that is not saved is only sent again after a restart,
-	// when no task it could apply to is running any more.
-	if err := s.state.recordCommand(id); err != nil {
-		s.log.Error("record applied command", "command", id, "error", err)
+	// A command that is not saved as applied is only sent again after a
+	// restart, when no task it could apply to is running any more.
+	if err := s.state.recordCommand(position); err != nil {
+		s.log.Error("record applied command", "command", position, "error", err)
 	}
 }
 
-func (s *service) lastApplied() uint64 {
+func (s *service) lastApplied() protocol.CommandPosition {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.applied

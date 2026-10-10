@@ -65,7 +65,7 @@ func assertEndsWithRestartExit(t *testing.T, events []protocol.Event, wantSeq ui
 func TestGivenJournalWithoutExitWhenRecoveringThenHarnessExitedDaemonRestartedIsAppended(t *testing.T) {
 	stateDir := t.TempDir()
 	writeJournal(t, stateDir, "task-1", 2)
-	mustLoadState(t, stateDir).recordStart(4, "task-1")
+	mustLoadState(t, stateDir).recordStart(at(4), "task-1")
 
 	recoverIn(t, stateDir)
 
@@ -82,7 +82,7 @@ func TestGivenJournalThatEndsInExitWhenRecoveringThenItIsUnchanged(t *testing.T)
 	}
 	j.appendControl(protocol.KindHarnessExited, protocol.HarnessExited{ExitCode: 0})
 	j.close()
-	mustLoadState(t, stateDir).recordStart(1, "task-1")
+	mustLoadState(t, stateDir).recordStart(at(1), "task-1")
 	before, _ := os.ReadFile(JournalPath(stateDir, "task-1"))
 
 	recoverIn(t, stateDir)
@@ -102,7 +102,7 @@ func TestGivenJournalWithATornLastLineWhenRecoveringThenTheLineIsCutAndTheExitFo
 	}
 	io.WriteString(f, `{"task_id":"task-1","seq":3,"kind":"harn`)
 	f.Close()
-	mustLoadState(t, stateDir).recordStart(1, "task-1")
+	mustLoadState(t, stateDir).recordStart(at(1), "task-1")
 
 	recoverIn(t, stateDir)
 
@@ -112,7 +112,7 @@ func TestGivenJournalWithATornLastLineWhenRecoveringThenTheLineIsCutAndTheExitFo
 
 func TestGivenAcceptedTaskWithoutAJournalWhenRecoveringThenItsJournalHoldsOnlyTheExit(t *testing.T) {
 	stateDir := t.TempDir()
-	mustLoadState(t, stateDir).recordStart(1, "task-1")
+	mustLoadState(t, stateDir).recordStart(at(1), "task-1")
 
 	recoverIn(t, stateDir)
 

@@ -9,7 +9,6 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
-	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -342,8 +341,8 @@ func receiveCommand(t *testing.T, events <-chan sseEvent) protocol.Command {
 		if err := json.Unmarshal([]byte(event.data), &command); err != nil {
 			t.Fatalf("decode %q: %v", event.data, err)
 		}
-		if event.id != strconv.FormatUint(command.ID, 10) {
-			t.Fatalf("event id %q differs from command id %d", event.id, command.ID)
+		if command.Epoch == "" || event.id != command.Position().String() {
+			t.Fatalf("event id %q differs from command position %s", event.id, command.Position())
 		}
 		return command
 	case <-time.After(5 * time.Second):

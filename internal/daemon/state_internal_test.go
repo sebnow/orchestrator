@@ -20,7 +20,7 @@ func mustLoadState(t *testing.T, stateDir string) *state {
 func TestGivenNoStateFileWhenLoadingThenTheStateIsEmpty(t *testing.T) {
 	s := mustLoadState(t, t.TempDir())
 
-	if s.lastCommand() != 0 || len(s.tasks()) != 0 {
+	if s.lastCommand() != (protocol.CommandPosition{}) || len(s.tasks()) != 0 {
 		t.Errorf("state = %+v", s.saved)
 	}
 }
@@ -28,13 +28,13 @@ func TestGivenNoStateFileWhenLoadingThenTheStateIsEmpty(t *testing.T) {
 func TestGivenRecordedCommandsAndAcksWhenLoadingAgainThenTheyAreRestored(t *testing.T) {
 	dir := t.TempDir()
 	s := mustLoadState(t, dir)
-	if err := s.recordStart(3, "task-a"); err != nil {
+	if err := s.recordStart(at(3), "task-a"); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.recordStart(5, "task-b"); err != nil {
+	if err := s.recordStart(at(5), "task-b"); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.recordCommand(7); err != nil {
+	if err := s.recordCommand(at(7)); err != nil {
 		t.Fatal(err)
 	}
 	if err := s.recordAcked("task-a", 12); err != nil {
@@ -43,8 +43,8 @@ func TestGivenRecordedCommandsAndAcksWhenLoadingAgainThenTheyAreRestored(t *test
 
 	loaded := mustLoadState(t, dir)
 
-	if loaded.lastCommand() != 7 {
-		t.Errorf("last command = %d, want 7", loaded.lastCommand())
+	if loaded.lastCommand() != at(7) {
+		t.Errorf("last command = %s, want %s", loaded.lastCommand(), at(7))
 	}
 	if got := loaded.tasks(); !slices.Equal(got, []protocol.TaskID{"task-a", "task-b"}) {
 		t.Errorf("tasks = %v", got)
@@ -57,18 +57,18 @@ func TestGivenRecordedCommandsAndAcksWhenLoadingAgainThenTheyAreRestored(t *test
 func TestGivenUnwritableStateDirWhenRecordingThenTheErrorIsReturnedAndTheStateIsUnchanged(t *testing.T) {
 	dir := t.TempDir()
 	s := mustLoadState(t, dir)
-	s.recordStart(1, "task-a")
+	s.recordStart(at(1), "task-a")
 	if err := os.Chmod(dir, 0o500); err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { os.Chmod(dir, 0o700) })
 
-	err := s.recordStart(2, "task-b")
+	err := s.recordStart(at(2), "task-b")
 
 	if err == nil {
 		t.Fatal("no error")
 	}
-	if s.lastCommand() != 1 || s.known("task-b") {
+	if s.lastCommand() != at(1) || s.known("task-b") {
 		t.Errorf("state changed after a failed write: %+v", s.saved)
 	}
 }
@@ -81,6 +81,47 @@ func TestGivenCorruptStateFileWhenLoadingThenItFails(t *testing.T) {
 
 	if _, err := loadState(dir); err == nil {
 		t.Error("no error")
+	}
+}
+
+// testEpoch is the epoch of the commands the tests apply.
+const testEpoch protocol.Epoch = "E1"
+
+// at is the position of command id in testEpoch.
+func at(id uint64) protocol.CommandPosition {
+	return protocol.CommandPosition{Epoch: testEpoch, ID: id}
+}
+
+func TestGivenStateFileOfAnEarlierDaemonWhenLoadingThenItsLastCommandHasNoEpoch(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(StatePath(dir), []byte(`{"last_command":4,"tasks":{}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	s := mustLoadState(t, dir)
+
+	if got := s.lastCommand(); got != (protocol.CommandPosition{ID: 4}) || got.String() != "4" {
+		t.Errorf("last command = %+v, want 4 without an epoch", got)
+	}
+}
+
+func TestGivenACommandOfAnotherEpochWhenRecordedThenBothItsEpochAndIdAreSavedAndATaskIsKept(t *testing.T) {
+	dir := t.TempDir()
+	s := mustLoadState(t, dir)
+	if err := s.recordStart(at(9), "task-a"); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.recordCommand(protocol.CommandPosition{Epoch: "E2", ID: 3}); err != nil {
+		t.Fatal(err)
+	}
+
+	loaded := mustLoadState(t, dir)
+
+	if got := loaded.lastCommand(); got != (protocol.CommandPosition{Epoch: "E2", ID: 3}) {
+		t.Errorf("last command = %+v, want E2:3", got)
+	}
+	if !loaded.known("task-a") {
+		t.Error("task-a was forgotten")
 	}
 }
 
@@ -121,7 +162,7 @@ func endedProcess(t *testing.T, s *state, dir string, task protocol.TaskID, sess
 func TestGivenResumableTaskHeldWholeWhenDroppingItsJournalThenTheJournalGoesAndTheRecordStays(t *testing.T) {
 	dir := t.TempDir()
 	s := mustLoadState(t, dir)
-	s.recordStart(1, "task-a")
+	s.recordStart(at(1), "task-a")
 	endedProcess(t, s, dir, "task-a", "session-1", 7)
 	s.recordAcked("task-a", 7)
 
@@ -142,7 +183,7 @@ func TestGivenResumableTaskHeldWholeWhenDroppingItsJournalThenTheJournalGoesAndT
 func TestGivenTaskThatCannotBeResumedWhenDroppingItsJournalThenItIsForgotten(t *testing.T) {
 	dir := t.TempDir()
 	s := mustLoadState(t, dir)
-	s.recordStart(1, "task-a")
+	s.recordStart(at(1), "task-a")
 	endedProcess(t, s, dir, "task-a", "", 3)
 
 	dropped, err := s.dropJournal("task-a", 3, JournalPath(dir, "task-a"))
@@ -153,7 +194,7 @@ func TestGivenTaskThatCannotBeResumedWhenDroppingItsJournalThenItIsForgotten(t *
 	if mustLoadState(t, dir).known("task-a") {
 		t.Error("task still known")
 	}
-	if mustLoadState(t, dir).lastCommand() != 1 {
+	if mustLoadState(t, dir).lastCommand() != at(1) {
 		t.Error("forgetting a task lost the last command")
 	}
 }
@@ -161,7 +202,7 @@ func TestGivenTaskThatCannotBeResumedWhenDroppingItsJournalThenItIsForgotten(t *
 func TestGivenJournalHeldByAProcessOrNotHeldWholeWhenDroppingThenItStays(t *testing.T) {
 	dir := t.TempDir()
 	s := mustLoadState(t, dir)
-	s.recordStart(1, "task-a")
+	s.recordStart(at(1), "task-a")
 	endedProcess(t, s, dir, "task-a", "session-1", 7)
 
 	notHeld, _ := s.dropJournal("task-a", 6, JournalPath(dir, "task-a"))

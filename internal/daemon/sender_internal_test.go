@@ -34,7 +34,7 @@ func newSenderFixture(t *testing.T) *senderFixture {
 	f.task = f.server.createTask(t, testDaemon, protocol.StartTask{Prompt: "p", PauseLimits: testPauseLimits})
 	f.server.receiveStart(t, testDaemon, f.task)
 	f.state = mustLoadState(t, f.stateDir)
-	if err := f.state.recordStart(1, f.task); err != nil {
+	if err := f.state.recordStart(at(1), f.task); err != nil {
 		t.Fatal(err)
 	}
 	j, err := f.state.openJournal(f.task, func(taskRecord) (*journal, error) {
@@ -245,7 +245,7 @@ func TestGivenTaskTheServerDoesNotAssignToTheDaemonWhenSendingThenItIsDroppedAnd
 	}
 	defer foreign.close()
 	foreign.appendOutput([]byte(`{}`))
-	f.state.recordStart(2, "foreign-task")
+	f.state.recordStart(at(2), "foreign-task")
 	f.sender.notify("foreign-task")
 
 	f.run(t)
