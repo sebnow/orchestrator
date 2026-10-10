@@ -640,7 +640,9 @@ working directory. A `stopped` or `failed` task takes a follow-up
 prompt, or Resume, in the same way, until the owner dismisses it; its
 daemon keeps its session and workspace until then. A task whose harness
 never started, because its workspace could not be prepared or its
-harness could not be started, has no session to continue: its page
+harness could not be started, says so, as "workspace could not be
+prepared: ..." or "harness could not be started: ...", in its header
+and its transcript. It has no session to continue: its page
 offers Retry instead of Resume, and Retry or a follow-up starts it
 afresh, as a new start placed on whichever daemon fits, with its first
 prompt followed by the follow-up, if any.

@@ -8,6 +8,8 @@ import (
 	"errors"
 	"fmt"
 	"slices"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/sebnow/orchestrator/internal/protocol"
@@ -174,6 +176,33 @@ const (
 	exitInterrupted          = "interrupted by the owner"
 	exitInterruptedNoSession = "interrupted by the owner, before the harness reported a session"
 )
+
+// The beginnings of the errors a daemon gives in harness_exited, with
+// ExitCode -1, for a process that never started: its workspace could not
+// be prepared, or its harness could not be started. The cause follows.
+// internal/daemon words them the same.
+const (
+	startFailedWorkspace = "workspace could not be prepared: "
+	startFailedHarness   = "harness could not be started: "
+)
+
+// startFailed reports whether exit says the process never started.
+func startFailed(exit protocol.HarnessExited) bool {
+	return exit.ExitCode == -1 && (strings.HasPrefix(exit.Error, startFailedWorkspace) || strings.HasPrefix(exit.Error, startFailedHarness))
+}
+
+// failureOf words why a process that ended with exit failed: what never
+// started and why, for a process that never started, or else the
+// harness's exit code and error.
+func failureOf(exit protocol.HarnessExited) string {
+	switch {
+	case startFailed(exit):
+		return exit.Error
+	case exit.Error != "":
+		return "harness exited with code " + strconv.Itoa(exit.ExitCode) + ": " + exit.Error
+	}
+	return "harness exited with code " + strconv.Itoa(exit.ExitCode)
+}
 
 // cutShortOf reports whether exit is a turn cut short and left resumable,
 // by the daemon or by the owner's interrupt: by is "restarted", "stopped"
@@ -364,11 +393,13 @@ type taskSummary struct {
 // taskDetail is one task: its summary and what it was started with.
 // HasSession says its latest start got as far as starting its harness, so
 // that a follow-up continues its session; a stopped or failed task
-// without one is started afresh instead.
+// without one is started afresh instead. Failure says why a failed task
+// failed, as failureOf words its latest exit; it is empty otherwise.
 type taskDetail struct {
 	taskSummary
 	Start      protocol.StartTask `json:"start"`
 	HasSession bool               `json:"has_session"`
+	Failure    string             `json:"failure,omitempty"`
 }
 
 const summaryColumns = `id, daemon_id, placement, parent_id, coalesce(agent, ''), coalesce(project, ''), purpose, requires, state, model, priority, filler, created_at, last_activity_at, cost_usd, dismissed_at`
@@ -505,6 +536,18 @@ func readTaskDetail(ctx context.Context, tx *sql.Tx, task protocol.TaskID) (task
 	}
 	if detail.HasSession, err = hasSession(ctx, tx, task); err != nil {
 		return taskDetail{}, err
+	}
+	if detail.State == TaskFailed {
+		var payload string
+		err := tx.QueryRowContext(ctx, `SELECT payload FROM events WHERE task_id = ? AND kind = ? ORDER BY seq DESC LIMIT 1`,
+			string(task), string(protocol.KindHarnessExited)).Scan(&payload)
+		if err != nil && !errors.Is(err, sql.ErrNoRows) {
+			return taskDetail{}, fmt.Errorf("read the exit of task %q: %w", task, err)
+		}
+		var exit protocol.HarnessExited
+		if json.Unmarshal([]byte(payload), &exit) == nil {
+			detail.Failure = failureOf(exit)
+		}
 	}
 	return detail, nil
 }

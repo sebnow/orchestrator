@@ -129,7 +129,7 @@ func eventBodies(event protocol.Event) []transcript.Body {
 	case protocol.KindHarnessExited:
 		body, ok = decodeBody(event.Payload, func(p protocol.HarnessExited) transcript.Body {
 			by, newSession := cutShortOf(p)
-			return transcript.HarnessExited{ExitCode: p.ExitCode, Error: p.Error, Stderr: p.Stderr, CutShortBy: by, NewSession: newSession}
+			return transcript.HarnessExited{ExitCode: p.ExitCode, Error: p.Error, Stderr: p.Stderr, CutShortBy: by, NewSession: newSession, NotStarted: startFailed(p)}
 		})
 	case protocol.KindPermissionRequested:
 		body, ok = decodeBody(event.Payload, func(p protocol.PermissionRequested) transcript.Body { return transcript.PermissionRequested(p) })

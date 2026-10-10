@@ -369,7 +369,8 @@ func TestGivenWorkspaceThatCannotBeClonedWhenTheTaskStartsThenItEndsWithGitsErro
 	events := srv.waitForEvent(t, task, "harness_exited", isKind(protocol.KindHarnessExited))
 	var exit protocol.HarnessExited
 	json.Unmarshal(events[0].Payload, &exit)
-	if len(events) != 1 || exit.ExitCode != -1 || !strings.Contains(exit.Error, "git fetch") || !strings.Contains(exit.Error, "missing.git") {
+	if len(events) != 1 || exit.ExitCode != -1 || !strings.HasPrefix(exit.Error, "workspace could not be prepared: ") ||
+		!strings.Contains(exit.Error, "git fetch") || !strings.Contains(exit.Error, "missing.git") {
 		t.Errorf("events: %s", describe(events))
 	}
 	if len(d.harness.started) != 0 {
@@ -388,7 +389,7 @@ func TestGivenRepositoryThatIsNeitherHTTPSNorSSHWhenTheTaskStartsThenItEndsSayin
 	events := srv.waitForEvent(t, task, "harness_exited", isKind(protocol.KindHarnessExited))
 	var exit protocol.HarnessExited
 	json.Unmarshal(events[0].Payload, &exit)
-	want := `prepare workspace: repository "git://github.com/octocat/Hello-World.git" is not an https:// URL`
+	want := `workspace could not be prepared: repository "git://github.com/octocat/Hello-World.git" is not an https:// URL`
 	if len(events) != 1 || exit.ExitCode != -1 || !strings.HasPrefix(exit.Error, want) {
 		t.Errorf("events: %s", describe(events))
 	}

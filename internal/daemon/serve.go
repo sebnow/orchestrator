@@ -494,15 +494,15 @@ func (s *service) startTask(command protocol.Command) *Task {
 	}
 	start, err := decodePayload[protocol.StartTask](command)
 	if err != nil {
-		return s.failStart(task, j, err)
+		return s.failStart(task, j, fmt.Errorf("%s: %w", harnessCannotStart, err))
 	}
 	limits := PauseLimits(start.PauseLimits)
 	if err := limits.validate(); err != nil {
-		return s.failStart(task, j, err)
+		return s.failStart(task, j, fmt.Errorf("%s: %w", harnessCannotStart, err))
 	}
 	workdir := s.daemon.workspace(task)
 	if err := s.daemon.runner.prepareWorkspace(s.stopping, workdir, task, start.Workspace, s.cfg.GitName, s.cfg.GitEmail); err != nil {
-		return s.failStart(task, j, fmt.Errorf("prepare workspace: %w", err))
+		return s.failStart(task, j, fmt.Errorf("%s: %w", workspaceNotPrepared, err))
 	}
 	if start.Workspace != nil {
 		start.SystemPrompt = joinPrompts(start.SystemPrompt, deliveryPrompt(task))
@@ -511,7 +511,7 @@ func (s *service) startTask(command protocol.Command) *Task {
 	// workspace is ready.
 	settings := taskSettings{Prompt: start.Prompt, Model: start.Model, SystemPrompt: start.SystemPrompt, Acknowledge: limits.Acknowledge, Cleanup: limits.Cleanup, Tools: start.Tools}
 	if err := s.state.updateTask(task, func(rec *taskRecord) { rec.Settings = &settings }); err != nil {
-		return s.failStart(task, j, fmt.Errorf("record task settings: %w", err))
+		return s.failStart(task, j, fmt.Errorf("%s: record task settings: %w", harnessCannotStart, err))
 	}
 	return s.startProcess(task, j, TaskSpec{
 		ID:           task,
@@ -751,4 +751,4 @@ func resolveWorkspaceDir(stateDir, dir string, user runas.User) (string, error) 
 // it is asked to continue a task it holds no session or workspace for.
 // internal/server words it the same, and starts such a task afresh on its
 // next follow-up.
-const exitNoSession = "harness could not be started: no harness session to resume"
+const exitNoSession = harnessCannotStart + ": no harness session to resume"

@@ -79,6 +79,7 @@ func (v taskView) id() string { return string(v.detail.ID) }
 func (v taskView) task() component.Task {
 	task := guiTask(v.detail.taskSummary, v.detail.Start.Prompt)
 	task.ProjectName = v.projectName
+	task.Failure = v.detail.Failure
 	for _, child := range v.children {
 		task.Children = append(task.Children, string(child.ID))
 	}

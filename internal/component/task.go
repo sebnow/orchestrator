@@ -47,6 +47,8 @@ type Task struct {
 	// Branch is what the daemon last pushed of the task's branch; nil
 	// until it pushes.
 	Branch *transcript.BranchPushed
+	// Failure says why a failed task failed; empty otherwise.
+	Failure string
 }
 
 // QueuePlace is where a task's waiting turn stands in the scheduler's
@@ -263,6 +265,10 @@ func TaskHeader(task Task, controls html.Node) html.Node {
 	if task.Queue != nil {
 		queue = term("Waits", html.Text(task.Queue.Reason))
 	}
+	var failure html.Node
+	if task.Failure != "" {
+		failure = term("Failure", html.Text(task.Failure))
+	}
 	if task.Parent != "" {
 		parent = term("Parent", link(taskURL(task.Parent), task.Parent))
 	}
@@ -281,6 +287,7 @@ func TaskHeader(task Task, controls html.Node) html.Node {
 		html.El("dl", nil,
 			purpose,
 			term("State", queueBadges(task)),
+			failure,
 			queue,
 			project,
 			agent,

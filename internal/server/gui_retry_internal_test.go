@@ -187,3 +187,36 @@ func TestGivenEndedTaskWhenDismissedThenItsDaemonIsToldToDiscardItAndItsWaitingT
 	page := getPage(t, srv.url+"/tasks/"+string(task))
 	requireContains(t, page, "Owner dismissed the task; daemon laptop deletes its workspace")
 }
+
+func TestGivenProcessThatNeverStartedWhenItsTaskIsShownThenTheFailureIsNamedAsWhatItIsNotAsAnExit(t *testing.T) {
+	for _, exitError := range []string{
+		"workspace could not be prepared: git fetch: exit status 128",
+		"harness could not be started: exec: \\\"claude\\\": executable file not found in $PATH",
+	} {
+		t.Run(exitError[:9], func(t *testing.T) {
+			srv := startTestServer(t)
+			task := taskThatNeverStarted(t, srv, exitError)
+			want := strings.ReplaceAll(exitError, `\"`, `"`)
+
+			page := getPage(t, srv.url+"/tasks/"+string(task))
+			var detail taskDetail
+			getJSON(t, srv.url+"/v1/tasks/"+string(task), &detail)
+
+			escaped := strings.ReplaceAll(want, `"`, "&#34;")
+			requireContains(t, page, "<dt>Failure</dt><dd>"+escaped+"</dd>", " "+strings.ToUpper(escaped[:1])+escaped[1:]+"</header>")
+			requireLacks(t, page, "Harness exited with code -1", "harness exited with code -1")
+			if detail.Failure != want {
+				t.Errorf("failure = %q, want %q", detail.Failure, want)
+			}
+		})
+	}
+}
+
+func TestGivenHarnessThatFailedWhenItsTaskIsShownThenTheFailureGivesItsExitCode(t *testing.T) {
+	srv := startTestServer(t)
+	task := failedTask(t, srv, "Doomed work")
+
+	page := getPage(t, srv.url+"/tasks/"+string(task))
+
+	requireContains(t, page, "<dt>Failure</dt><dd>harness exited with code 1</dd>", "Harness exited with code 1")
+}

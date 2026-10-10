@@ -441,7 +441,7 @@ func TestGivenHarnessThatCannotStartWhenStartingTaskThenTheJournalRecordsWhy(t *
 	}
 	events := readJournalFile(t, JournalPath(stateDir, "task-1"))
 	if len(events) != 1 || events[0].Kind != protocol.KindHarnessExited ||
-		string(events[0].Payload) != `{"exit_code":-1,"error":"no claude on PATH"}` {
+		string(events[0].Payload) != `{"exit_code":-1,"error":"harness could not be started: no claude on PATH"}` {
 		t.Errorf("journal = %+v", events)
 	}
 }

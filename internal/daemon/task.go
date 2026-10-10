@@ -210,7 +210,7 @@ func (d *Daemon) start(ctx context.Context, j *journal, spec TaskSpec) (*Task, e
 		sendMessage:      d.sendMessage(spec.ID),
 	})
 	if err != nil {
-		t.record(protocol.KindHarnessExited, protocol.HarnessExited{ExitCode: -1, Error: err.Error()})
+		t.record(protocol.KindHarnessExited, protocol.HarnessExited{ExitCode: -1, Error: harnessNotStarted(err)})
 		j.close()
 		return nil, err
 	}
@@ -228,7 +228,7 @@ func (d *Daemon) start(ctx context.Context, j *journal, spec TaskSpec) (*Task, e
 		},
 	})
 	if err != nil {
-		t.record(protocol.KindHarnessExited, protocol.HarnessExited{ExitCode: -1, Error: err.Error()})
+		t.record(protocol.KindHarnessExited, protocol.HarnessExited{ExitCode: -1, Error: harnessNotStarted(err)})
 		unregister()
 		j.close()
 		return nil, err
@@ -251,6 +251,21 @@ func (d *Daemon) start(ctx context.Context, j *journal, spec TaskSpec) (*Task, e
 		return t, fmt.Errorf("send task prompt: %w", promptErr)
 	}
 	return t, nil
+}
+
+// The error texts of the harness_exited the daemon reports for a process
+// that never started, before its workspace was ready and after,
+// followed by ": " and the cause. internal/server words them the same,
+// and reports the failure as what it is rather than as an exit.
+const (
+	workspaceNotPrepared = "workspace could not be prepared"
+	harnessCannotStart   = "harness could not be started"
+)
+
+// harnessNotStarted is the error text for a harness that could not be
+// started because of cause.
+func harnessNotStarted(cause error) string {
+	return harnessCannotStart + ": " + cause.Error()
 }
 
 // gatewayTools are the gateway tools the harness lets the agent call

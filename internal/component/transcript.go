@@ -8,6 +8,8 @@ import (
 	"reflect"
 	"strconv"
 	"time"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/sebnow/orchestrator/internal/html"
 	"github.com/sebnow/orchestrator/internal/protocol"
@@ -303,6 +305,9 @@ func transcriptEntry(entry transcript.Entry, nested html.Node) html.Node {
 	case transcript.HarnessExited:
 		label = "Harness exited with code " + strconv.Itoa(b.ExitCode)
 		body = html.Fragment(paragraph(b.Error), stderr(b.Stderr))
+		if b.NotStarted {
+			label, body = sentenceCase(b.Error), stderr(b.Stderr)
+		}
 		if b.CutShortBy != "" {
 			next := "Resume continues its session."
 			if b.NewSession {
@@ -424,4 +429,14 @@ func errorText(text string) html.Node {
 		return nil
 	}
 	return html.El("p", attrs("class", "problem"), html.Text(text))
+}
+
+// sentenceCase is text with its first letter in upper case.
+func sentenceCase(text string) string {
+	if text == "" {
+		return text
+	}
+	first, size := utf8.DecodeRuneInString(text)
+
+	return string(unicode.ToUpper(first)) + text[size:]
 }

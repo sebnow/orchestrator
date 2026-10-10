@@ -208,12 +208,17 @@ type HarnessStarted struct {
 // "interrupted" when the owner interrupted the turn.
 // NewSession is then set when no harness session was recorded, so that
 // resuming starts a new one with the task's first prompt.
+//
+// NotStarted is set when the process never started, because its
+// workspace could not be prepared or its harness could not be started;
+// Error then says which, and why, and ExitCode means nothing.
 type HarnessExited struct {
 	ExitCode   int
 	Error      string
 	Stderr     string
 	CutShortBy string
 	NewSession bool
+	NotStarted bool
 }
 
 // MessageSent is the agent sending Text to the task To through its
