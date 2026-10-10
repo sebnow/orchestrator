@@ -1284,6 +1284,86 @@ func TestLiveGivenParentAgentThatSpawnsAWorkerThatCannotMessageWhenTheWorkerFini
 	t.Logf("parent %s, child %s; child's results %q; parent's %q", parent, child, childResults, results)
 }
 
+// Cost: `claude --version` and at most two claude sessions: the parent's
+// turn that spawns the child, and the child's, which the test stops
+// rather than letting its report resume the parent.
+func TestLiveGivenBrainInAProjectWhenItSpawnsAChildWithAPurposeThenTheChildLeadsWithThePurposeBelongsToTheProjectAndIsInTheTree(t *testing.T) {
+	ctx, cancel := context.WithTimeout(t.Context(), 6*time.Minute)
+	defer cancel()
+	sys := startLiveSystem(t)
+	t.Cleanup(func() {
+		if sessions := sys.sessions(t); sessions > 2 {
+			t.Errorf("the daemon ran %d claude sessions, over the budget of 2", sessions)
+		}
+	})
+	for _, agent := range []map[string]any{
+		{"name": "live-brain", "description": "Coordinates.", "tools": []string{"spawn_task"},
+			"system_prompt": "You coordinate other agents. You do no work yourself."},
+		{"name": "live-worker", "description": "Answers with one word.", "tools": []string{},
+			"system_prompt": "You answer with exactly the one word you are asked for, and nothing else."},
+	} {
+		if status := call(t, http.MethodPost, sys.server+"/v1/agents", agent, nil); status != http.StatusCreated {
+			t.Fatalf("create agent %s: %d", agent["name"], status)
+		}
+	}
+	const instructions = "In this project, keep every reply under ten words."
+	var project struct {
+		ID string `json:"id"`
+	}
+	if status := call(t, http.MethodPost, sys.server+"/v1/projects",
+		map[string]any{"name": "live-project", "instructions": instructions, "default_agent": "live-brain"}, &project); status != http.StatusCreated {
+		t.Fatalf("create project: %d", status)
+	}
+
+	parent := sys.startTaskViaGUI(t, ctx, "Use the spawn_task tool once, with agent \"live-worker\", the purpose \"Name a fruit.\" and exactly this prompt: "+
+		`"Reply with the single word PLUM." `+
+		"Then end your turn at once, without waiting for the child or checking on it.", "project", project.ID)
+
+	first := sys.waitForState(t, ctx, parent, "finished", 1, nil)
+	child := sys.childOf(t, parent)
+	if child == "" {
+		_, results := sessionsAndResults(t, first)
+		t.Fatalf("the parent spawned no child; called spawn_task: %v; results %q", callsTool(first, "spawn_task"), results)
+	}
+	// Stopping the parent first keeps the child's end from resuming it.
+	sys.command(t, parent, url.Values{"kind": {"stop"}})
+	sys.command(t, child, url.Values{"kind": {"stop"}})
+
+	type task struct {
+		Agent   string `json:"agent"`
+		Project string `json:"project"`
+		Purpose string `json:"purpose"`
+		Start   struct {
+			Prompt       string `json:"prompt"`
+			SystemPrompt string `json:"system_prompt"`
+		} `json:"start"`
+	}
+	var root, spawned task
+	call(t, http.MethodGet, sys.server+"/v1/tasks/"+string(parent), nil, &root)
+	call(t, http.MethodGet, sys.server+"/v1/tasks/"+string(child), nil, &spawned)
+	if root.Agent != "live-brain" || root.Project != project.ID ||
+		!strings.Contains(root.Start.SystemPrompt, "You do no work yourself.\n\n"+instructions) {
+		t.Errorf("parent = %+v; want live-brain in the project, its prompt then the project's instructions", root)
+	}
+	if spawned.Purpose == "" || !strings.HasPrefix(spawned.Start.Prompt, "Purpose: "+spawned.Purpose+"\n\n") ||
+		spawned.Project != project.ID || spawned.Agent != "live-worker" || !strings.HasSuffix(spawned.Start.SystemPrompt, "\n\n"+instructions) {
+		t.Errorf("child = %+v; want a purpose atop its prompt, the parent's project and its instructions", spawned)
+	}
+
+	var tree struct {
+		ID       protocol.TaskID `json:"id"`
+		Children []struct {
+			ID      protocol.TaskID `json:"id"`
+			Purpose string          `json:"purpose"`
+		} `json:"children"`
+	}
+	call(t, http.MethodGet, sys.server+"/v1/tasks/"+string(parent)+"/tree", nil, &tree)
+	if tree.ID != parent || len(tree.Children) != 1 || tree.Children[0].ID != child || tree.Children[0].Purpose != spawned.Purpose {
+		t.Errorf("tree = %+v; want the parent with the child and its purpose", tree)
+	}
+	t.Logf("parent %s, child %s, purpose %q, child's prompt %q", parent, child, spawned.Purpose, spawned.Start.Prompt)
+}
+
 // sessions counts the claude sessions the daemon has started: every
 // invocation but `claude --version`.
 func (sys liveSystem) sessions(t *testing.T) int {
