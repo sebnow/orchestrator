@@ -10,11 +10,13 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"log/slog"
 	"net/netip"
 	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/sebnow/orchestrator/internal/s3"
 	"github.com/sebnow/orchestrator/internal/server"
@@ -107,6 +109,47 @@ func restore(args []string, stdout, stderr io.Writer) int {
 	}
 	fmt.Fprintf(stdout, "Restored %s from %s, at schema version %d. Start the server to use it.\n", *dbPath, *from, version)
 	return 0
+}
+
+// restoreTimeout bounds restoring the database from the bucket at start.
+const restoreTimeout = 30 * time.Minute
+
+// restoreAtStart restores the database at dbPath from the newest copy in
+// bucket under prefix when dbPath does not exist
+// (docs/adr/2026-10-10-server-loss.md). A bucket that holds no copy
+// leaves dbPath to be created empty, which it logs. A database that
+// exists is left as it is. It refuses to restore beside a write-ahead log
+// or journal that has lost its database, since SQLite would apply it to
+// the restored one.
+func restoreAtStart(ctx context.Context, log *slog.Logger, bucket *s3.Client, prefix, dbPath string) error {
+	if _, err := os.Lstat(dbPath); err == nil {
+		return nil
+	} else if !errors.Is(err, fs.ErrNotExist) {
+		return err
+	}
+	for _, suffix := range []string{"-wal", "-journal"} {
+		if _, err := os.Lstat(dbPath + suffix); err == nil {
+			return fmt.Errorf("%s exists without its database; move it away to restore from the bucket", dbPath+suffix)
+		} else if !errors.Is(err, fs.ErrNotExist) {
+			return err
+		}
+	}
+	ctx, cancel := context.WithTimeout(ctx, restoreTimeout)
+	defer cancel()
+	key, err := server.NewestUpload(ctx, bucket, prefix)
+	if err != nil {
+		return err
+	}
+	if key == "" {
+		log.Info("no backup in the bucket; starting with an empty database", "bucket", bucket.Bucket(), "prefix", prefix, "db", dbPath)
+		return nil
+	}
+	version, err := replaceDatabase(ctx, dbPath, key, bucket)
+	if err != nil {
+		return fmt.Errorf("restore %s: %w", key, err)
+	}
+	log.Info("restored the database from the bucket", "key", key, "schema_version", version, "db", dbPath)
+	return nil
 }
 
 // replaceDatabase puts the backup from, a file or, when there is no such

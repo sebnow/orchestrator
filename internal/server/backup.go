@@ -191,11 +191,36 @@ type backups struct {
 }
 
 func newBackups(policy BackupPolicy, store *Store, now func() time.Time) *backups {
-	b := &backups{policy: policy, store: store, now: now}
-	if dir := strings.TrimSuffix(policy.Prefix, "/"); dir != "" {
-		b.remoteDir = dir + "/"
+	return &backups{policy: policy, store: store, now: now, remoteDir: remoteDir(policy.Prefix)}
+}
+
+// remoteDir is what the key of each copy uploaded under prefix starts
+// with: prefix with one trailing '/', or "" for the top level.
+func remoteDir(prefix string) string {
+	if dir := strings.TrimSuffix(prefix, "/"); dir != "" {
+		return dir + "/"
 	}
-	return b
+	return ""
+}
+
+// NewestUpload returns the key of the newest copy in bucket that a
+// server with prefix as its BackupPolicy.Prefix uploaded, gzipped or
+// plain, and "" when the bucket holds none.
+func NewestUpload(ctx context.Context, bucket *s3.Client, prefix string) (string, error) {
+	dir := remoteDir(prefix)
+	objects, err := bucket.List(ctx, dir+backupPrefix)
+	if err != nil {
+		return "", fmt.Errorf("list uploaded backups: %w", err)
+	}
+	var newest string
+	var newestAt time.Time
+	for _, object := range objects {
+		at, ok := uploadTime(strings.TrimPrefix(object.Key, dir))
+		if ok && (newest == "" || at.After(newestAt)) {
+			newest, newestAt = object.Key, at
+		}
+	}
+	return newest, nil
 }
 
 // backupAttempt is the outcome of one backup. File is empty when no copy

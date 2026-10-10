@@ -94,7 +94,7 @@ func serve(args []string, stderr io.Writer) int {
 		printSubcommands(stderr)
 	}
 	listen := flags.String("listen", "127.0.0.1:8080", "address to serve on")
-	dbPath := flags.String("db", "", "SQLite database file, created with its directory when missing (required)")
+	dbPath := flags.String("db", "", "SQLite database file, created with its directory when missing, or restored from the bucket's newest upload when the -backup-s3- flags are given (required)")
 	defaultModel := flags.String("default-model", "haiku", "model of a task created without one")
 	tlsCert := flags.String("tls-cert", "", "the server's certificate, from issue-server-cert (required unless -insecure-loopback)")
 	tlsKey := flags.String("tls-key", "", "the server certificate's key (required unless -insecure-loopback)")
@@ -212,6 +212,12 @@ func serve(args []string, stderr io.Writer) int {
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+	if backupBucket != nil {
+		if err := restoreAtStart(ctx, log, backupBucket, *backupPrefix, *dbPath); err != nil {
+			log.Error("restore the database from the bucket; refusing to start without it", "error", err)
+			return 1
+		}
+	}
 	store, err := server.OpenStore(ctx, *dbPath)
 	if err != nil {
 		log.Error("open database", "error", err)

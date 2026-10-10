@@ -153,7 +153,9 @@ To run the server itself on a VPS, rather than on a laptop as above:
    (`-backup-s3-credentials`), and `ca.key`.
 6. Moving from a laptop server: stop the laptop's server; copy its
    database file together with its `-wal` and `-shm` files (or back it
-   up and run `server restore` on the VPS instead), and `ca.crt` and
+   up and run `server restore` on the VPS, or start the VPS's server
+   with the bucket flags and no `-db` file, which restores the newest
+   upload), and `ca.crt` and
    `ca.key`. Issue the server certificate again, for the VPS's name.
    Daemons the laptop server certified keep working, since the CA is
    unchanged; enrol new machines with `server enrol-token -db FILE -id
@@ -864,9 +866,27 @@ To restore a backup:
 3. Start the server. A backup made by an older server is migrated when
    the server starts, as any older database is.
 
+With the four bucket flags, the server also restores on its own when
+it starts and `-db` does not exist
+([server loss](docs/adr/2026-10-10-server-loss.md)): it downloads the
+newest upload under `-backup-s3-prefix`, gzipped or plain, and puts it
+in place as `server restore` does, with the same checks. If the bucket
+holds no upload, the server logs that and starts with an empty
+database. If the bucket cannot be read, or the download or a check
+fails, the server refuses to start, so that it does not start empty
+while a backup may exist. It also refuses while the database's `-wal`
+or `-journal` file is there without the database, which SQLite would
+apply to the restored one; move it away to restore. An existing
+database is used as it is. To recreate the server's machine, start the
+server there with the same bucket flags and credentials file before
+anything else creates `-db`: `issue-owner-token` or a start without the
+bucket flags creates an empty database, which the server then keeps.
+The restored database holds the owner token.
+
 Everything recorded after the backup was made is lost. The server does
 not know the tasks started after it, and refuses their daemons' events
-for them.
+for them. Daemons resend the events since the backup that their
+journals still hold.
 
 ### Command ids and epochs
 
@@ -1019,8 +1039,10 @@ record, journal and workspace.
 Server flags:
 
 - `-db` (required): the SQLite database file, created with its directory
-  when missing. It holds every daemon, task, event and command, the
-  agents and projects, the owner token's hash and the login sessions.
+  when missing, or, with the bucket flags, restored from the newest
+  upload (see [Backups](#backups)). It holds every daemon, task, event
+  and command, the agents and projects, the owner token's hash and the
+  login sessions.
   The server brings an older database to its schema, version 29, when it
   starts, and refuses a database of a later version.
 - `-listen`: the address to serve on, `127.0.0.1:8080` by default.
@@ -1063,8 +1085,8 @@ Server flags:
 - `-backup-keep`: how many backups to keep, in the directory and in
   the bucket separately; 14 by default, and at least 1.
 - `-backup-s3-endpoint`, `-backup-s3-region`, `-backup-s3-bucket`,
-  `-backup-s3-credentials`: the bucket backups are uploaded to; all four
-  or none.
+  `-backup-s3-credentials`: the bucket backups are uploaded to, and
+  restored from at start when `-db` does not exist; all four or none.
 - `-backup-s3-prefix`: the key prefix of the uploads in the bucket,
   `orchestrator/` by default.
 - `-default-model`: the model of a task started without one whose
