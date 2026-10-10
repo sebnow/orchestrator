@@ -56,7 +56,13 @@ Living document; revise in place. Decisions live in docs/adr, findings in docs/d
 - SQLite backups, locally and to S3-compatible object storage, with
   restore (`VACUUM INTO` plus a stdlib SigV4 PUT; the live round trip
   against a real bucket awaits credentials):
-  [docs/adr/2026-10-10-sqlite-backups.md](adr/2026-10-10-sqlite-backups.md).
+  [docs/adr/2026-10-10-sqlite-backups.md](adr/2026-10-10-sqlite-backups.md),
+  amended by
+  [docs/adr/2026-10-10-server-loss.md](adr/2026-10-10-server-loss.md):
+  gzipped uploads, backups after a harness exit and at shutdown, restore
+  at start when the database is missing, and a lineage of epochs that
+  command ids name, so that daemons tell a restored server's commands
+  from those they applied.
 - Forge host keys distributed by the server (owner decision 2026-10-10,
   trust on first use rejected): the owner's keys as a setting plus
   GitHub's from its meta API, sent to each daemon as a `host_keys`

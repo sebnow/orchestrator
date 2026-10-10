@@ -134,6 +134,13 @@ Known gaps and UNVERIFIED behaviours, from the workers' reports, grouped by area
   command does not check that the server is stopped.
 - The dashboard prints the backup interval in Go's duration form, such
   as `6h0m0s`.
+- A copy's name holds its time to the second, so two backups in one
+  second, as a burst of harness exits can make, share a name, and the
+  later replaces the earlier locally and in the bucket.
+- Restore at start, gzipped uploads and the R2 bucket are tested only
+  against the in-process fake bucket until the live round trip runs.
+- A daemon refused with `unknown_lineage` needs its `state.json` edited
+  by hand; the server offers no reset.
 
 ## Docs
 
