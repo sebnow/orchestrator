@@ -98,7 +98,8 @@ func serve(args []string, stderr io.Writer) int {
 		flags.PrintDefaults()
 		printSubcommands(stderr)
 	}
-	listen := flags.String("listen", "127.0.0.1:8080", "address to serve on")
+	listen := flags.String("listen", "127.0.0.1:8080", "address to serve on: every route, or with -daemon-listen the owner's GUI and API alone")
+	daemonListen := flags.String("daemon-listen", "", "address to serve the daemon API, enrolment and the daemon binaries on, with TLS and -client-ca; -listen then serves the owner's routes alone, as plain HTTP on a loopback IP address, for a tunnel to reach. Empty, the default, serves every route on -listen")
 	dbPath := flags.String("db", "", "SQLite database file, created with its directory when missing, or restored from the bucket's newest upload when the -backup-s3- flags are given (required)")
 	defaultModel := flags.String("default-model", "haiku", "model of a task created without one")
 	tlsCert := flags.String("tls-cert", "", "the server's certificate, from issue-server-cert (required unless -insecure-loopback)")
@@ -161,6 +162,18 @@ func serve(args []string, stderr io.Writer) int {
 	}
 	var tlsConfig *tls.Config
 	var ca *pki.CA
+	if *daemonListen != "" {
+		if *insecure {
+			fmt.Fprintln(stderr, "server: -daemon-listen serves TLS and authenticates daemons; drop -insecure-loopback")
+			return 2
+		}
+		// The owner's listener serves plain HTTP, for a tunnel on the same
+		// machine; the browser gets TLS from the tunnel's edge.
+		if err := requireLoopback(*listen); err != nil {
+			fmt.Fprintln(stderr, "server: with -daemon-listen, -listen serves plain HTTP:", err)
+			return 2
+		}
+	}
 	if *insecure {
 		if *tlsCert != "" || *tlsKey != "" || *clientCA != "" || *caKey != "" {
 			fmt.Fprintln(stderr, "server: -insecure-loopback serves plain HTTP; drop -tls-cert, -tls-key, -client-ca and -ca-key")
@@ -260,14 +273,27 @@ func serve(args []string, stderr io.Writer) int {
 		GitHubMeta:        *githubMeta,
 		DaemonBinariesDir: *daemonBinariesDir,
 	})
-	httpServer := &http.Server{
-		Handler:   srv,
-		TLSConfig: tlsConfig,
-		// No write timeout: command streams stay open indefinitely.
-		ReadHeaderTimeout: 10 * time.Second,
-		ErrorLog:          slog.NewLogLogger(log.Handler(), slog.LevelError),
+	httpServer := func(handler http.Handler, tlsConfig *tls.Config) *http.Server {
+		s := &http.Server{
+			Handler:   handler,
+			TLSConfig: tlsConfig,
+			// No write timeout: command streams stay open indefinitely.
+			ReadHeaderTimeout: 10 * time.Second,
+			ErrorLog:          slog.NewLogLogger(log.Handler(), slog.LevelError),
+		}
+		s.RegisterOnShutdown(srv.EndStreams)
+		return s
 	}
-	httpServer.RegisterOnShutdown(srv.EndStreams)
+	// Without -daemon-listen one listener serves every route; with it the
+	// owner's and the daemons' are apart
+	// (docs/adr/2026-10-10-gui-access.md).
+	endpoints := []*endpoint{{address: *listen, server: httpServer(srv, tlsConfig), tls: !*insecure}}
+	if *daemonListen != "" {
+		endpoints = []*endpoint{
+			{address: *listen, server: httpServer(srv.OwnerHandler(), nil)},
+			{address: *daemonListen, server: httpServer(srv.DaemonHandler(), tlsConfig), tls: true},
+		}
+	}
 	scheduleCtx, stopScheduling := context.WithCancel(context.Background())
 	scheduled := make(chan struct{})
 	go func() {
@@ -293,21 +319,25 @@ func serve(args []string, stderr io.Writer) int {
 		<-fetched
 	})
 	defer stopBackground()
-	listener, err := net.Listen("tcp", *listen)
-	if err != nil {
-		log.Error("listen", "error", err)
-		return 1
-	}
-	served := make(chan error, 1)
-	go func() {
-		if *insecure {
-			served <- httpServer.Serve(listener)
-			return
+	for idx, e := range endpoints {
+		if e.listener, err = net.Listen("tcp", e.address); err != nil {
+			for _, open := range endpoints[:idx] {
+				open.listener.Close()
+			}
+			log.Error("listen", "address", e.address, "error", err)
+			return 1
 		}
-		served <- httpServer.ServeTLS(listener, "", "")
-	}()
-	log.Info("serving", "address", listener.Addr().String(), "tls", !*insecure, "db", *dbPath,
-		"enrolment", ca != nil, "provisioning", provisioning != nil, "backups", *backupDir, "backup-upload", backupBucket != nil)
+	}
+	served := make(chan error, len(endpoints))
+	for _, e := range endpoints {
+		go func() { served <- e.serve() }()
+	}
+	logged := []any{"address", endpoints[0].listener.Addr().String(), "tls", endpoints[0].tls}
+	if len(endpoints) > 1 {
+		logged = append(logged, "daemon_address", endpoints[1].listener.Addr().String())
+	}
+	log.Info("serving", append(logged, "db", *dbPath, "enrolment", ca != nil, "provisioning", provisioning != nil,
+		"backups", *backupDir, "backup-upload", backupBucket != nil)...)
 
 	select {
 	case err := <-served:
@@ -321,12 +351,24 @@ func serve(args []string, stderr io.Writer) int {
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
 	defer cancel()
 	status = 0
-	if err := httpServer.Shutdown(shutdownCtx); err != nil {
-		log.Error("shut down", "error", err)
-		status = 1
-	} else if err := <-served; !errors.Is(err, http.ErrServerClosed) {
-		log.Error("serve", "error", err)
-		status = 1
+	var shutdowns sync.WaitGroup
+	shutdownErrs := make([]error, len(endpoints))
+	for idx, e := range endpoints {
+		shutdowns.Go(func() { shutdownErrs[idx] = e.server.Shutdown(shutdownCtx) })
+	}
+	shutdowns.Wait()
+	for idx, err := range shutdownErrs {
+		if err != nil {
+			log.Error("shut down", "address", endpoints[idx].address, "error", err)
+			status = 1
+		}
+	}
+	// Shutdown makes Serve return at once, so every endpoint has answered.
+	for range endpoints {
+		if err := <-served; !errors.Is(err, http.ErrServerClosed) {
+			log.Error("serve", "error", err)
+			status = 1
+		}
 	}
 	// The last backup follows every write: the streams have ended, and
 	// the scheduler and the backups have stopped.
@@ -335,6 +377,22 @@ func serve(args []string, stderr io.Writer) int {
 	srv.BackUpOnShutdown(backupCtx)
 	cancelBackup()
 	return status
+}
+
+// endpoint is a listener and the HTTP server on it.
+type endpoint struct {
+	address  string
+	server   *http.Server
+	tls      bool
+	listener net.Listener
+}
+
+// serve serves on the endpoint's listener until the server shuts down.
+func (e *endpoint) serve() error {
+	if e.tls {
+		return e.server.ServeTLS(e.listener, "", "")
+	}
+	return e.server.Serve(e.listener)
 }
 
 // logLeftovers logs what removing the leftovers of an earlier run's

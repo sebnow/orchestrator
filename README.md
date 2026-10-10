@@ -122,9 +122,17 @@ browsers trust the new `ca.crt`.
 To run the server on a VPS, a deployer produces the binaries, the PKI,
 a Hetzner token and the bucket's credentials, puts them on the VPS, and
 runs the server as a service. The VPS can then be destroyed and
-recreated: a server that
-finds no database restores the newest upload from the bucket, and loses
-what it stored after that upload (see [Backups](#backups)).
+recreated: a server that finds no database restores the newest upload
+from the bucket, and loses what it stored after that upload (see
+[Backups](#backups)).
+
+The server serves the owner and the daemons on separate listeners
+([GUI access](docs/adr/2026-10-10-gui-access.md)).
+Daemons dial `-daemon-listen` directly, on a hostname of its own, with
+mutual TLS under the server's CA. The owner's GUI and API are on
+`-listen`, as plain HTTP on loopback, and the browser reaches them only
+through a Cloudflare Tunnel, with Cloudflare Access in front of the
+GUI's hostname.
 
 The steps below set up the VPS. Then follow one of [First
 install](#first-install), [Recreated VPS](#recreated-vps) or [Moving
@@ -149,14 +157,16 @@ from a laptop](#moving-from-a-laptop).
    to; issue only the server certificate for the VPS.
 
        orchestrator-server init-ca -pki-dir <pki>
-       orchestrator-server issue-server-cert -pki-dir <pki> -host <name> [-host <ip>]
+       orchestrator-server issue-server-cert -pki-dir <pki> -host <daemons' name> [-host <ip>]
 
    `init-ca` writes `ca.crt` and `ca.key`, and `issue-server-cert`
    writes `server.crt` and `server.key`. Pass a `-host` for every name
-   daemons and the browser reach the server by, including the host of
-   `-public-url` in step 5. Every daemon certificate chains to the CA,
-   so the CA pair must outlive the VPS: keep the originals on another
-   machine, and copy them to the VPS on each install. The server takes `ca.key` through
+   daemons reach the server by, including the daemons' hostname in
+   `-public-url` in step 5; the browser reaches the GUI through the
+   tunnel, which serves Cloudflare's certificate for the GUI's hostname.
+   Every daemon certificate chains to the CA, so the CA pair must
+   outlive the VPS: keep the originals on another machine, and copy them
+   to the VPS on each install. The server takes `ca.key` through
    `-ca-key`; enrolment and provisioning need it.
 3. Create a Hetzner API token used only by this server, in the project
    the daemon VPSes are to go in, with permission to create and delete
@@ -186,7 +196,8 @@ from a laptop](#moving-from-a-laptop).
    moving a laptop's database: on a recreated VPS the database's
    absence is what makes the server restore it.
 5. Save this unit as `/etc/systemd/system/orchestrator-server.service`,
-   for a server on port 443 with a Cloudflare R2 bucket:
+   for a server whose daemons dial port 443 and whose GUI a tunnel
+   reaches on loopback port 8080, with a Cloudflare R2 bucket:
 
        [Unit]
        Description=orchestrator server
@@ -197,11 +208,12 @@ from a laptop](#moving-from-a-laptop).
        User=orchestrator
        EnvironmentFile=/etc/orchestrator/server.env
        AmbientCapabilities=CAP_NET_BIND_SERVICE
-       ExecStart=/usr/local/bin/orchestrator-server -listen :443 \
+       ExecStart=/usr/local/bin/orchestrator-server \
+           -listen 127.0.0.1:8080 -daemon-listen :443 \
            -db /var/lib/orchestrator/server.db \
            -tls-cert /etc/orchestrator/server.crt -tls-key /etc/orchestrator/server.key \
            -client-ca /etc/orchestrator/ca.crt -ca-key /etc/orchestrator/ca.key \
-           -public-url https://<name> \
+           -public-url https://<daemons' name> \
            -daemon-binaries-dir /var/lib/orchestrator/binaries \
            -hetzner-token-file /etc/orchestrator/hetzner-token -hetzner-location nbg1 \
            -backup-s3-endpoint ${BACKUP_S3_ENDPOINT} -backup-s3-region auto \
@@ -218,8 +230,13 @@ from a laptop](#moving-from-a-laptop).
    the unit.
    `CAP_NET_BIND_SERVICE` lets the server's user listen on 443. Allow
    inbound TCP 443 from anywhere, since a provisioned VPS's address is
-   not known in advance, and SSH for yourself. The server never
-   connects to a daemon, so the daemon VPSes need no inbound port.
+   not known in advance, and SSH for yourself; nothing else. The GUI's
+   port stays closed: run `cloudflared` on the VPS with a tunnel whose
+   public hostname, the GUI's name, goes to `http://127.0.0.1:8080`, and
+   put a Cloudflare Access application in front of that hostname. The
+   tunnel dials out to Cloudflare, so it needs no inbound port either.
+   The server never connects to a daemon, so the daemon VPSes need no
+   inbound port.
 
 #### First install
 
@@ -249,11 +266,11 @@ keep it somewhere retrievable, such as a password manager. The GUI's
 
 #### Recreated VPS
 
-Point `<name>` at the new VPS, and issue the server certificate again
-(step 2) if it names the old VPS's IP address. Repeat steps 4 and 5
-with the same files, and start the service with `systemctl
-daemon-reload` and `systemctl enable --now
-orchestrator-server.service`. Do not issue an owner token. The server
+Point the daemons' name at the new VPS, run the tunnel's `cloudflared`
+there, and issue the server certificate again (step 2) if it names the
+old VPS's IP address. Repeat steps 4 and 5 with the
+same files, and start the service with `systemctl daemon-reload` and
+`systemctl enable --now orchestrator-server.service`. Do not issue an owner token. The server
 restores the newest upload, owner token included, and starts a new
 command epoch, so daemons carry on with it (see [Command ids and
 epochs](#command-ids-and-epochs)). A new token would replace the
@@ -280,7 +297,7 @@ in [First install](#first-install).
      server made as it stopped.
 3. Start the service as for a recreated VPS. The database holds the
    owner token already, so do not issue one.
-4. Point each existing daemon's `-server` at the VPS's public URL and
+4. Point each existing daemon's `-server` at `-public-url` and
    restart it. Daemons the laptop server certified keep their
    certificates, since the CA is the same. A daemon that ran beside the
    laptop's server with `-insecure-loopback` has no certificate. Enrol
@@ -291,7 +308,7 @@ in [First install](#first-install).
 
    and on the machine, with `ca.crt` copied to it, the daemon built for
    it (`daemon-linux-<arch>`, or the native build) runs with
-   `-enrol-token <id:secret> -server https://<name> -ca ca.crt` (see
+   `-enrol-token <id:secret> -server https://<daemons' name> -ca ca.crt` (see
    [Enrolling a machine by hand](#enrolling-a-machine-by-hand)).
 
 After a first install, set each daemon's `models` label (see
@@ -606,8 +623,9 @@ to start if the file is readable by anyone but its owner (use mode
 
 - `-ca-key`: the CA's key, `ca.key` from `init-ca`, so that the server
   can issue each new daemon its certificate.
-- `-public-url`: the server's `https://` URL as the VPS dials it. The
-  server's certificate must name this URL's host.
+- `-public-url`: the server's `https://` URL as the VPS dials it, the
+  `-daemon-listen` address's with that flag. The server's certificate
+  must name this URL's host.
 - the `daemon` binary, built for Linux and the server type's
   architecture: `amd64` for `cx` server types (x86), `arm64` for `cax`
   types. Either the server serves it or another host does:
@@ -1187,7 +1205,18 @@ Server flags:
   login sessions.
   The server brings an older database to its schema, version 29, when it
   starts, and refuses a database of a later version.
-- `-listen`: the address to serve on, `127.0.0.1:8080` by default.
+- `-listen`: the address to serve on, `127.0.0.1:8080` by default. It
+  serves every route, unless `-daemon-listen` is given.
+- `-daemon-listen`: the address to serve the daemons on: the daemon
+  API, enrolment and the daemon binaries, with TLS and `-client-ca`.
+  `-listen` then serves the owner's GUI and API alone, as plain HTTP,
+  and only on a loopback IP address, for a tunnel on the same machine
+  to reach ([GUI access](docs/adr/2026-10-10-gui-access.md)). The
+  daemons' listener answers 404 to the owner's routes; the owner's
+  serves no daemon route, refusing a request for one as it refuses any
+  without the owner's token, and answering 404 with it. Empty, the
+  default, serves every route on `-listen`, as on a laptop. Not with
+  `-insecure-loopback`.
 - `-tls-cert`, `-tls-key` (required unless `-insecure-loopback`): the
   server's certificate and key, from `issue-server-cert`.
 - `-client-ca` (required unless `-insecure-loopback`): the CA
@@ -1209,7 +1238,8 @@ Server flags:
   server type, location and image of a provisioned VPS, `cx23`, `fsn1`
   and `debian-13` by default.
 - `-public-url`: the server's `https://` URL as a provisioned VPS's
-  daemon dials it.
+  daemon dials it: the `-daemon-listen` address's hostname, with that
+  flag.
 - `-daemon-binary-url`: the `https://` URL a provisioned VPS downloads
   the daemon binary from; with `-daemon-binaries-dir` and
   `-public-url`, `<public-url>/daemon/linux-{arch}` by default.
