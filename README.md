@@ -92,8 +92,8 @@ the daemon from that directory:
 
 Open https://orchestrator.example:8443/ and log in with the owner
 token. The browser warns about the server's certificate until it trusts
-`ca.crt`. Scripts call the owner API under `/v1/tasks` with the header
-`Authorization: Bearer <token>`.
+`ca.crt`. Scripts call the owner API, `/v1/tasks`, `/v1/agents` and
+`/v1/projects`, with the header `Authorization: Bearer <token>`.
 
 Whoever holds `ca.key` can issue any daemon's certificate, and a server
 certificate that the daemons trust. The running server does not read
@@ -327,9 +327,14 @@ of steps 1 and 3 stay manual.
 
 The dashboard lists the tasks that need attention, every task with the
 agent it was started as, the account's quota reading, and the daemons
-with their labels. Its form starts a task with:
+with their labels. A task with a purpose is listed by its purpose, and
+any other by the start of its prompt. Its form starts a task with:
 
+- the project it belongs to, if any, once a project exists (see
+  [Projects](#projects));
 - the agent to start it as, if any (see [Agents](#agents));
+- an optional purpose, one line on why the task exists, which the task
+  reads at the top of its prompt;
 - its prompt, and an optional repository and ref;
 - the model;
 - the daemon to run it on, or any connected daemon, and the labels its
@@ -351,8 +356,11 @@ Each task page:
   runs with `-permissions ask`;
 - shows the branch the daemon pushed the task's work to (see
   [Tasks](#tasks));
-- lists the tasks it spawned, with each one's agent, state and latest
-  report, and links its parent;
+- shows its purpose and its project, if it has them;
+- lists the tasks it spawned, with each one's purpose, agent, state and
+  latest report, and links its parent;
+- shows the tree of tasks under it, each with its purpose, state,
+  agent, cost and branch;
 - has buttons to pause, resume, interrupt or stop the task.
 
 Claude Code can run subagents of its own within a task's turn, with its
@@ -372,10 +380,12 @@ runs until the owner stops it (see the
 [background subagent](docs/design/2026-10-09-background-subagent-turn.md)
 note).
 
-The Agents page, linked from the top of every page, lists the agents
-and creates, edits and deletes them. Each daemon's row on the dashboard
-links to the daemon's page, which shows the facts it reported and sets
-the labels the owner gives it (see [Placement](#placement)).
+The Projects and Agents pages, linked from the top of every page, list
+the projects and the agents and create, edit and delete them; a
+project's page also lists the tasks started in it and starts more.
+Each daemon's row on the dashboard links to the daemon's page, which
+shows the facts it reported and sets the labels the owner gives it (see
+[Placement](#placement)).
 
 A `stopped` or `failed` task's page, and a `failed` task among those
 that need attention, have a Dismiss button. A dismissed task no longer
@@ -391,7 +401,9 @@ Server flags:
 
 - `-db` (required): the SQLite database file, created with its directory
   when missing. It holds every daemon, task, event and command, the
-  owner token's hash and the login sessions.
+  agents and projects, the owner token's hash and the login sessions.
+  The server brings an older database to its schema, version 15, when it
+  starts, and refuses a database of a later version.
 - `-listen`: the address to serve on, `127.0.0.1:8080` by default.
 - `-tls-cert`, `-tls-key` (required unless `-insecure-loopback`): the
   server's certificate and key, from `issue-server-cert`.
@@ -558,14 +570,25 @@ commits the repository lacks; if that push fails, the daemon keeps the
 clone, logs the failure, and tries again the next time it starts.
 
 An agent can start child tasks and message other tasks with two tools
-the daemon gives it, `spawn_task(prompt, agent?, model?, requires?)`
-and `send_message(to, text)`
+the daemon gives it, `spawn_task(purpose, prompt, agent?, model?,
+requires?)` and `send_message(to, text)`
 ([inbox delivery](docs/adr/2026-10-08-inbox-delivery.md)), unless its
 agent allows it fewer (see [Agents](#agents)). The server explains the
 tools a task may use in a system prompt it gives the task, ahead of the
-agent's system prompt and any given through the owner API; a task that
-may spawn is also told the name and description of every agent. A child
-runs on its parent's daemon when that has a free slot and the labels
+agent's system prompt, the project's instructions and any given through
+the owner API, in that order; a task that may spawn is also told the
+name and description of every agent, and what the purpose is for.
+
+A spawn must give a purpose: one line saying why the child exists and
+what the parent expects back
+([projects and lineage](docs/adr/2026-10-10-projects-and-lineage.md)).
+The tool's schema requires it, and the server refuses a spawn without
+one, telling the agent why. The child keeps the purpose, with its line
+breaks made spaces, and its prompt starts with `Purpose: <purpose>` as
+a paragraph of its own. A task the owner starts may carry a purpose
+too, in `POST /v1/tasks` as `purpose` or in the new-task form, and its
+prompt starts the same way. A child belongs to its parent's project. A
+child runs on its parent's daemon when that has a free slot and the labels
 the child requires (see [Placement](#placement)), in a fresh clone of
 the parent's repository if it has one. A child started as an agent has
 that agent's priority, filler flag and labels, its model and pause
@@ -580,8 +603,23 @@ to `stopped` or `failed` tasks are refused, and a parent is told when
 its child stops or fails. When a task stops or fails with messages
 still waiting in its inbox, each sender's next prompt is a notice that
 those messages were not delivered. The task page links a task's parent,
-lists its children with each one's branch and latest report, and shows
-the messages it sent and received.
+lists its children with each one's purpose, branch and latest report,
+shows the tree of tasks under it, and shows the messages it sent and
+received.
+
+A task's JSON in the owner API carries `parent_id`, `project` and
+`purpose` when it has them. `GET /v1/tasks/{task}/tree` returns the
+tree of tasks rooted at a task: each node has the task's `id`,
+`state`, `agent` and `purpose` when it has them, `cost_usd`, `branch`
+as the daemon last reported it, if any, and `children`, oldest first,
+in the same shape:
+
+    {"id": "R4…", "state": "finished", "agent": "brain", "cost_usd": 0.1,
+     "children": [{"id": "W6…", "state": "finished", "agent": "worker",
+       "purpose": "Fix the README's process listing.", "cost_usd": 0.05,
+       "branch": {"branch": "orchestrator/W6…", "commit": "eb69b7b…",
+         "ahead": 1, "uncommitted": 0, "error": ""},
+       "children": []}]}
 
 A child reports to its parent with `send_message`, or by ending its
 turn: when a child's turn ends with the task `finished` and the child
@@ -615,7 +653,8 @@ and the server refuses to delete an agent that any task names. Editing an agent 
 Scripts use the owner API: `GET /v1/agents` lists them, `POST
 /v1/agents` creates one (409 when the name is taken), `GET` and `PUT
 /v1/agents/{agent}` read and replace one, and `DELETE
-/v1/agents/{agent}` deletes one (409 while a task names it). An agent
+/v1/agents/{agent}` deletes one (409 while a task names it, or a
+project names it as its default agent). An agent
 is JSON such as:
 
     {"name": "reviewer", "description": "Reviews a change.",
@@ -627,6 +666,48 @@ is JSON such as:
 `POST /v1/tasks` takes `agent`, and `requires` as such an object; a
 field left out takes the agent's value. It also takes `tools`, a list
 that replaces the agent's.
+
+### Projects
+
+A project is a reusable container for tasks the owner defines: a name,
+instructions, an optional repository and ref, and an optional default
+agent ([projects and lineage](docs/adr/2026-10-10-projects-and-lineage.md)).
+A task belongs to at most one project, chosen when the owner starts it;
+a child belongs to its parent's. A task in a project:
+
+- works in the project's repository, starting at the project's ref; a
+  request naming another repository is refused. In a project without a
+  repository, the task works in the repository it names, if any, or in
+  an empty directory;
+- is started as the project's default agent unless it names an agent
+  of its own; a child the agent spawns naming no agent still has none;
+- has the project's instructions in its system prompt, after its
+  agent's system prompt and before what the owner's request adds, so
+  the agent's role comes before the project's conventions.
+
+A task without a project takes none of this. Editing a project changes
+only the tasks started afterwards, and the server refuses to delete a
+project that any task belongs to. A project's name is unique and can
+change; the server gives each project an id that does not.
+
+On the Projects page the owner creates projects; each project's page
+edits it, lists the tasks the owner started in it with each one's
+state, agent, cost and branch, each linking to the tree on its task's
+page, and has a form that starts a task in it.
+
+Scripts use the owner API: `GET /v1/projects` lists them, `POST
+/v1/projects` creates one and answers 201 with it, id included (409
+when the name is taken, 422 when the default agent does not exist),
+`GET` and `PUT /v1/projects/{project}` read and replace one by id, and
+`DELETE /v1/projects/{project}` deletes one (409 while a task belongs
+to it). A project is JSON such as:
+
+    {"name": "orchestrator", "instructions": "Scope commit subjects by path.",
+     "repo": "ssh://git@host/orchestrator.git", "ref": "main",
+     "default_agent": "brain"}
+
+`repo` and `ref` go together; both are left out for no repository.
+`POST /v1/tasks` takes `project`, a project's id.
 
 SIGINT or SIGTERM shuts either program down. The daemon first
 interrupts each running turn and closes the input of the task's
