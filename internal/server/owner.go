@@ -22,12 +22,15 @@ import (
 const maxOwnerRequestBytes = 1 << 20
 
 // createTaskRequest is the body of POST /v1/tasks: the start_task payload,
-// the daemon to run it on, or none for any, how it is scheduled, and the
-// agent it is started as, if any. A field left out takes the agent's
-// value (docs/adr/2026-10-09-agents-and-placement.md).
+// the daemon to run it on, or none for any, how it is scheduled, the
+// agent it is started as, if any, and the project it belongs to, if any.
+// A field left out takes the agent's value
+// (docs/adr/2026-10-09-agents-and-placement.md), and the agent left out
+// the project's default (docs/adr/2026-10-10-projects-and-lineage.md).
 type createTaskRequest struct {
 	DaemonID protocol.DaemonID `json:"daemon_id"`
 	Agent    string            `json:"agent"`
+	Project  string            `json:"project"`
 	Requires *Labels           `json:"requires"`
 	Priority string            `json:"priority"`
 	Filler   *bool             `json:"filler"`
@@ -64,12 +67,14 @@ func (s *Server) postTask(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	turn, err := s.startTask(r.Context(), taskRequest{Daemon: daemon, Agent: request.Agent, Requires: request.Requires, Priority: priority, Filler: request.Filler, Start: request.StartTask})
+	turn, err := s.startTask(r.Context(), taskRequest{
+		Daemon: daemon, Agent: request.Agent, Project: request.Project, Requires: request.Requires, Priority: priority, Filler: request.Filler, Start: request.StartTask,
+	})
 	if errors.Is(err, errInvalidTask) {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
-	if errors.Is(err, errUnknownAgent) {
+	if errors.Is(err, errUnknownAgent) || errors.Is(err, errUnknownProject) {
 		http.Error(w, err.Error(), http.StatusUnprocessableEntity)
 		return
 	}
@@ -92,10 +97,13 @@ func (s *Server) postTask(w http.ResponseWriter, r *http.Request) {
 // connected daemon. Agent names the agent the task is started as, if
 // any, whose values the task takes where the request leaves them out:
 // an empty Priority, a nil Filler, a nil Requires, an empty
-// Start.Model, a nil Start.Tools and zero Start.PauseLimits.
+// Start.Model, a nil Start.Tools and zero Start.PauseLimits. Project is
+// the id of the project the task belongs to, if any, whose default agent
+// an empty Agent takes and whose repository the task works in.
 type taskRequest struct {
 	Daemon   protocol.DaemonID
 	Agent    string
+	Project  string
 	Requires *Labels
 	Priority Priority
 	Filler   *bool
@@ -116,6 +124,18 @@ var errInvalidTask = errors.New("invalid task")
 // instructions, the agent's system prompt and the request's.
 func (s *Server) startTask(ctx context.Context, request taskRequest) (queuedTurn, error) {
 	start := request.Start
+	if request.Project != "" {
+		p, err := s.store.project(ctx, request.Project)
+		if err != nil {
+			return queuedTurn{}, err
+		}
+		if request.Agent == "" {
+			request.Agent = p.DefaultAgent
+		}
+		if start.Workspace, err = projectWorkspace(p, start.Workspace); err != nil {
+			return queuedTurn{}, err
+		}
+	}
 	priority, filler := request.Priority, false
 	requires := Labels{}
 	var agentPrompt string
@@ -163,12 +183,28 @@ func (s *Server) startTask(ctx context.Context, request taskRequest) (queuedTurn
 		Daemon:    request.Daemon,
 		Placement: placed,
 		Agent:     request.Agent,
+		Project:   request.Project,
 		Requires:  requires,
 		Priority:  priority,
 		Filler:    filler,
 		Start:     start,
 		Origin:    originOwner,
 	})
+}
+
+// projectWorkspace is the workspace of a task in project p that asks for
+// asked: the project's repository, or when it has none, asked. A task
+// asking for another repository than its project's is refused with
+// errInvalidTask.
+func projectWorkspace(p Project, asked *protocol.Workspace) (*protocol.Workspace, error) {
+	own := p.Workspace()
+	switch {
+	case own == nil:
+		return asked, nil
+	case asked != nil && *asked != *own:
+		return nil, fmt.Errorf("%w: a task in project %s works in the project's repository, %s at %s; leave the repository out", errInvalidTask, p.Name, own.Repo, own.Ref)
+	}
+	return own, nil
 }
 
 // applyAgent fills in what start leaves out from agent a: its model, its

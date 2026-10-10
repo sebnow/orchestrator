@@ -1,10 +1,14 @@
 package server
 
 import (
+	"encoding/json"
 	"errors"
+	"net/http"
 	"reflect"
 	"strings"
 	"testing"
+
+	"github.com/sebnow/orchestrator/internal/protocol"
 )
 
 // createProject records p, normalised, and returns it as recorded.
@@ -113,5 +117,111 @@ func TestGivenInvalidProjectWhenNormalisedThenItIsRefused(t *testing.T) {
 				t.Errorf("%+v was accepted", p)
 			}
 		})
+	}
+}
+
+func TestGivenProjectWhenCreatedThroughTheAPIThenItIsReadListedReplacedAndDeleted(t *testing.T) {
+	srv := startTestServer(t)
+	createAgents(t, srv.store, seniorAgent)
+
+	status, body := doRequest(t, http.MethodPost, srv.url+"/v1/projects",
+		`{"name":"tools","instructions":"Scope commits by path.","repo":"ssh://git@host/tools.git","ref":"main","default_agent":"senior"}`)
+	var created Project
+	if status != http.StatusCreated || json.Unmarshal([]byte(body), &created) != nil || created.ID == "" || created.DefaultAgent != "senior" {
+		t.Fatalf("create: %d %s", status, body)
+	}
+	status, body = doRequest(t, http.MethodGet, srv.url+"/v1/projects/"+created.ID, "")
+	var got Project
+	if status != http.StatusOK || json.Unmarshal([]byte(body), &got) != nil || !reflect.DeepEqual(got, created) {
+		t.Errorf("get: %d %s\nwant %+v", status, body, created)
+	}
+	status, body = doRequest(t, http.MethodGet, srv.url+"/v1/projects", "")
+	var list []Project
+	if status != http.StatusOK || json.Unmarshal([]byte(body), &list) != nil || len(list) != 1 || list[0].ID != created.ID {
+		t.Errorf("list: %d %s", status, body)
+	}
+
+	status, body = doRequest(t, http.MethodPut, srv.url+"/v1/projects/"+created.ID, `{"name":"toolbox"}`)
+	var updated Project
+	if status != http.StatusOK || json.Unmarshal([]byte(body), &updated) != nil || updated.ID != created.ID || updated.Name != "toolbox" ||
+		updated.Repo != "" || updated.DefaultAgent != "" || updated.Instructions != "" {
+		t.Errorf("replace: %d %s; want it replaced under its id", status, body)
+	}
+
+	if status, body := doRequest(t, http.MethodDelete, srv.url+"/v1/projects/"+created.ID, ""); status != http.StatusNoContent {
+		t.Errorf("delete: %d %s", status, body)
+	}
+	if status, _ := doRequest(t, http.MethodGet, srv.url+"/v1/projects/"+created.ID, ""); status != http.StatusNotFound {
+		t.Errorf("get after delete: %d, want 404", status)
+	}
+}
+
+func TestGivenProjectRequestWithAProblemWhenMadeThenItIsRefusedWithItsStatus(t *testing.T) {
+	srv := startTestServer(t)
+	doRequest(t, http.MethodPost, srv.url+"/v1/projects", `{"name":"tools"}`)
+	for name, tc := range map[string]struct {
+		method, path, body string
+		status             int
+	}{
+		"no name":               {http.MethodPost, "/v1/projects", `{"instructions":"x"}`, http.StatusBadRequest},
+		"repo without ref":      {http.MethodPost, "/v1/projects", `{"name":"a","repo":"ssh://host/r.git"}`, http.StatusBadRequest},
+		"id given":              {http.MethodPost, "/v1/projects", `{"id":"mine","name":"a"}`, http.StatusBadRequest},
+		"taken name":            {http.MethodPost, "/v1/projects", `{"name":"tools"}`, http.StatusConflict},
+		"unknown default agent": {http.MethodPost, "/v1/projects", `{"name":"a","default_agent":"nobody"}`, http.StatusUnprocessableEntity},
+		"unknown project":       {http.MethodPut, "/v1/projects/missing", `{"name":"a"}`, http.StatusNotFound},
+		"delete unknown":        {http.MethodDelete, "/v1/projects/missing", ``, http.StatusNotFound},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if status, body := doRequest(t, tc.method, srv.url+tc.path, tc.body); status != tc.status {
+				t.Errorf("status = %d (%s), want %d", status, body, tc.status)
+			}
+		})
+	}
+}
+
+func TestGivenProjectWithARepositoryAndADefaultAgentWhenTheOwnerStartsATaskInItThenTheTaskTakesBoth(t *testing.T) {
+	srv := startTestServer(t)
+	doRequest(t, http.MethodGet, srv.url+"/v1/daemons/laptop/acks", "")
+	createAgents(t, srv.store, seniorAgent, Agent{Name: "junior", Tools: []string{}, Priority: PriorityNormal, Requires: Labels{}})
+	p := createProject(t, srv.store, Project{Name: "tools", Repo: "ssh://git@host/tools.git", Ref: "main", DefaultAgent: "senior"})
+
+	defaulted := postForTurn(t, srv.url+"/v1/tasks", `{"daemon_id":"laptop","project":"`+p.ID+`","prompt":"Plan."}`, http.StatusCreated)
+	named := postForTurn(t, srv.url+"/v1/tasks", `{"daemon_id":"laptop","project":"`+p.ID+`","agent":"junior","prompt":"Do.",`+
+		`"workspace":{"repo":"ssh://git@host/tools.git","ref":"main"}}`, http.StatusCreated)
+
+	wantWorkspace := &protocol.Workspace{Repo: "ssh://git@host/tools.git", Ref: "main"}
+	for task, agent := range map[protocol.TaskID]string{defaulted.TaskID: "senior", named.TaskID: "junior"} {
+		detail := readTask(t, srv.store, task)
+		if detail.Project != p.ID || detail.Agent != agent || !reflect.DeepEqual(detail.Start.Workspace, wantWorkspace) {
+			t.Errorf("task = %+v, start %+v; want project %s, agent %s and the project's repository", detail.taskSummary, detail.Start, p.ID, agent)
+		}
+	}
+	status, body := doRequest(t, http.MethodGet, srv.url+"/v1/tasks/"+string(defaulted.TaskID), "")
+	if status != http.StatusOK || !strings.Contains(body, `"project":"`+p.ID+`"`) {
+		t.Errorf("task JSON: %d %s; want its project", status, body)
+	}
+}
+
+func TestGivenProjectWhenATaskInItAsksForAnotherRepositoryOrTheProjectIsUnknownThenTheTaskIsRefused(t *testing.T) {
+	srv := startTestServer(t)
+	doRequest(t, http.MethodGet, srv.url+"/v1/daemons/laptop/acks", "")
+	withRepo := createProject(t, srv.store, Project{Name: "tools", Repo: "ssh://git@host/tools.git", Ref: "main"})
+	bare := createProject(t, srv.store, Project{Name: "notes"})
+
+	other, otherBody := doRequest(t, http.MethodPost, srv.url+"/v1/tasks", `{"daemon_id":"laptop","project":"`+withRepo.ID+`","prompt":"p",`+
+		`"workspace":{"repo":"ssh://git@host/other.git","ref":"main"},"pause_limits":{"acknowledge":"1m","cleanup":"5m"}}`)
+	unknown, unknownBody := doRequest(t, http.MethodPost, srv.url+"/v1/tasks", `{"daemon_id":"laptop","project":"missing","prompt":"p",`+
+		`"pause_limits":{"acknowledge":"1m","cleanup":"5m"}}`)
+	own := postForTurn(t, srv.url+"/v1/tasks", `{"daemon_id":"laptop","project":"`+bare.ID+`","prompt":"p",`+
+		`"workspace":{"repo":"ssh://git@host/other.git","ref":"dev"},"pause_limits":{"acknowledge":"1m","cleanup":"5m"}}`, http.StatusCreated)
+
+	if other != http.StatusBadRequest || !strings.Contains(otherBody, "the project's repository") {
+		t.Errorf("another repository: %d %s, want 400", other, otherBody)
+	}
+	if unknown != http.StatusUnprocessableEntity || !strings.Contains(unknownBody, "unknown project") {
+		t.Errorf("unknown project: %d %s, want 422", unknown, unknownBody)
+	}
+	if detail := readTask(t, srv.store, own.TaskID); detail.Project != bare.ID || detail.Start.Workspace == nil || detail.Start.Workspace.Ref != "dev" {
+		t.Errorf("task in a project without a repository = %+v, start %+v; want its own repository", detail.taskSummary, detail.Start)
 	}
 }

@@ -135,6 +135,11 @@ func New(store *Store, log *slog.Logger, options Options) *Server {
 	owner.HandleFunc("GET /v1/agents/{agent}", s.getAgent)
 	owner.HandleFunc("PUT /v1/agents/{agent}", s.putAgent)
 	owner.HandleFunc("DELETE /v1/agents/{agent}", s.deleteAgentRequest)
+	owner.HandleFunc("GET /v1/projects", s.getProjects)
+	owner.HandleFunc("POST /v1/projects", s.postProject)
+	owner.HandleFunc("GET /v1/projects/{project}", s.getProject)
+	owner.HandleFunc("PUT /v1/projects/{project}", s.putProject)
+	owner.HandleFunc("DELETE /v1/projects/{project}", s.deleteProjectRequest)
 	s.routeGUI(owner)
 	s.mux.Handle("/", s.ownerOnly(owner))
 

@@ -6,6 +6,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"net/http"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -225,4 +226,108 @@ func (s *Store) deleteProject(ctx context.Context, id string) error {
 		return fmt.Errorf("%w: %q", errUnknownProject, id)
 	}
 	return tx.Commit()
+}
+
+// projectInput is a project as the owner API takes it: its id and times
+// are the server's.
+type projectInput struct {
+	Name         string `json:"name"`
+	Instructions string `json:"instructions"`
+	Repo         string `json:"repo"`
+	Ref          string `json:"ref"`
+	DefaultAgent string `json:"default_agent"`
+}
+
+// decodeProject reads and checks a project from the request's body.
+func decodeProject(w http.ResponseWriter, r *http.Request) (Project, bool) {
+	var input projectInput
+	if err := decodeStrict(http.MaxBytesReader(w, r.Body, maxOwnerRequestBytes), &input); err != nil {
+		http.Error(w, "decode project: "+err.Error(), http.StatusBadRequest)
+		return Project{}, false
+	}
+	p := Project{Name: input.Name, Instructions: input.Instructions, Repo: input.Repo, Ref: input.Ref, DefaultAgent: input.DefaultAgent}
+	if err := p.normalise(); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return Project{}, false
+	}
+	return p, true
+}
+
+// writeProjectError answers a store error from saving a project, or
+// reports false when err is nil.
+func (s *Server) writeProjectError(w http.ResponseWriter, err error) bool {
+	switch {
+	case err == nil:
+		return false
+	case errors.Is(err, errUnknownProject):
+		http.Error(w, err.Error(), http.StatusNotFound)
+	case errors.Is(err, errProjectExists):
+		http.Error(w, err.Error(), http.StatusConflict)
+	case errors.Is(err, errUnknownAgent):
+		http.Error(w, "default_agent: "+err.Error(), http.StatusUnprocessableEntity)
+	default:
+		s.internalError(w, err)
+	}
+	return true
+}
+
+// getProjects lists every project, by name.
+func (s *Server) getProjects(w http.ResponseWriter, r *http.Request) {
+	projects, err := s.store.projects(r.Context())
+	if err != nil {
+		s.internalError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, projects)
+}
+
+// getProject returns the project the path names.
+func (s *Server) getProject(w http.ResponseWriter, r *http.Request) {
+	p, err := s.store.project(r.Context(), r.PathValue("project"))
+	if s.writeProjectError(w, err) {
+		return
+	}
+	writeJSON(w, http.StatusOK, p)
+}
+
+// postProject creates a project and returns it with 201, or 409 when one
+// has its name.
+func (s *Server) postProject(w http.ResponseWriter, r *http.Request) {
+	p, ok := decodeProject(w, r)
+	if !ok {
+		return
+	}
+	created, err := s.store.createProject(r.Context(), p)
+	if s.writeProjectError(w, err) {
+		return
+	}
+	writeJSON(w, http.StatusCreated, created)
+}
+
+// putProject replaces the project the path names, keeping its id, and
+// returns it.
+func (s *Server) putProject(w http.ResponseWriter, r *http.Request) {
+	p, ok := decodeProject(w, r)
+	if !ok {
+		return
+	}
+	p.ID = r.PathValue("project")
+	updated, err := s.store.updateProject(r.Context(), p)
+	if s.writeProjectError(w, err) {
+		return
+	}
+	writeJSON(w, http.StatusOK, updated)
+}
+
+// deleteProjectRequest deletes the project the path names, answering
+// 204, or 409 while a task belongs to it.
+func (s *Server) deleteProjectRequest(w http.ResponseWriter, r *http.Request) {
+	err := s.store.deleteProject(r.Context(), r.PathValue("project"))
+	switch {
+	case errors.Is(err, errProjectInUse):
+		http.Error(w, err.Error()+"; a project that tasks belong to cannot be deleted", http.StatusConflict)
+	case s.writeProjectError(w, err):
+	default:
+		w.WriteHeader(http.StatusNoContent)
+	}
 }
