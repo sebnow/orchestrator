@@ -33,22 +33,6 @@ const (
 	startCommitRef = "refs/orchestrator/start"
 )
 
-// taskBranch is the branch task's work is delivered on.
-func taskBranch(task protocol.TaskID) string {
-	return "orchestrator/" + string(task)
-}
-
-// deliveryPrompt tells the agent of task how its work leaves the
-// workspace. It is added to the system prompt of a task with a
-// repository.
-func deliveryPrompt(task protocol.TaskID) string {
-	branch := taskBranch(task)
-	return "Your working directory is a git clone of the task's repository, checked out on branch " + branch + ". " +
-		"Commit your work to " + branch + " as you go, in commits with clear messages, and stay on that branch. " +
-		"Never push: the orchestrator pushes " + branch + " for you at the end of every turn, " +
-		"and a hook in the clone refuses any other push. Work you leave uncommitted is not delivered."
-}
-
 // prepareBranch puts the clone in dir, checked out at ref, on task's
 // branch, and marks it as a workspace whose work is delivered. When the
 // remote already has the branch, onRemote, as for a task moved off a
@@ -64,7 +48,7 @@ func deliveryPrompt(task protocol.TaskID) string {
 // to false, so the daemon user's own signing settings do not apply to
 // the agent's commits.
 func (r runner) prepareBranch(ctx context.Context, dir string, task protocol.TaskID, ref string, onRemote bool, gitName, gitEmail string) error {
-	branch := taskBranch(task)
+	branch := protocol.TaskBranch(task)
 	if gitName == "" || gitEmail == "" {
 		gitName, gitEmail = "orchestrator", "orchestrator@localhost"
 	}
@@ -154,7 +138,7 @@ func (r runner) deliver(ctx context.Context, dir string, task protocol.TaskID) *
 	if err != nil || startRef == "" {
 		return nil
 	}
-	branch := taskBranch(task)
+	branch := protocol.TaskBranch(task)
 	report := &protocol.BranchPushed{Branch: branch}
 	commit, err := r.gitOutput(ctx, dir, "rev-parse", "--verify", "--quiet", "refs/heads/"+branch)
 	if err != nil {
@@ -304,12 +288,3 @@ func (r runner) countUncommitted(ctx context.Context, dir string) (int, error) {
 // errWorkspaceKept reports a workspace that was not deleted because its
 // work could not be delivered.
 var errWorkspaceKept = errors.New("workspace kept")
-
-// joinPrompts appends extra to a system prompt, as a paragraph of its
-// own.
-func joinPrompts(prompt, extra string) string {
-	if prompt == "" {
-		return extra
-	}
-	return prompt + "\n\n" + extra
-}

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"reflect"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -297,7 +298,7 @@ func TestGivenRunningParentWhenItSpawnsThenTheChildStartsOnItsDaemonWithItsSetti
 	}
 	want := parentStart
 	want.Prompt = "Say PEAR."
-	want.SystemPrompt = systemPrompt(promptParts{Parent: fromTask("parent")})
+	want.SystemPrompt = systemPrompt(promptParts{ID: "child", Workspace: want.Workspace != nil, Parent: fromTask("parent")})
 	if child.ParentID == nil || *child.ParentID != "parent" || child.DaemonID != "laptop" || child.State != TaskPending || !reflect.DeepEqual(child.Start, want) {
 		t.Errorf("child = %+v, start %+v; want a pending child of parent on laptop with %+v", child.taskSummary, child.Start, want)
 	}
@@ -392,15 +393,12 @@ func TestGivenOwnersTaskAndChildWhenStartedThenEachSystemPromptExplainsMessaging
 		t.Fatal(err)
 	}
 
-	if want := messagingPrompt + "\n\nBe brief."; owners.Start.SystemPrompt != want {
+	if want := systemPrompt(promptParts{ID: command.TaskID, Task: "Be brief."}); owners.Start.SystemPrompt != want {
 		t.Errorf("owner's task system prompt = %q, want %q", owners.Start.SystemPrompt, want)
 	}
-	spawner := string(command.TaskID)
-	wantChild := messagingPrompt + "\n\nYou are a child task of task " + spawner + ", which waits for your result. " +
-		"When you have it, either send it to task " + spawner + " with the orchestrator's send_message tool, " +
-		"or end your turn with it as your final reply: if you end a turn without having sent a message during it, " +
-		"your final reply is handed back to task " + spawner + " as your report."
-	if spawnedChild.Start.SystemPrompt != wantChild {
+	spawner := command.TaskID
+	wantChild := systemPrompt(promptParts{ID: child.task, Parent: &spawner, Purpose: spawnedChild.Purpose})
+	if spawnedChild.Start.SystemPrompt != wantChild || !strings.Contains(wantChild, "You are a child task of task "+string(spawner)) {
 		t.Errorf("child's system prompt = %q\nwant %q", spawnedChild.Start.SystemPrompt, wantChild)
 	}
 }

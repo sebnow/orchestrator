@@ -55,9 +55,9 @@ func pushTaskBranchFrom(t *testing.T, repo testRepo) string {
 	t.Helper()
 	work := t.TempDir()
 	git(t, "", "clone", "--quiet", repo.bare, work)
-	git(t, work, "checkout", "--quiet", "-b", taskBranch(deliveryTask))
+	git(t, work, "checkout", "--quiet", "-b", protocol.TaskBranch(deliveryTask))
 	commit := commitFile(t, work, "earlier.txt", "pushed by the lost daemon")
-	git(t, work, "push", "--quiet", "origin", taskBranch(deliveryTask))
+	git(t, work, "push", "--quiet", "origin", protocol.TaskBranch(deliveryTask))
 	return commit
 }
 
@@ -293,7 +293,7 @@ func TestGivenTaskWithAWorkspaceWhenItsTurnEndsWithACommitThenTheBranchIsPushedB
 		Prompt: "Do the work.", Workspace: &protocol.Workspace{Repo: repo.url, Ref: "main"}, PauseLimits: testPauseLimits,
 	})
 	proc := d.nextProcess(t)
-	if !strings.Contains(proc.spec.SystemPrompt, deliveryPrompt(task)) {
+	if !strings.Contains(proc.spec.SystemPrompt, "checked out on branch "+protocol.TaskBranch(task)+".") {
 		t.Errorf("system prompt = %q, want it to tell the agent how its work is delivered", proc.spec.SystemPrompt)
 	}
 	commit := commitFile(t, proc.spec.Workdir, "work.txt", "done")
@@ -307,11 +307,11 @@ func TestGivenTaskWithAWorkspaceWhenItsTurnEndsWithACommitThenTheBranchIsPushedB
 	if beforeLast.Kind != protocol.KindBranchPushed || json.Unmarshal(beforeLast.Payload, &pushed) != nil {
 		t.Fatalf("events: %s; want branch_pushed right before harness_exited", describe(events))
 	}
-	want := protocol.BranchPushed{Branch: taskBranch(task), Commit: commit, Ahead: 1}
+	want := protocol.BranchPushed{Branch: protocol.TaskBranch(task), Commit: commit, Ahead: 1}
 	if pushed != want || last.Kind != protocol.KindHarnessExited {
 		t.Errorf("branch_pushed = %+v, want %+v", pushed, want)
 	}
-	if got := remoteRef(t, repo, "refs/heads/"+taskBranch(task)); got != commit {
+	if got := remoteRef(t, repo, "refs/heads/"+protocol.TaskBranch(task)); got != commit {
 		t.Errorf("remote branch = %s, want %s", got, commit)
 	}
 }
@@ -337,11 +337,11 @@ func TestGivenTaskWithAWorkspaceWhenItsTurnEndsWithFilesUncommittedAndNoCommitTh
 	if beforeLast.Kind != protocol.KindBranchPushed || json.Unmarshal(beforeLast.Payload, &pushed) != nil {
 		t.Fatalf("events: %s; want branch_pushed right before harness_exited", describe(events))
 	}
-	want := protocol.BranchPushed{Branch: taskBranch(task), Commit: repo.second, Uncommitted: 1}
+	want := protocol.BranchPushed{Branch: protocol.TaskBranch(task), Commit: repo.second, Uncommitted: 1}
 	if pushed != want {
 		t.Errorf("branch_pushed = %+v, want %+v", pushed, want)
 	}
-	if got := remoteRef(t, repo, "refs/heads/"+taskBranch(task)); got != "" {
+	if got := remoteRef(t, repo, "refs/heads/"+protocol.TaskBranch(task)); got != "" {
 		t.Errorf("remote branch = %s, want none pushed", got)
 	}
 }

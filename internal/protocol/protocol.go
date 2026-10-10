@@ -212,3 +212,10 @@ type BranchPushed struct {
 	Uncommitted int    `json:"uncommitted"`
 	Error       string `json:"error"`
 }
+
+// TaskBranch is the branch a task with a repository works and delivers
+// its work on (docs/adr/2026-10-08-work-delivery.md): the daemon creates
+// and pushes it, and the server tells the task's agent its name.
+func TaskBranch(task TaskID) string {
+	return "orchestrator/" + string(task)
+}

@@ -213,7 +213,7 @@ func TestGivenHarnessUserWhenATaskWithARepositoryRunsAndEndsThenEveryWorkspaceCo
 		t.Errorf("push of another branch = %v: %s; want the hook from the template to refuse it", err, out)
 	}
 	pushed := r.deliver(t.Context(), dir, deliveryTask)
-	if pushed == nil || pushed.Error != "" || pushed.Ahead != 1 || remoteRef(t, repo, "refs/heads/"+taskBranch(deliveryTask)) != pushed.Commit {
+	if pushed == nil || pushed.Error != "" || pushed.Ahead != 1 || remoteRef(t, repo, "refs/heads/"+protocol.TaskBranch(deliveryTask)) != pushed.Commit {
 		t.Errorf("delivered %+v; want the task branch pushed", pushed)
 	}
 	if err := r.deleteWorkspace(dir, deliveryTask); err != nil {
@@ -245,7 +245,7 @@ func TestGivenHarnessUserWhenATaskWithARepositoryRunsAndEndsThenEveryWorkspaceCo
 		}
 	}
 	mirror := r.mirrors.path(repo.url)
-	if got := git(t, mirror, "rev-parse", "refs/heads/"+taskBranch(deliveryTask)); got != pushed.Commit {
+	if got := git(t, mirror, "rev-parse", "refs/heads/"+protocol.TaskBranch(deliveryTask)); got != pushed.Commit {
 		t.Errorf("mirror branch = %s, want the pushed %s", got, pushed.Commit)
 	}
 	upload := slices.IndexFunc(calls, func(c sudoCall) bool { return len(c.command()) > 1 && c.command()[1] == "upload-pack" })

@@ -148,10 +148,12 @@ func (s *Store) spawnTask(ctx context.Context, daemon protocol.DaemonID, parent,
 		}
 		instructions = p.Instructions
 	}
-	start.SystemPrompt = systemPrompt(promptParts{Parent: &parent, Tools: start.Tools, Agents: agents, Agent: agentPrompt, Project: instructions})
 	if repo.Valid {
 		start.Workspace = &protocol.Workspace{Repo: repo.String, Ref: ref.String}
 	}
+	start.SystemPrompt = systemPrompt(promptParts{
+		ID: child, Workspace: repo.Valid, Parent: &parent, Purpose: purpose, Tools: start.Tools, Agents: agents, Agent: agentPrompt, Project: instructions,
+	})
 	fx := effects{changed: []protocol.TaskID{parent}}
 	turn, err := insertTask(ctx, tx, newTask{
 		ID: child, Parent: &parent, Daemon: daemon, Placement: placementParent, Agent: spawn.Agent, Project: project, Purpose: purpose, Requires: requires,

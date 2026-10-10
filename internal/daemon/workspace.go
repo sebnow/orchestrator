@@ -54,7 +54,7 @@ func (r runner) prepareWorkspace(ctx context.Context, dir string, task protocol.
 	if err != nil {
 		return fmt.Errorf("ref %q is not a branch, tag or commit of %s", ws.Ref, ws.Repo)
 	}
-	branch := taskBranch(task)
+	branch := protocol.TaskBranch(task)
 	_, err = r.mirrors.git(ctx, mirror, nil, "rev-parse", "--verify", "--quiet", "refs/heads/"+branch)
 	onRemote := err == nil
 	if !r.as.Other() {

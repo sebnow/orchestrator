@@ -49,9 +49,12 @@ func TestGivenAgentWhenTheOwnerStartsATaskAsItThenTheTaskTakesWhatTheRequestLeav
 		detail.Start.PauseLimits != *seniorAgent.PauseLimits || !reflect.DeepEqual(detail.Start.Tools, []string{protocol.ToolSpawnTask}) {
 		t.Errorf("task = %+v, start %+v; want the senior agent's defaults", detail.taskSummary, detail.Start)
 	}
-	wantPrompt := toolsPrompt([]string{protocol.ToolSpawnTask}) + "\n\n" +
-		"You can start a child task as one of these agents by giving its name as spawn_task's agent:\n- junior: Does what it is told.\n- senior: Owns the design.\n\n" +
-		"You are the senior engineer.\n\nBe brief."
+	agents, err := srv.store.agents(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantPrompt := systemPrompt(promptParts{ID: turn.TaskID, Tools: []string{protocol.ToolSpawnTask}, Agents: agents, Agent: "You are the senior engineer.", Task: "Be brief."})
+	requireContains(t, wantPrompt, "- junior: Does what it is told.\n- senior: Owns the design.\n\nYou are the senior engineer.\n\nBe brief.")
 	if detail.Start.SystemPrompt != wantPrompt {
 		t.Errorf("system prompt = %q\nwant %q", detail.Start.SystemPrompt, wantPrompt)
 	}

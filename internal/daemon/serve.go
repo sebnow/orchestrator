@@ -559,9 +559,6 @@ func (s *service) startTask(command protocol.Command) *Task {
 	if err := s.daemon.runner.prepareWorkspace(s.stopping, workdir, task, start.Workspace, s.cfg.GitName, s.cfg.GitEmail); err != nil {
 		return s.failStart(task, j, fmt.Errorf("%s: %w", workspaceNotPrepared, err))
 	}
-	if start.Workspace != nil {
-		start.SystemPrompt = joinPrompts(start.SystemPrompt, deliveryPrompt(task))
-	}
 	// The settings make the task resumable, so they are recorded once its
 	// workspace is ready.
 	settings := taskSettings{Prompt: start.Prompt, Model: start.Model, Effort: start.Effort, ToolClasses: start.ToolClasses, SystemPrompt: start.SystemPrompt, Acknowledge: limits.Acknowledge, Cleanup: limits.Cleanup, Tools: start.Tools}

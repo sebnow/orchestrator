@@ -8,6 +8,8 @@ import (
 	"strings"
 	"syscall"
 	"testing"
+
+	"github.com/sebnow/orchestrator/internal/protocol"
 )
 
 // testMirrors are mirrors in a new state directory, reaching the remote
@@ -60,7 +62,7 @@ func TestGivenAMirrorWhenTheRemoteMovesAndItIsUpdatedThenItFetchesTheNewCommits(
 		t.Fatal(err)
 	}
 
-	if got := git(t, path, "rev-parse", "refs/heads/"+taskBranch(deliveryTask)); got != earlier {
+	if got := git(t, path, "rev-parse", "refs/heads/"+protocol.TaskBranch(deliveryTask)); got != earlier {
 		t.Errorf("task branch = %s, want the pushed %s", got, earlier)
 	}
 }

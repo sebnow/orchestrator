@@ -184,7 +184,11 @@ func (s *Server) startTask(ctx context.Context, request taskRequest) (queuedTurn
 	if err != nil {
 		return queuedTurn{}, err
 	}
-	start.SystemPrompt = systemPrompt(promptParts{Tools: start.Tools, Agents: agents, Agent: agentPrompt, Project: instructions, Task: start.SystemPrompt})
+	// rand.Text uses only letters and digits, so the id is always valid.
+	id := protocol.TaskID(rand.Text())
+	start.SystemPrompt = systemPrompt(promptParts{
+		ID: id, Workspace: start.Workspace != nil, Tools: start.Tools, Agents: agents, Agent: agentPrompt, Project: instructions, Task: start.SystemPrompt,
+	})
 	purpose := oneLine(request.Purpose)
 	start.Prompt = withPurpose(purpose, start.Prompt)
 	placed := placementBound
@@ -192,8 +196,7 @@ func (s *Server) startTask(ctx context.Context, request taskRequest) (queuedTurn
 		placed = placementAny
 	}
 	return s.store.createTask(ctx, newTask{
-		// rand.Text uses only letters and digits, so the id is always valid.
-		ID:        protocol.TaskID(rand.Text()),
+		ID:        id,
 		Daemon:    request.Daemon,
 		Placement: placed,
 		Agent:     request.Agent,
@@ -251,14 +254,6 @@ func applyAgent(start *protocol.StartTask, a Agent) []string {
 		}
 	}
 	return models
-}
-
-// spawnable lists agents for a task allowed tools, if those let it spawn.
-func spawnable(tools []string, agents []Agent) string {
-	if tools != nil && !slices.Contains(tools, protocol.ToolSpawnTask) {
-		return ""
-	}
-	return agentsPrompt(agents)
 }
 
 func validateStart(start protocol.StartTask) error {
