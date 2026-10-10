@@ -71,6 +71,16 @@ Known gaps and UNVERIFIED behaviours, from the workers' reports, grouped by area
 - The `ssh_public_key` fact widens the dashboard's label column.
 - `parent_id` kept as the field name.
 - Flaky test noted at `internal/server/gui_schedule_internal_test.go:114`.
+- Login events travel on a daemon route of their own, unsequenced and
+  unjournaled, which the client-protocol record does not foresee (a
+  lost event costs one new login).
+- The `account` fact can be absent until `claude` has run once.
+  **UNVERIFIED** whether `claude auth login` sets it at once.
+- The real-claude container pass's daemon log contains the owner's
+  account email.
+- The budget key assumes Team-plan limits are per seat. **UNVERIFIED**.
+- The browser authorisation and the success path of the login are
+  untested against the real binary.
 
 ## Daemon
 

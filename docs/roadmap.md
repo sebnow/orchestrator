@@ -32,8 +32,9 @@ Living document; revise in place. Decisions live in docs/adr, findings in docs/d
   (hand-back),
   [docs/design/2026-10-09-background-subagent-turn.md](design/2026-10-09-background-subagent-turn.md)
   (turn-holding).
-- State-directory lock: [README.md](../README.md), daemon flags,
-  `-state-dir`.
+- State-directory lock:
+  [docs/adr/2026-10-10-state-directory-lock.md](adr/2026-10-10-state-directory-lock.md),
+  [README.md](../README.md), daemon flags, `-state-dir`.
 - Work stays on the machine:
   [docs/adr/2026-10-09-work-stays-on-the-machine.md](adr/2026-10-09-work-stays-on-the-machine.md).
 - Projects and lineage (purpose, tree):
@@ -45,24 +46,22 @@ Living document; revise in place. Decisions live in docs/adr, findings in docs/d
   [docs/adr/2026-10-10-task-follow-ups-and-steering.md](adr/2026-10-10-task-follow-ups-and-steering.md).
 - Agent model lists, effort, tool classes, daemon-reported capacity:
   [docs/adr/2026-10-10-agent-models-and-capacity.md](adr/2026-10-10-agent-models-and-capacity.md).
-- Harness login through the server (record written, implementation in
-  progress as of 2026-10-10):
+- Harness login through the server (record and implementation,
+  2026-10-10):
   [docs/adr/2026-10-10-harness-login.md](adr/2026-10-10-harness-login.md).
 
 ## Decided, not yet built
 
-- Hetzner Cloud as the VPS provider. Source: survey
+- Hetzner Cloud as the VPS provider, with server-driven provisioning and
+  daemon enrolment. Record:
+  [docs/adr/2026-10-10-vps-provisioning.md](adr/2026-10-10-vps-provisioning.md).
+  Source: survey
   [docs/design/2026-10-10-vps-providers.md](design/2026-10-10-vps-providers.md),
   follow-up note
   [docs/design/2026-10-10-vps-providers-followup.md](design/2026-10-10-vps-providers-followup.md).
-  No record yet. Provisioning milestone: the server creates and destroys
-  daemon VPSes through the Hetzner API; a new VPS gets cloud-init with a
-  one-time enrolment token and the CA's public certificate, generates its
-  own keys, sends a certificate request with the token over TLS, and the
-  server issues its certificate. No private key ever goes in cloud-init
-  (metadata is readable by every process on the VM).
 - SQLite backups to S3-compatible object storage, in-process (`VACUUM
-  INTO` plus a stdlib SigV4 PUT), no external tool. No record yet.
+  INTO` plus a stdlib SigV4 PUT), no external tool. Record:
+  [docs/adr/2026-10-10-sqlite-backups.md](adr/2026-10-10-sqlite-backups.md).
 - Recurring work: owner-defined schedules (bug triage, refactoring,
   performance) attached to a project; mechanism to be designed. Source:
   named as deferred in
