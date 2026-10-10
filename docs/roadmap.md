@@ -53,16 +53,26 @@ Living document; revise in place. Decisions live in docs/adr, findings in docs/d
   Hetzner lifecycle test awaits a token), records
   [docs/adr/2026-10-10-vps-provisioning.md](adr/2026-10-10-vps-provisioning.md),
   [docs/adr/2026-10-10-daemon-enrolment.md](adr/2026-10-10-daemon-enrolment.md).
+- SQLite backups, locally and to S3-compatible object storage, with
+  restore (`VACUUM INTO` plus a stdlib SigV4 PUT; the live round trip
+  against a real bucket awaits credentials):
+  [docs/adr/2026-10-10-sqlite-backups.md](adr/2026-10-10-sqlite-backups.md).
+- Forge host keys distributed by the server (owner decision 2026-10-10,
+  trust on first use rejected): the owner's keys as a setting plus
+  GitHub's from its meta API, sent to each daemon as a `host_keys`
+  command and written to `<state-dir>/known_hosts`; [README.md](../README.md),
+  "Forge host keys". No record yet; it amends the ssh wording of
+  [docs/adr/2026-10-10-daemon-push-identity.md](adr/2026-10-10-daemon-push-identity.md).
+- Daemon binaries served by the server (`-daemon-binaries-dir`, owner
+  decision 2026-10-10): [README.md](../README.md), "Provisioning a VPS".
 
 ## Decided, not yet built
 
 - The live Hetzner lifecycle test (`go test -tags live -run Live
-  ./internal/hetzner/`), once a token exists; and host keys for forges on
-  fresh VPSes (owner decision pending: trust on first contact, or keys
-  distributed by the server).
-- SQLite backups to S3-compatible object storage, in-process (`VACUUM
-  INTO` plus a stdlib SigV4 PUT), no external tool. Record:
-  [docs/adr/2026-10-10-sqlite-backups.md](adr/2026-10-10-sqlite-backups.md).
+  ./internal/hetzner/`), once a token exists.
+- Harnesses per daemon: the daemon as the host and each harness an
+  entity it hosts (owner direction 2026-10-10, no decision yet). Note:
+  [docs/design/2026-10-10-harnesses-per-daemon.md](design/2026-10-10-harnesses-per-daemon.md).
 - Recurring work: owner-defined schedules (bug triage, refactoring,
   performance) attached to a project; mechanism to be designed. Source:
   named as deferred in
@@ -101,4 +111,4 @@ Living document; revise in place. Decisions live in docs/adr, findings in docs/d
 
 ## Order as of 2026-10-10
 
-backups -> recurring work -> project memory -> credentials when needed.
+recurring work -> project memory -> credentials when needed.

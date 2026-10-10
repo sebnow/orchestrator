@@ -91,9 +91,12 @@ Known gaps and UNVERIFIED behaviours, from the workers' reports, grouped by area
 
 ## Provisioning
 
-- No `known_hosts` entry for the forge on a fresh VPS, so an ssh push
-  would fail host-key verification. **UNVERIFIED**, not run; decision
-  pending.
+- A daemon on a fresh VPS gets the forges' host keys from the server at
+  connect; the full VPS path (provision, enrol, push to GitHub) has not
+  run live. **UNVERIFIED**.
+- Serving the daemon binaries from the server (`-daemon-binaries-dir`)
+  is tested over TLS in Go only; a VPS's `curl --cacert` download
+  against it has not run. **UNVERIFIED**.
 - The live Hetzner lifecycle test has not run: the image name
   `debian-13`, `cx23` availability in `fsn1`, cloud-init ordering,
   `ssh_pwauth`, and metadata exposure of user data are all
@@ -106,6 +109,32 @@ Known gaps and UNVERIFIED behaviours, from the workers' reports, grouped by area
   spent.
 - How Hetzner bills, per minute or per started hour, is **UNVERIFIED**.
 
+## Host keys
+
+- A daemon connected before the server learnt of host keys, with a
+  `start_task` issued before its first `host_keys` command, may fetch
+  before it has a `known_hosts`; the race exists only on the first
+  connect after an upgrade, as later connects keep the file from the
+  previous one.
+- A daemon older than the `host_keys` command skips it with a warning;
+  once upgraded it gets the keys at its next connect.
+- The daemon's ssh still reads the system's
+  `/etc/ssh/ssh_known_hosts` (not overridden).
+- GitHub's keys come from `api.github.com/meta` over the system's TLS
+  roots; the server does not pin them, and GitHub rotating its keys
+  reaches daemons within 24 hours (or an hour after a failed fetch).
+
+## Backups
+
+- Path-style request signing against Hetzner Object Storage is
+  **UNVERIFIED** until the live round trip runs.
+- A backup taken during a daemon login may hold that login's code; the
+  server blanks codes in its command log only once the login ends.
+- `restore -force` against a running server would lose data: the
+  command does not check that the server is stopped.
+- The dashboard prints the backup interval in Go's duration form, such
+  as `6h0m0s`.
+
 ## Docs
 
 - Several accepted records are amended by later ones rather than
@@ -114,3 +143,6 @@ Known gaps and UNVERIFIED behaviours, from the workers' reports, grouped by area
 - The harness-user record still says the checklist has not been run.
 - The work-delivery record says `branch_pushed` reports each push while
   it also reports uncommitted-only turns.
+- The push-identity record's ssh wording predates the host-key change
+  (the daemon's ssh now checks host keys against the server's keys); a
+  record for the change is pending.
