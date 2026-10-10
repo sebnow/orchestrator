@@ -354,8 +354,11 @@ func TestGivenVersionOneDatabaseWhenOpeningStoreThenItIsMigratedAndItsTasksKeepP
 	if err := store.db.QueryRowContext(t.Context(), `SELECT version FROM schema_version`).Scan(&version); err != nil {
 		t.Fatal(err)
 	}
-	if version != schemaVersion || schemaVersion != 14 {
-		t.Errorf("schema version = %d (server knows %d), want 14", version, schemaVersion)
+	if version != schemaVersion || schemaVersion != 15 {
+		t.Errorf("schema version = %d (server knows %d), want 15", version, schemaVersion)
+	}
+	if old := readTask(t, store, "old"); old.Project != "" || old.Purpose != "" {
+		t.Errorf("migrated task project %q, purpose %q; want none", old.Project, old.Purpose)
 	}
 	if has, err := store.HasOwnerToken(t.Context()); err != nil || has {
 		t.Errorf("migrated HasOwnerToken = %v, %v; want false", has, err)

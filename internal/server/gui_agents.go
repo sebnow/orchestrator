@@ -182,7 +182,7 @@ func (s *Server) postDeleteAgentForm(w http.ResponseWriter, r *http.Request) {
 			s.internalError(w, err)
 			return
 		}
-		s.writeAgentPage(w, http.StatusConflict, agentInput(a), "Tasks were started as this agent, so it cannot be deleted. Edit it instead.")
+		s.writeAgentPage(w, http.StatusConflict, agentInput(a), "Tasks were started as this agent, or projects name it as their default agent, so it cannot be deleted. Edit it instead.")
 	case err != nil:
 		s.internalError(w, err)
 	default:

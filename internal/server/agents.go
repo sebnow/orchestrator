@@ -33,8 +33,8 @@ type Agent struct {
 var (
 	errUnknownAgent = errors.New("unknown agent")
 	errAgentExists  = errors.New("an agent with that name exists")
-	// errAgentInUse refuses to delete an agent a task names.
-	errAgentInUse = errors.New("agent is named by a task")
+	// errAgentInUse refuses to delete an agent a task or a project names.
+	errAgentInUse = errors.New("agent is in use")
 )
 
 // normalise checks a and fills in what it leaves out: no tools, normal
@@ -189,21 +189,26 @@ func (s *Store) updateAgent(ctx context.Context, a Agent) error {
 	return nil
 }
 
-// deleteAgent deletes the agent named name, unless a task names it, when
-// it returns errAgentInUse, or it does not exist, when it returns
-// errUnknownAgent.
+// deleteAgent deletes the agent named name, unless a task names it or a
+// project names it as its default agent, when it returns errAgentInUse,
+// or it does not exist, when it returns errUnknownAgent.
 func (s *Store) deleteAgent(ctx context.Context, name string) error {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("delete agent %q: %w", name, err)
 	}
 	defer tx.Rollback()
-	var tasks int
-	if err := tx.QueryRowContext(ctx, `SELECT count(*) FROM tasks WHERE agent = ?`, name).Scan(&tasks); err != nil {
+	var tasks, projects int
+	err = tx.QueryRowContext(ctx, `SELECT (SELECT count(*) FROM tasks WHERE agent = ?1), (SELECT count(*) FROM projects WHERE default_agent = ?1)`, name).
+		Scan(&tasks, &projects)
+	if err != nil {
 		return fmt.Errorf("delete agent %q: %w", name, err)
 	}
 	if tasks > 0 {
 		return fmt.Errorf("%w: %d tasks name %q", errAgentInUse, tasks, name)
+	}
+	if projects > 0 {
+		return fmt.Errorf("%w: %d projects name %q as their default agent", errAgentInUse, projects, name)
 	}
 	result, err := tx.ExecContext(ctx, `DELETE FROM agents WHERE name = ?`, name)
 	if err != nil {
@@ -330,7 +335,7 @@ func (s *Server) deleteAgentRequest(w http.ResponseWriter, r *http.Request) {
 	case errors.Is(err, errUnknownAgent):
 		http.Error(w, err.Error(), http.StatusNotFound)
 	case errors.Is(err, errAgentInUse):
-		http.Error(w, err.Error()+"; an agent that a task names cannot be deleted", http.StatusConflict)
+		http.Error(w, err.Error()+"; an agent that a task or a project names cannot be deleted", http.StatusConflict)
 	case err != nil:
 		s.internalError(w, err)
 	default:

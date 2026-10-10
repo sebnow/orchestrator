@@ -334,6 +334,12 @@ type taskSummary struct {
 	ParentID *protocol.TaskID `json:"parent_id,omitempty"`
 	// Agent names the agent the task was started as; empty for none.
 	Agent string `json:"agent,omitempty"`
+	// Project is the id of the project the task belongs to; empty for
+	// none (docs/adr/2026-10-10-projects-and-lineage.md).
+	Project string `json:"project,omitempty"`
+	// Purpose says why the task exists, as its spawner or the owner gave
+	// it; empty for none.
+	Purpose string `json:"purpose,omitempty"`
 	// Requires are the labels the task's daemon must have.
 	Requires       Labels    `json:"requires,omitempty"`
 	State          TaskState `json:"state"`
@@ -361,14 +367,14 @@ type taskDetail struct {
 	Start protocol.StartTask `json:"start"`
 }
 
-const summaryColumns = `id, daemon_id, placement, parent_id, coalesce(agent, ''), requires, state, model, priority, filler, created_at, last_activity_at, cost_usd, dismissed_at`
+const summaryColumns = `id, daemon_id, placement, parent_id, coalesce(agent, ''), coalesce(project, ''), purpose, requires, state, model, priority, filler, created_at, last_activity_at, cost_usd, dismissed_at`
 
 // scanSummary reads summaryColumns, followed by extra destinations.
 func scanSummary(row interface{ Scan(...any) error }, extra ...any) (taskSummary, error) {
 	var summary taskSummary
 	var id, daemon, placed, requires, state, priority, created, lastActivity string
 	var parent, dismissed sql.NullString
-	dest := append([]any{&id, &daemon, &placed, &parent, &summary.Agent, &requires, &state, &summary.Model, &priority, &summary.Filler, &created, &lastActivity, &summary.CostUSD, &dismissed}, extra...)
+	dest := append([]any{&id, &daemon, &placed, &parent, &summary.Agent, &summary.Project, &summary.Purpose, &requires, &state, &summary.Model, &priority, &summary.Filler, &created, &lastActivity, &summary.CostUSD, &dismissed}, extra...)
 	if err := row.Scan(dest...); err != nil {
 		return taskSummary{}, err
 	}

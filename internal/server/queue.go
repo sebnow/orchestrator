@@ -130,6 +130,11 @@ type newTask struct {
 	Placement placement
 	// Agent names the agent the task is started as; empty for none.
 	Agent string
+	// Project is the id of the project the task belongs to; empty for
+	// none.
+	Project string
+	// Purpose says why the task exists; empty for none.
+	Purpose string
 	// Requires are the labels the task's daemon must have.
 	Requires Labels
 	Priority Priority
@@ -180,14 +185,6 @@ func (s *Store) createTask(ctx context.Context, task newTask) (queuedTurn, error
 	return turn, nil
 }
 
-// nullableAgent is an agent's name as a query argument: NULL for none.
-func nullableAgent(name string) any {
-	if name == "" {
-		return nil
-	}
-	return name
-}
-
 // insertTask records task, queued, and queues its start.
 func insertTask(ctx context.Context, tx *sql.Tx, task newTask, fx *effects) (queuedTurn, error) {
 	payload, err := json.Marshal(task.Start)
@@ -210,11 +207,11 @@ func insertTask(ctx context.Context, tx *sql.Tx, task newTask, fx *effects) (que
 	created := formatTime(time.Now().UTC())
 	_, err = tx.ExecContext(ctx, `
 		INSERT INTO tasks (id, daemon_id, parent_id, state, created_at, last_activity_at, prompt, system_prompt, workspace_repo, workspace_ref, model,
-			pause_acknowledge_ns, pause_cleanup_ns, priority, filler, placement, agent, tools, requires)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			pause_acknowledge_ns, pause_cleanup_ns, priority, filler, placement, agent, tools, requires, project, purpose)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		string(task.ID), string(task.Daemon), nullableID(task.Parent), string(TaskQueued), created, created, start.Prompt, start.SystemPrompt, repo, ref,
 		start.Model, int64(start.PauseLimits.Acknowledge), int64(start.PauseLimits.Cleanup), string(task.Priority), task.Filler, string(task.Placement),
-		nullableAgent(task.Agent), tools, encodeLabels(task.Requires))
+		nullable(task.Agent), tools, encodeLabels(task.Requires), nullable(task.Project), task.Purpose)
 	if err != nil {
 		return queuedTurn{}, fmt.Errorf("create task %q: %w", task.ID, err)
 	}

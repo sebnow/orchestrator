@@ -137,6 +137,26 @@ var migrations = [...]string{
 	// to which the current session's running total is added. A task that
 	// moved before it keeps the highest total it had.
 	`ALTER TABLE tasks ADD COLUMN cost_base REAL NOT NULL DEFAULT 0;`,
+	// Version 15 keeps the owner's projects, the project each task belongs
+	// to, NULL for none, and each task's purpose, empty for none
+	// (docs/adr/2026-10-10-projects-and-lineage.md). A project's repo and
+	// ref are both NULL when it has no repository, and its default_agent is
+	// NULL for none.
+	`CREATE TABLE projects (
+		id TEXT PRIMARY KEY,
+		name TEXT NOT NULL UNIQUE,
+		instructions TEXT NOT NULL,
+		repo TEXT,
+		ref TEXT,
+		default_agent TEXT REFERENCES agents (name),
+		created_at TEXT NOT NULL,
+		updated_at TEXT NOT NULL,
+		CHECK ((repo IS NULL) = (ref IS NULL))
+	) STRICT;
+	CREATE INDEX projects_by_default_agent ON projects (default_agent);
+	ALTER TABLE tasks ADD COLUMN project TEXT REFERENCES projects (id);
+	CREATE INDEX tasks_by_project ON tasks (project);
+	ALTER TABLE tasks ADD COLUMN purpose TEXT NOT NULL DEFAULT '';`,
 }
 
 // schemaVersion is the version this server migrates databases to. A
@@ -539,6 +559,14 @@ func nullableID(id *protocol.TaskID) any {
 		return nil
 	}
 	return string(*id)
+}
+
+// nullable is s as a query argument: NULL when empty.
+func nullable(s string) any {
+	if s == "" {
+		return nil
+	}
+	return s
 }
 
 // issueCommand appends a command for task to the log of the daemon the
