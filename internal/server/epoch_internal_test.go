@@ -13,9 +13,9 @@ import (
 	"github.com/sebnow/orchestrator/internal/protocol"
 )
 
-// lineage returns the ids of the store's epochs, oldest first, and the
+// epochIDs returns the ids of the store's epochs, oldest first, and the
 // parent each records.
-func lineage(t *testing.T, store *Store) (ids, parents []string) {
+func epochIDs(t *testing.T, store *Store) (ids, parents []string) {
 	t.Helper()
 	rows, err := store.db.QueryContext(t.Context(), `SELECT id, coalesce(parent, '') FROM epochs ORDER BY ordinal`)
 	if err != nil {
@@ -44,7 +44,7 @@ func commandEpoch(t *testing.T, store *Store, id uint64) string {
 func TestGivenANewDatabaseWhenOpenedThenItHasOneEpochWithoutAParent(t *testing.T) {
 	store, _ := openTestStore(t)
 
-	ids, parents := lineage(t, store)
+	ids, parents := epochIDs(t, store)
 
 	if len(ids) != 1 || len(ids[0]) != 32 || parents[0] != "" {
 		t.Errorf("epochs %q with parents %q, want one of 32 hex digits without a parent", ids, parents)
@@ -55,8 +55,8 @@ func TestGivenTwoNewDatabasesWhenOpenedThenTheirEpochsDiffer(t *testing.T) {
 	first, _ := openTestStore(t)
 	second, _ := openTestStore(t)
 
-	a, _ := lineage(t, first)
-	b, _ := lineage(t, second)
+	a, _ := epochIDs(t, first)
+	b, _ := epochIDs(t, second)
 
 	if a[0] == b[0] {
 		t.Errorf("both databases have epoch %s", a[0])
@@ -74,7 +74,7 @@ func TestGivenAnEpochWhenCommandsAreIssuedThenEachBelongsToIt(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	ids, _ := lineage(t, store)
+	ids, _ := epochIDs(t, store)
 
 	for _, command := range commands {
 		if epoch := commandEpoch(t, store, command.ID); epoch != ids[0] {
@@ -108,7 +108,7 @@ func TestGivenCommandsBeforeVersion28WhenMigratedThenTheyBelongToTheFirstEpochAn
 	}
 	defer store.Close()
 
-	ids, parents := lineage(t, store)
+	ids, parents := epochIDs(t, store)
 	if len(ids) != 1 || parents[0] != "" {
 		t.Fatalf("epochs %q with parents %q, want one without a parent", ids, parents)
 	}
@@ -154,13 +154,13 @@ func reopen(t *testing.T, path string) *Store {
 func TestGivenARestoredDatabaseWhenOpenedThenItStartsAnEpochOfItsOwnAndIssuesCommandsUnderIt(t *testing.T) {
 	store, path := openTestStore(t)
 	seedTask(t, store, "laptop", "task-1")
-	backupEpochs, _ := lineage(t, store)
+	backupEpochs, _ := epochIDs(t, store)
 	store.Close()
 	markRestored(t, path)
 
 	restored := reopen(t, path)
 
-	ids, parents := lineage(t, restored)
+	ids, parents := epochIDs(t, restored)
 	if len(ids) != 2 || ids[0] != backupEpochs[0] || parents[1] != backupEpochs[0] {
 		t.Fatalf("epochs %q with parents %q, want the backup's and a child of it", ids, parents)
 	}
@@ -187,7 +187,7 @@ func TestGivenTheMarkerLeftAfterTheEpochStartedWhenOpenedAgainThenAnotherEpochFo
 
 	again := reopen(t, path)
 
-	ids, parents := lineage(t, again)
+	ids, parents := epochIDs(t, again)
 	if len(ids) != 3 || parents[1] != ids[0] || parents[2] != ids[1] {
 		t.Errorf("epochs %q with parents %q, want a chain of three", ids, parents)
 	}
@@ -195,10 +195,10 @@ func TestGivenTheMarkerLeftAfterTheEpochStartedWhenOpenedAgainThenAnotherEpochFo
 
 func TestGivenNoMarkerWhenOpenedAgainThenTheEpochIsKept(t *testing.T) {
 	store, path := openTestStore(t)
-	before, _ := lineage(t, store)
+	before, _ := epochIDs(t, store)
 	store.Close()
 
-	after, _ := lineage(t, reopen(t, path))
+	after, _ := epochIDs(t, reopen(t, path))
 
 	if !slices.Equal(before, after) {
 		t.Errorf("epochs went from %q to %q, want them kept", before, after)

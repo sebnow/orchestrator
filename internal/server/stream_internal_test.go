@@ -68,7 +68,7 @@ func listedRefusal(t *testing.T, srv testServer, daemon protocol.DaemonID) *stre
 
 func currentEpochOf(t *testing.T, store *Store) protocol.Epoch {
 	t.Helper()
-	ids, _ := lineage(t, store)
+	ids, _ := epochIDs(t, store)
 	return protocol.Epoch(ids[len(ids)-1])
 }
 
@@ -125,7 +125,7 @@ func TestGivenARefusedStreamWhenALaterOneOpensThenTheListNoLongerShowsTheRefusal
 	}
 }
 
-func TestGivenAnEpochOutsideTheLineageWhenTheStreamOpensThenItIsRefusedAsUnknownLineageNamingTheCurrentEpoch(t *testing.T) {
+func TestGivenAnEpochTheServerNeverIssuedWhenTheStreamOpensThenItIsRefusedAsUnknownEpochNamingTheCurrentEpoch(t *testing.T) {
 	srv := startTestServer(t)
 	seedTask(t, srv.store, "laptop", "task-1")
 	epoch := currentEpochOf(t, srv.store)

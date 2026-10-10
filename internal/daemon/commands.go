@@ -120,7 +120,7 @@ func (s *service) streamCommands(ctx context.Context, b *backoff) error {
 // id is at most that command's. A command of another epoch is applied,
 // since the server issued it after a restore or before this daemon's last
 // command; the stream sends the commands past the daemon's in the order
-// of the server's lineage. A command that cannot be decoded is logged and
+// of the server's epochs, oldest first. A command that cannot be decoded is logged and
 // skipped. An error ends the stream, so that the command is sent again.
 func (s *service) receiveCommand(rawID, data string) error {
 	position, err := protocol.ParseCommandPosition(rawID)

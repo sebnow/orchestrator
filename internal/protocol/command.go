@@ -52,7 +52,7 @@ const (
 
 // Command is one entry in a daemon's command log. ID increases with every
 // command the server issues and stays the same when the command is sent
-// again. Epoch is the epoch of the server database's lineage the command
+// again. Epoch is the epoch of the server's database the command
 // was issued in (docs/adr/2026-10-10-server-loss.md); a restored database
 // issues under a new epoch, and may issue ids again in it. A daemon
 // ignores a command whose epoch is that of the last command it applied
@@ -243,7 +243,7 @@ func (c Command) Position() CommandPosition {
 	return CommandPosition{Epoch: c.Epoch, ID: c.ID}
 }
 
-// Epoch names one epoch of a server database's lineage: the database's
+// Epoch names one of a server database's epochs: the database's
 // first, or one started by a restore (docs/adr/2026-10-10-server-loss.md).
 type Epoch string
 

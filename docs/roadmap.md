@@ -60,7 +60,7 @@ Living document; revise in place. Decisions live in docs/adr, findings in docs/d
   amended by
   [docs/adr/2026-10-10-server-loss.md](adr/2026-10-10-server-loss.md):
   gzipped uploads, backups after a harness exit and at shutdown, restore
-  at start when the database is missing, and a lineage of epochs that
+  at start when the database is missing, and a chain of epochs that
   command ids name, so that daemons tell a restored server's commands
   from those they applied.
 - Forge host keys distributed by the server (owner decision 2026-10-10,

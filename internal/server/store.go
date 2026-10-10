@@ -294,7 +294,7 @@ var migrations = [...]string{
 	DROP TABLE commands;
 	ALTER TABLE commands_new RENAME TO commands;
 	CREATE INDEX commands_by_daemon ON commands (daemon_id, id);`,
-	// Version 28 gives the database a lineage of epochs
+	// Version 28 gives the database a chain of epochs
 	// (docs/adr/2026-10-10-server-loss.md). The first epoch is the
 	// database's own; a restore starts another, whose parent is the
 	// backup's latest. Every command belongs to the epoch it was issued
@@ -338,12 +338,12 @@ var migrations = [...]string{
 
 // newEpochID is the SQL expression that makes an epoch's id: 128 random
 // bits as lowercase hex. Epochs are told apart by id only within one
-// lineage and against what daemons report, so they need to be unique,
+// database and against what daemons report, so they need to be unique,
 // not secret.
 const newEpochID = `lower(hex(randomblob(16)))`
 
 // currentEpoch is the SQL expression for the id of the database's
-// current epoch, the latest of its lineage, under which every command is
+// current epoch, the latest of its epochs, under which every command is
 // issued.
 const currentEpoch = `(SELECT id FROM epochs ORDER BY ordinal DESC LIMIT 1)`
 
@@ -1054,16 +1054,16 @@ func yieldTask(ctx context.Context, tx *sql.Tx, daemon protocol.DaemonID, task p
 }
 
 // commandsAfter returns daemon's commands past after in the order of the
-// database's lineage: those of after's epoch with a greater id, then
+// database's epochs: those of after's epoch with a greater id, then
 // every command of each later epoch. An after without an epoch is in the
 // first epoch, which holds every command issued before commands had
-// epochs. after's epoch must be one of the lineage's.
+// epochs. after's epoch must be one of the database's.
 func (s *Store) commandsAfter(ctx context.Context, daemon protocol.DaemonID, after protocol.CommandPosition) ([]protocol.Command, error) {
 	ordinal := int64(1)
 	if after.Epoch != "" {
 		err := s.db.QueryRowContext(ctx, `SELECT ordinal FROM epochs WHERE id = ?`, string(after.Epoch)).Scan(&ordinal)
 		if errors.Is(err, sql.ErrNoRows) {
-			return nil, fmt.Errorf("read commands: epoch %s is not in the lineage", after.Epoch)
+			return nil, fmt.Errorf("read commands: the database has no epoch %s", after.Epoch)
 		}
 		if err != nil {
 			return nil, fmt.Errorf("read commands: %w", err)

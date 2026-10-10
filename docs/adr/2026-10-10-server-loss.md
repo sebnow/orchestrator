@@ -37,7 +37,9 @@ reconnects, asks for the commands after that id
 in the database, so a database restored from a backup issues ids from
 the backup's last id onward. Those ids can be ones a daemon applied
 before the restore, and a daemon asking for the commands after its id
-would not receive the new commands.
+would not receive the new commands. This record speaks of the
+database's epochs; lineage, in this project, is a task's ancestry
+([projects and lineage](2026-10-10-projects-and-lineage.md)).
 
 [Daemon loss](2026-10-08-daemon-loss.md) declares a daemon lost when its
 command stream is closed and the server has not seen it for the daemon
@@ -94,7 +96,7 @@ an empty database and logs that it did. If the bucket cannot be read,
 or the download or a check fails, the server refuses to start, so that
 a failed request to the bucket does not make it start empty.
 
-### Command lineage
+### Command epochs
 
 The database carries an epoch: a random id created with the database,
 and replaced by a new one at every restore, manual or at start. A
@@ -109,7 +111,7 @@ durable mark before the restored database appears, and the server
 starts the new epoch when it opens a marked database, before it issues
 any command, and then clears the mark. A crash between starting the
 epoch and clearing the mark makes the next start add one more epoch.
-No command was issued under the abandoned one, and the lineage stays a
+No command was issued under the abandoned one, and the epochs stay a
 chain.
 
 Each command records the epoch it was issued under. Ids still come from
@@ -128,13 +130,13 @@ the daemon reports:
   last id the server has issued in that epoch. An id past it means the
   daemon's state does not match this database, so the server refuses
   the stream with the reason `daemon_ahead`.
-- An earlier epoch of the server's lineage: the server was restored. It
-  sends that epoch's commands past the daemon's id, then the commands of
-  each later epoch, oldest epoch first.
-- An epoch outside the lineage: the daemon's state comes from elsewhere,
-  or the daemon applied commands of an epoch that the restored backup
-  predates, as when a second restore uses a backup taken before the
-  first. The server refuses the stream with the reason
+- An ancestor epoch, one of the database's earlier epochs: the server
+  was restored. It sends that epoch's commands past the daemon's id,
+  then the commands of each later epoch, oldest epoch first.
+- An epoch the server has never issued: the daemon's state comes from
+  elsewhere, or the daemon applied commands of an epoch that the
+  restored backup predates, as when a second restore uses a backup
+  taken before the first. The server refuses the stream with the reason
   `unknown_epoch`, and the owner resets the epoch and command id the
   daemon stores by hand, as the
   [README](../../README.md#command-ids-and-epochs) describes.

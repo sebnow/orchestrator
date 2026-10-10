@@ -1054,8 +1054,8 @@ Each command the server issues has an id and the epoch of the database
 it was issued in ([server loss](docs/adr/2026-10-10-server-loss.md)). A
 database's first epoch is made when the database is, and each restore
 starts a new one, whose parent is the backup's latest, so the database
-holds its lineage. The command stream sends `EPOCH:ID` as each command's
-event id. The daemon keeps the last one it applied in `state.json`, as
+holds its chain of epochs. The command stream sends `EPOCH:ID` as each
+command's event id. The daemon keeps the last one it applied in `state.json`, as
 `last_command` and `command_epoch`, and sends it as `Last-Event-ID` when
 it reconnects. It skips a command of that epoch at or below that id,
 and applies a command of any other epoch.
@@ -1067,10 +1067,10 @@ its `Last-Event-ID`:
   id. An id past the last command the server has issued in the epoch
   means the daemon's state is not from this server, and the server
   refuses the stream with 409 and the reason `daemon_ahead`.
-- An earlier epoch of the lineage, after a restore: the server sends the
-  daemon's commands of that epoch past the id, then every command of
-  each later epoch, in order.
-- An epoch the lineage does not hold, as after a restore to a backup
+- An ancestor epoch, after a restore: the server sends the daemon's
+  commands of that epoch past the id, then every command of each later
+  epoch, in order.
+- An epoch the server has never issued, as after a restore to a backup
   older than an earlier restore: the server refuses the stream with 409
   and the reason `unknown_epoch`.
 

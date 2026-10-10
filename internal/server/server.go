@@ -361,8 +361,8 @@ func (s *Server) getAcks(w http.ResponseWriter, r *http.Request) {
 // streamCommands sends the daemon its commands as server-sent events, each
 // with its position, EPOCH:ID, as the event id: first every command after
 // the Last-Event-ID the daemon sent (all of them without one), in the
-// order of the database's lineage, then each new one as it is issued. A
-// Last-Event-ID the lineage rules out gets 409 with a
+// order of the database's epochs, then each new one as it is issued. A
+// Last-Event-ID the epochs rule out gets 409 with a
 // protocol.StreamRefused (see openCommandStream).
 func (s *Server) streamCommands(w http.ResponseWriter, r *http.Request) {
 	daemon, ok := daemonFromPath(w, r)

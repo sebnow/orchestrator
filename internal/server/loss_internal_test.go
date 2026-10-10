@@ -490,7 +490,7 @@ func TestGivenTwoPromptsQueuedForAFinishedTaskWhileItsDaemonIsAwayWhenItIsLostTh
 }
 
 // refuseStream opens daemon's command stream from an epoch the server's
-// lineage does not hold, which the server refuses.
+// database has no record of, which the server refuses.
 func refuseStream(t *testing.T, srv testServer, daemon protocol.DaemonID) {
 	t.Helper()
 	status, body := openStreamOnce(t, srv, daemon, "0123456789abcdef0123456789abcdef:1")
