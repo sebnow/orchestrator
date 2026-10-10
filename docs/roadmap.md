@@ -100,5 +100,5 @@ Living document; revise in place. Decisions live in docs/adr, findings in docs/d
 
 ## Order as of 2026-10-10
 
-Login flow (in progress) -> Hetzner provisioning with enrolment ->
+Hetzner provisioning with enrolment ->
 backups -> recurring work -> project memory -> credentials when needed.
