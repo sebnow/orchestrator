@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/url"
+	"os"
 	"path/filepath"
 	"testing"
 	"time"
@@ -603,5 +604,133 @@ func TestGivenCommandsBeforeVersion22WhenMigratedThenTheyStayTheirIdsCarryOnAndA
 	defer rows.Close()
 	if rows.Next() {
 		t.Error("the migrated database has foreign key violations")
+	}
+}
+
+// TestGivenCommandsWithChildRowsBeforeVersion22WhenMigratedThenForeignKeysHoldAndNothingIsLost
+// reproduces the owner's database, whose migration to version 22 failed
+// with "FOREIGN KEY constraint failed": messages and turns referenced
+// commands that version 22's rebuild of the commands table dropped and
+// recreated, which SQLite counts as a violation with foreign keys on
+// (https://www.sqlite.org/lang_altertable.html).
+func TestGivenCommandsWithChildRowsBeforeVersion22WhenMigratedThenForeignKeysHoldAndNothingIsLost(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "server.db")
+	createVersionOneDatabase(t, path)
+	db, err := sql.Open("sqlite", (&url.URL{Scheme: "file", Path: path, RawQuery: "_pragma=foreign_keys(1)"}).String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	// migrations[:20] takes the schema from version 1 to version 21, the
+	// last version before the commands table is rebuilt.
+	for _, statement := range append(migrations[:20:20],
+		`INSERT INTO commands (id, daemon_id, task_id, kind, time) VALUES (1, 'laptop', 'old', 'prompt', '2026-10-07T10:00:02Z')`,
+		`INSERT INTO commands (id, daemon_id, task_id, kind, time) VALUES (2, 'laptop', 'old', 'prompt', '2026-10-07T10:00:03Z')`,
+		`INSERT INTO turns (task_id, kind, origin, filler, created_at, admitted_command_id) VALUES ('old', 'prompt', 'owner', 0, '2026-10-07T10:00:02Z', 1)`,
+		`INSERT INTO messages (from_task, to_task, text, created_at, delivered_command_id) VALUES ('old', 'old', 'hi', '2026-10-07T10:00:03Z', 2)`,
+		`UPDATE schema_version SET version = 21`) {
+		if _, err := db.ExecContext(t.Context(), statement); err != nil {
+			t.Fatalf("%s: %v", statement, err)
+		}
+	}
+	db.Close()
+
+	store, err := OpenStore(t.Context(), path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+
+	var notNull int
+	if err := store.db.QueryRowContext(t.Context(), `SELECT "notnull" FROM pragma_table_info('commands') WHERE name = 'task_id'`).Scan(&notNull); err != nil {
+		t.Fatal(err)
+	}
+	if notNull != 0 {
+		t.Errorf(`commands.task_id "notnull" = %d, want 0 (nullable)`, notNull)
+	}
+
+	for _, id := range []int64{1, 2} {
+		var taskID string
+		if err := store.db.QueryRowContext(t.Context(), `SELECT task_id FROM commands WHERE id = ?`, id).Scan(&taskID); err != nil {
+			t.Errorf("command %d: %v", id, err)
+		} else if taskID != "old" {
+			t.Errorf("command %d task_id = %q, want %q", id, taskID, "old")
+		}
+	}
+
+	var turnAdmitted int64
+	if err := store.db.QueryRowContext(t.Context(), `SELECT admitted_command_id FROM turns WHERE task_id = 'old'`).Scan(&turnAdmitted); err != nil {
+		t.Errorf("turn: %v", err)
+	} else if turnAdmitted != 1 {
+		t.Errorf("turn's admitted_command_id = %d, want 1", turnAdmitted)
+	}
+
+	var messageDelivered int64
+	if err := store.db.QueryRowContext(t.Context(), `SELECT delivered_command_id FROM messages WHERE to_task = 'old'`).Scan(&messageDelivered); err != nil {
+		t.Errorf("message: %v", err)
+	} else if messageDelivered != 2 {
+		t.Errorf("message's delivered_command_id = %d, want 2", messageDelivered)
+	}
+
+	rows, err := store.db.QueryContext(t.Context(), `PRAGMA foreign_key_check`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rows.Next() {
+		t.Error("the migrated database has foreign key violations")
+	}
+	rows.Close()
+
+	var seq int64
+	if err := store.db.QueryRowContext(t.Context(), `SELECT seq FROM sqlite_sequence WHERE name = 'commands'`).Scan(&seq); err != nil {
+		t.Fatal(err)
+	}
+	if seq < 2 {
+		t.Errorf("sqlite_sequence for commands = %d, want at least 2", seq)
+	}
+}
+
+// TestGivenTheOwnersCopiedDatabaseWhenOpenedThenItMigratesWithoutLosingTasks
+// guards against the regression this bug was found in: opening a copy of
+// the owner's real database, at schema version 15, failed to migrate past
+// version 22 with child rows in messages and turns. It is skipped when no
+// copy is available to test against.
+func TestGivenTheOwnersCopiedDatabaseWhenOpenedThenItMigratesWithoutLosingTasks(t *testing.T) {
+	const source = "/tmp/server-copy.db"
+	data, err := os.ReadFile(source)
+	if errors.Is(err, os.ErrNotExist) {
+		t.Skip("no owner database copy at " + source)
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(t.TempDir(), "server-copy.db")
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	before, err := sql.Open("sqlite", (&url.URL{Scheme: "file", Path: path}).String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var wantTasks int
+	if err := before.QueryRowContext(t.Context(), `SELECT count(*) FROM tasks`).Scan(&wantTasks); err != nil {
+		t.Fatal(err)
+	}
+	if err := before.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	store, err := OpenStore(t.Context(), path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+
+	var gotTasks int
+	if err := store.db.QueryRowContext(t.Context(), `SELECT count(*) FROM tasks`).Scan(&gotTasks); err != nil {
+		t.Fatal(err)
+	}
+	if gotTasks != wantTasks {
+		t.Errorf("task count after migration = %d, want %d", gotTasks, wantTasks)
 	}
 }

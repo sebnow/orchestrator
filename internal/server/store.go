@@ -14,6 +14,7 @@ import (
 	"net/url"
 	"path/filepath"
 	"slices"
+	"strings"
 	"time"
 
 	_ "modernc.org/sqlite"
@@ -197,12 +198,13 @@ var migrations = [...]string{
 	// Version 22 lets a command be the daemon's rather than a task's,
 	// with task_id NULL: the login commands
 	// (docs/adr/2026-10-10-harness-login.md). SQLite cannot drop a NOT
-	// NULL constraint, so the table is rebuilt. The rows that reference
-	// commands are checked once the new table has its name, and its
+	// NULL constraint, so the table is rebuilt. messages and turns
+	// reference commands, so this migration runs with foreign keys off
+	// (noForeignKeys); the rows that reference commands are checked by
+	// PRAGMA foreign_key_check once the new table has its name, and its
 	// AUTOINCREMENT sequence carries on from the old one's, so that no id
 	// a daemon has applied is issued again.
-	`PRAGMA defer_foreign_keys = ON;
-	CREATE TABLE commands_new (
+	`CREATE TABLE commands_new (
 		id INTEGER PRIMARY KEY AUTOINCREMENT,
 		daemon_id TEXT NOT NULL REFERENCES daemons (id),
 		task_id TEXT REFERENCES tasks (id),
@@ -239,6 +241,17 @@ var migrations = [...]string{
 // schemaVersion is the version this server migrates databases to. A
 // database at a later version is refused rather than guessed at.
 const schemaVersion = 1 + len(migrations)
+
+// noForeignKeys marks, by the version it takes the schema to, a migration
+// that rebuilds a table other tables reference. SQLite's DROP TABLE of the
+// old table counts an implicit delete against every row that references
+// it, which the later rename never satisfies, so such a migration fails
+// with foreign keys on even though the rebuilt table has the same rows
+// (https://www.sqlite.org/lang_altertable.html, "Making Other Kinds Of
+// Table Schema Changes"). PRAGMA foreign_keys cannot change inside a
+// transaction, so these run on their own connection; see
+// migrateWithoutForeignKeys.
+var noForeignKeys = map[int]bool{22: true}
 
 var (
 	errUnknownDaemon = errors.New("unknown daemon")
@@ -370,14 +383,99 @@ func migrate(ctx context.Context, db *sql.DB) error {
 		return tx.Commit()
 	}
 	for ; version < schemaVersion; version++ {
-		if _, err := tx.ExecContext(ctx, migrations[version-1]); err != nil {
-			return fmt.Errorf("migrate schema to version %d: %w", version+1, err)
+		target := version + 1
+		if !noForeignKeys[target] {
+			if _, err := tx.ExecContext(ctx, migrations[version-1]); err != nil {
+				return fmt.Errorf("migrate schema to version %d: %w", target, err)
+			}
+			continue
 		}
+		// migrateWithoutForeignKeys needs its own connection, so what
+		// this transaction has done so far is committed first: a failure
+		// in it then leaves the version this transaction reached, rather
+		// than rolling that back too.
+		if _, err := tx.ExecContext(ctx, `UPDATE schema_version SET version = ?`, version); err != nil {
+			return fmt.Errorf("record schema version: %w", err)
+		}
+		if err := tx.Commit(); err != nil {
+			return fmt.Errorf("migrate schema to version %d: %w", target, err)
+		}
+		if err := migrateWithoutForeignKeys(ctx, db, migrations[version-1], target); err != nil {
+			return err
+		}
+		if tx, err = db.BeginTx(ctx, nil); err != nil {
+			return fmt.Errorf("open database: %w", err)
+		}
+		defer tx.Rollback()
 	}
 	if _, err := tx.ExecContext(ctx, `UPDATE schema_version SET version = ?`, schemaVersion); err != nil {
 		return fmt.Errorf("record schema version: %w", err)
 	}
 	return tx.Commit()
+}
+
+// migrateWithoutForeignKeys runs statement, which takes the schema to
+// target, on a connection of its own with foreign keys off: PRAGMA
+// foreign_keys cannot change inside a transaction, and the migrations in
+// noForeignKeys need it off for the whole migration, not just deferred,
+// because the implicit delete of a rebuilt table's DROP TABLE is checked
+// at commit regardless. The rows that reference the rebuilt table are
+// checked explicitly with PRAGMA foreign_key_check before committing, so
+// a migration that would otherwise leave a dangling reference fails
+// instead. A failure rolls back, leaving the version unchanged.
+func migrateWithoutForeignKeys(ctx context.Context, db *sql.DB, statement string, target int) error {
+	conn, err := db.Conn(ctx)
+	if err != nil {
+		return fmt.Errorf("migrate schema to version %d: %w", target, err)
+	}
+	defer conn.Close()
+	if _, err := conn.ExecContext(ctx, `PRAGMA foreign_keys = OFF`); err != nil {
+		return fmt.Errorf("migrate schema to version %d: %w", target, err)
+	}
+	defer conn.ExecContext(ctx, `PRAGMA foreign_keys = ON`)
+	tx, err := conn.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("migrate schema to version %d: %w", target, err)
+	}
+	defer tx.Rollback()
+	if _, err := tx.ExecContext(ctx, statement); err != nil {
+		return fmt.Errorf("migrate schema to version %d: %w", target, err)
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE schema_version SET version = ?`, target); err != nil {
+		return fmt.Errorf("record schema version: %w", err)
+	}
+	rows, err := tx.QueryContext(ctx, `PRAGMA foreign_key_check`)
+	if err != nil {
+		return fmt.Errorf("migrate schema to version %d: %w", target, err)
+	}
+	violations, err := foreignKeyViolations(rows)
+	if err != nil {
+		return fmt.Errorf("migrate schema to version %d: %w", target, err)
+	}
+	if violations != "" {
+		return fmt.Errorf("migrate schema to version %d: foreign key violations: %s", target, violations)
+	}
+	return tx.Commit()
+}
+
+// foreignKeyViolations reads rows, the result of PRAGMA foreign_key_check,
+// and describes each row it holds; empty when it holds none.
+func foreignKeyViolations(rows *sql.Rows) (string, error) {
+	defer rows.Close()
+	var violations []string
+	for rows.Next() {
+		var table, parent string
+		var rowID sql.NullInt64
+		var fkid int
+		if err := rows.Scan(&table, &rowID, &parent, &fkid); err != nil {
+			return "", err
+		}
+		violations = append(violations, fmt.Sprintf("%s row %d references missing %s (foreign key %d)", table, rowID.Int64, parent, fkid))
+	}
+	if err := rows.Err(); err != nil {
+		return "", err
+	}
+	return strings.Join(violations, "; "), nil
 }
 
 func formatTime(t time.Time) string {
