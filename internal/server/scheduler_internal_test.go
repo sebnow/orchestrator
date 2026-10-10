@@ -27,6 +27,12 @@ func fiveHourAt(utilization float64) *quotaReading {
 	}
 }
 
+// shared is reading as the budget of every daemon the schedule names no
+// key for, which share the zero key.
+func shared(reading *quotaReading) map[budgetKey]*quotaReading {
+	return map[budgetKey]*quotaReading{{}: reading}
+}
+
 // start is the first turn of a new task bound to daemon.
 func start(id uint64, task protocol.TaskID, daemon protocol.DaemonID, priority Priority) pendingTurn {
 	return pendingTurn{ID: id, Task: task, Kind: turnStart, State: TaskQueued, Priority: priority, Daemon: daemon, Placement: placementBound}
@@ -91,7 +97,7 @@ func TestGivenTurnsOfEachPriorityWhenSlotsAreShortThenTheHighestAndOldestAreAdmi
 			start(3, "high", "laptop", PriorityHigh),
 			start(4, "normal-new", "laptop", PriorityNormal),
 		},
-		reading: fiveHourAt(0.1),
+		readings: shared(fiveHourAt(0.1)),
 	}
 
 	d := decide(s, testPolicy, schedNow)
@@ -188,7 +194,7 @@ func TestGivenNormalTurnWaitingForASlotWhenFillerCouldRunElsewhereThenTheFillerI
 			filler(start(1, "filler", "vps", PriorityHigh)),
 			start(2, "normal", "laptop", PriorityNormal),
 		},
-		reading: fiveHourAt(0.1),
+		readings: shared(fiveHourAt(0.1)),
 	}
 
 	d := decide(s, testPolicy, schedNow)
@@ -218,12 +224,12 @@ func TestGivenFiveHourUtilizationWhenFillerAndLowTurnsWaitThenEachNeedsItsThresh
 		{0.85, []string{"high@laptop", "normal@laptop"}},
 		{0.99, []string{"high@laptop", "normal@laptop"}},
 	} {
-		s := schedule{slots: map[protocol.DaemonID]int{"laptop": 10}, turns: turns, reading: fiveHourAt(tc.utilization)}
+		s := schedule{slots: map[protocol.DaemonID]int{"laptop": 10}, turns: turns, readings: shared(fiveHourAt(tc.utilization))}
 		d := decide(s, testPolicy, schedNow)
 		requireStrings(t, "admitted at "+percent(tc.utilization), admitted(d), tc.want)
 	}
 
-	d := decide(schedule{slots: map[protocol.DaemonID]int{"laptop": 10}, turns: turns, reading: fiveHourAt(0.9)}, testPolicy, schedNow)
+	d := decide(schedule{slots: map[protocol.DaemonID]int{"laptop": 10}, turns: turns, readings: shared(fiveHourAt(0.9))}, testPolicy, schedNow)
 	requireReason(t, d, 1, "budget: the five-hour window is 90% used; filler runs below 50%")
 	requireReason(t, d, 2, "budget: the five-hour window is 90% used; low priority runs below 85%")
 }
@@ -237,10 +243,10 @@ func TestGivenRejectedReadingWhenItsEarliestWindowResetsThenTurnsAreHeldUntilThe
 			later(2, "running", turnPrompt, TaskRunning, "laptop"),
 			filler(start(3, "filler", "laptop", PriorityNormal)),
 		},
-		reading: &quotaReading{QuotaObserved: protocol.QuotaObserved{Status: protocol.QuotaRejected, Windows: []protocol.QuotaWindow{
+		readings: shared(&quotaReading{QuotaObserved: protocol.QuotaObserved{Status: protocol.QuotaRejected, Windows: []protocol.QuotaWindow{
 			{Name: fiveHourWindow, Utilization: 1, ResetsAt: reset},
 			{Name: "seven_day", Utilization: 0.5, ResetsAt: reset.Add(48 * time.Hour)},
-		}}, At: schedNow.Add(-time.Minute)},
+		}}, At: schedNow.Add(-time.Minute)}),
 	}
 
 	held := decide(s, testPolicy, schedNow)
@@ -267,7 +273,7 @@ func TestGivenNoReadingOrAStaleOneWhenTurnsWaitThenAllButFillerAreAdmitted(t *te
 				start(1, "low", "laptop", PriorityLow),
 				filler(start(2, "filler", "laptop", PriorityHigh)),
 			},
-			reading: reading,
+			readings: shared(reading),
 		}
 
 		d := decide(s, testPolicy, schedNow)
@@ -285,8 +291,8 @@ func TestGivenFullDaemonWithRunningFillerWhenANormalTurnWaitsThenTheNewestFiller
 			running("newer-filler", "laptop", true, 9),
 			running("vps-filler", "vps", true, 12),
 		},
-		turns:   []pendingTurn{start(1, "normal", "laptop", PriorityNormal)},
-		reading: fiveHourAt(0.1),
+		turns:    []pendingTurn{start(1, "normal", "laptop", PriorityNormal)},
+		readings: shared(fiveHourAt(0.1)),
 	}
 
 	d := decide(s, testPolicy, schedNow)
@@ -310,7 +316,7 @@ func TestGivenNoFillerRunningWhenANormalTurnWaitsThenNothingIsYielded(t *testing
 			start(1, "waiting", "laptop", PriorityHigh),
 			filler(start(2, "filler", "laptop", PriorityNormal)),
 		},
-		reading: fiveHourAt(0.1),
+		readings: shared(fiveHourAt(0.1)),
 	}
 
 	if got := yielded(decide(s, testPolicy, schedNow)); len(got) != 0 {
@@ -395,10 +401,16 @@ func quotaEvent(utilization float64, now time.Time) (protocol.Kind, string) {
 	return protocol.KindQuotaObserved, string(payload)
 }
 
-// readingFromVPS has a task on the daemon vps report the five-hour
-// window used to utilization at now.
+// readingFromVPS has laptop and vps report the same account, and a task
+// on the daemon vps report the five-hour window used to utilization at
+// now.
 func readingFromVPS(t *testing.T, store *Store, now time.Time, utilization float64) {
 	t.Helper()
+	for _, daemon := range []protocol.DaemonID{"laptop", "vps"} {
+		if err := store.setFacts(t.Context(), daemon, Labels{"harness": "claude-code", "account": "owner@example.com/org-1"}); err != nil {
+			t.Fatal(err)
+		}
+	}
 	queueTask(t, store, ownersTask("reporter", "vps"))
 	if _, err := store.schedule(t.Context(), roomyPolicy, now, []protocol.DaemonID{"vps"}, time.Time{}); err != nil {
 		t.Fatal(err)

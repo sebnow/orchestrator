@@ -221,6 +221,19 @@ var migrations = [...]string{
 	DROP TABLE commands;
 	ALTER TABLE commands_new RENAME TO commands;
 	CREATE INDEX commands_by_daemon ON commands (daemon_id, id);`,
+	// Version 23 keeps the budget each quota reading belongs to: the
+	// harness and the account the sending daemon reported when the server
+	// stored it, or the daemon when it reported no account
+	// (docs/adr/2026-10-10-harness-login.md). All three are NULL for
+	// other events. Readings stored before are the daemon's of their
+	// task, as no daemon reported an account then.
+	`ALTER TABLE events ADD COLUMN budget_harness TEXT;
+	ALTER TABLE events ADD COLUMN budget_account TEXT;
+	ALTER TABLE events ADD COLUMN budget_daemon TEXT;
+	UPDATE events SET budget_harness = harness_name,
+		budget_daemon = (SELECT t.daemon_id FROM tasks t WHERE t.id = events.task_id)
+	WHERE kind = 'quota_observed';
+	CREATE INDEX events_by_budget ON events (kind, budget_harness, budget_account, budget_daemon);`,
 }
 
 // schemaVersion is the version this server migrates databases to. A
@@ -492,17 +505,28 @@ func (s *Store) appendEvents(ctx context.Context, daemon protocol.DaemonID, even
 		return nil, nil, err
 	}
 
+	// A quota reading belongs to the budget of the daemon's key as it is
+	// now.
+	key, err := queryBudgetKey(ctx, tx, daemon)
+	if err != nil {
+		return nil, nil, err
+	}
+
 	// requests are the permission requests the batch stored for the first
 	// time, for the permission policy to decide.
 	var requests []protocol.Event
 	for _, event := range events {
 		stored := int64(event.Seq) + bases[event.TaskID]
+		var budgetHarness, budgetAccount, budgetDaemon any
+		if event.Kind == protocol.KindQuotaObserved {
+			budgetHarness, budgetAccount, budgetDaemon = key.Harness, nullable(key.Account), nullable(string(key.Daemon))
+		}
 		result, err := tx.ExecContext(ctx, `
-			INSERT INTO events (task_id, seq, kind, harness_name, harness_version, time, payload)
-			VALUES (?, ?, ?, ?, ?, ?, ?)
+			INSERT INTO events (task_id, seq, kind, harness_name, harness_version, time, payload, budget_harness, budget_account, budget_daemon)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 			ON CONFLICT (task_id, seq) DO NOTHING`,
 			string(event.TaskID), stored, string(event.Kind), event.Harness.Name, event.Harness.Version,
-			formatTime(event.Time), string(event.Payload))
+			formatTime(event.Time), string(event.Payload), budgetHarness, budgetAccount, budgetDaemon)
 		if err != nil {
 			return nil, nil, fmt.Errorf("store event %s/%d: %w", event.TaskID, event.Seq, err)
 		}
@@ -1014,8 +1038,10 @@ type daemonSummary struct {
 	// Harness is the one named by the latest event the daemon sent; nil
 	// until it sends one.
 	Harness *protocol.Harness
-	// Quota is the newest usage-limit reading among the daemon's events,
-	// observed at QuotaAt; nil when there is none.
+	// Budget is the key of the budget its turns are checked against, and
+	// Quota that budget's newest usage-limit reading, observed at
+	// QuotaAt; nil when there is none.
+	Budget  budgetKey
 	Quota   *protocol.QuotaObserved
 	QuotaAt time.Time
 	// InUse counts the tasks holding a slot on the daemon.
@@ -1027,34 +1053,23 @@ type daemonSummary struct {
 	Labels, Facts Labels
 }
 
-// reading returns the account's quota reading: the newest any daemon
-// reported, or nil when there is none.
-func (s *Store) reading(ctx context.Context) (*quotaReading, error) {
+// daemons returns every daemon that has been seen, by id, each with the
+// newest quota reading of its budget.
+func (s *Store) daemons(ctx context.Context) ([]daemonSummary, error) {
 	tx, err := s.db.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
 	if err != nil {
-		return nil, fmt.Errorf("read the quota reading: %w", err)
+		return nil, fmt.Errorf("read daemons: %w", err)
 	}
 	defer tx.Rollback()
-	return queryReading(ctx, tx)
-}
-
-// daemons returns every daemon that has been seen, by id, each with its
-// newest quota reading.
-//
-// Stored times keep the daemon's zone offset and trim trailing zeros, so
-// they do not sort as text; julianday compares the instants, to the
-// millisecond, and the row id, which follows storage order, breaks ties.
-func (s *Store) daemons(ctx context.Context) ([]daemonSummary, error) {
-	rows, err := s.db.QueryContext(ctx, `
-		WITH readings AS (
-			SELECT t.daemon_id, e.time, e.payload,
-				row_number() OVER (PARTITION BY t.daemon_id ORDER BY julianday(e.time) DESC, e.rowid DESC) AS newest
-			FROM events e JOIN tasks t ON t.id = e.task_id
-			WHERE e.kind = ?1)
-		SELECT d.id, d.last_seen, d.harness_name, d.harness_version, r.time, r.payload, d.lost_at, d.labels, d.facts,
-			(SELECT count(*) FROM tasks t WHERE t.daemon_id = d.id AND t.state IN (?2, ?3, ?4, ?5))
-		FROM daemons d LEFT JOIN readings r ON r.daemon_id = d.id AND r.newest = 1
-		ORDER BY d.id`, string(protocol.KindQuotaObserved),
+	readings, err := queryReadings(ctx, tx)
+	if err != nil {
+		return nil, err
+	}
+	rows, err := tx.QueryContext(ctx, `
+		SELECT d.id, d.last_seen, d.harness_name, d.harness_version, d.lost_at, d.labels, d.facts,
+			(SELECT count(*) FROM tasks t WHERE t.daemon_id = d.id AND t.state IN (?1, ?2, ?3, ?4))
+		FROM daemons d
+		ORDER BY d.id`,
 		string(TaskPending), string(TaskRunning), string(TaskAwaitingPermission), string(TaskPausing))
 	if err != nil {
 		return nil, fmt.Errorf("read daemons: %w", err)
@@ -1063,9 +1078,9 @@ func (s *Store) daemons(ctx context.Context) ([]daemonSummary, error) {
 	var daemons []daemonSummary
 	for rows.Next() {
 		var id, lastSeen, labels, facts string
-		var harnessName, harnessVersion, quotaTime, quotaPayload, lostAt sql.NullString
+		var harnessName, harnessVersion, lostAt sql.NullString
 		var inUse int
-		if err := rows.Scan(&id, &lastSeen, &harnessName, &harnessVersion, &quotaTime, &quotaPayload, &lostAt, &labels, &facts, &inUse); err != nil {
+		if err := rows.Scan(&id, &lastSeen, &harnessName, &harnessVersion, &lostAt, &labels, &facts, &inUse); err != nil {
 			return nil, fmt.Errorf("read daemons: %w", err)
 		}
 		daemon := daemonSummary{ID: protocol.DaemonID(id), InUse: inUse}
@@ -1089,14 +1104,9 @@ func (s *Store) daemons(ctx context.Context) ([]daemonSummary, error) {
 		if harnessName.Valid {
 			daemon.Harness = &protocol.Harness{Name: harnessName.String, Version: harnessVersion.String}
 		}
-		if quotaPayload.Valid {
-			// A reading that does not decode is left out rather than
-			// failing the whole list; the raw event stays readable.
-			var quota protocol.QuotaObserved
-			at, err := parseTime(quotaTime.String)
-			if err == nil && json.Unmarshal([]byte(quotaPayload.String), &quota) == nil {
-				daemon.Quota, daemon.QuotaAt = &quota, at
-			}
+		daemon.Budget = budgetKeyOf(daemon.ID, daemon.Facts, daemon.Harness)
+		if reading := readings[daemon.Budget]; reading != nil {
+			daemon.Quota, daemon.QuotaAt = &reading.QuotaObserved, reading.At
 		}
 		daemons = append(daemons, daemon)
 	}

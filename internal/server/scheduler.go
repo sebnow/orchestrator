@@ -72,7 +72,7 @@ func slotCount(labels Labels) (int, bool) {
 // fiveHourWindow names the window the thresholds apply to.
 const fiveHourWindow = "five_hour"
 
-// quotaReading is the account's newest quota_observed, taken at At.
+// quotaReading is a budget's newest quota_observed, taken at At.
 type quotaReading struct {
 	protocol.QuotaObserved
 	At time.Time
@@ -181,8 +181,12 @@ type schedule struct {
 	holders []slotHolder
 	// turns are the waiting turns of tasks that have not ended, oldest
 	// first.
-	turns   []pendingTurn
-	reading *quotaReading
+	turns []pendingTurn
+	// keys maps each daemon to the key of its budget, and readings each
+	// key to its newest quota reading. A daemon keys holds no entry for
+	// shares the zero key's budget.
+	keys     map[protocol.DaemonID]budgetKey
+	readings map[budgetKey]*quotaReading
 }
 
 // admission is a turn to admit on a daemon. model, set for a start
@@ -214,26 +218,43 @@ type slotWait struct {
 
 // decide applies the scheduling rules to s at now:
 //
-//  1. A rejected budget holds every turn.
-//  2. Each task offers its oldest waiting turn other than a delivery, or
+//  1. Each task offers its oldest waiting turn other than a delivery, or
 //     else its delivery once it is finished; its other turns wait.
-//  3. Non-filler turns, highest priority and oldest first, then filler
-//     turns likewise, each pass the budget rule for its kind.
-//  4. A turn for a task holding a slot rides on it. Any other turn takes
+//  2. Non-filler turns, highest priority and oldest first, then filler
+//     turns likewise, each pass the budget rule for its kind, against
+//     the budget of the daemon it would go to
+//     (docs/adr/2026-10-10-harness-login.md). A rejected budget holds
+//     every turn.
+//  3. A turn for a task holding a slot rides on it. Any other turn takes
 //     a free slot on its placement's daemon.
-//  5. Filler turns wait while a non-filler turn waits only for a slot.
-//  6. Each such non-filler turn yields the newest running filler task on
+//  4. Filler turns wait while a non-filler turn waits only for a slot.
+//  5. Each such non-filler turn yields the newest running filler task on
 //     its daemon, unless a yield there is under way.
 func decide(s schedule, policy SchedulePolicy, now time.Time) decisions {
-	b := readBudget(s.reading, now)
-	d := decisions{reasons: make(map[uint64]string), wake: b.changes}
-	if !b.rejectedUntil.IsZero() {
-		reason := "rejected by the account's usage limits until " + b.rejectedUntil.UTC().Format("2006-01-02 15:04 MST")
-		for _, turn := range s.turns {
-			d.reasons[turn.ID] = reason
+	d := decisions{reasons: make(map[uint64]string)}
+	for _, reading := range s.readings {
+		b := readBudget(reading, now)
+		for _, at := range []time.Time{b.changes, b.rejectedUntil} {
+			if !at.IsZero() && (d.wake.IsZero() || at.Before(d.wake)) {
+				d.wake = at
+			}
 		}
-		d.wake = b.rejectedUntil
-		return d
+	}
+	budgets := make(map[budgetKey]budget)
+	budgetOf := func(daemon protocol.DaemonID) budget {
+		key := s.keys[daemon]
+		b, ok := budgets[key]
+		if !ok {
+			b = readBudget(s.readings[key], now)
+			budgets[key] = b
+		}
+		return b
+	}
+	unavailable := func(turn pendingTurn, daemon protocol.DaemonID) string {
+		if reason := s.unavailable(turn, daemon); reason != "" {
+			return reason
+		}
+		return budgetHold(turn, budgetOf(daemon), policy)
 	}
 
 	free := make(map[protocol.DaemonID]int, len(s.slots))
@@ -279,11 +300,11 @@ func decide(s schedule, policy SchedulePolicy, now time.Time) decisions {
 			d.reasons[turn.ID] = "priority: non-filler turns are waiting for a slot"
 			continue
 		}
-		if reason := budgetWait(turn, b, policy); reason != "" {
-			d.reasons[turn.ID] = reason
-			continue
-		}
 		if turn.Kind != turnStart && holdsSlot(turn.State) {
+			if reason := budgetHold(turn, budgetOf(turn.Daemon), policy); reason != "" {
+				d.reasons[turn.ID] = reason
+				continue
+			}
 			if turn.State == TaskPausing && turn.PausedBy == pauseByScheduler {
 				d.reasons[turn.ID] = "waits for the scheduler's pause of the task to settle"
 				continue
@@ -291,7 +312,7 @@ func decide(s schedule, policy SchedulePolicy, now time.Time) decisions {
 			d.admit = append(d.admit, admission{turn: turn, daemon: turn.Daemon})
 			continue
 		}
-		daemon, model, reason, wait := place(turn, s, free, s.unavailable)
+		daemon, model, reason, wait := place(turn, s, free, unavailable)
 		if daemon != "" {
 			free[daemon]--
 			d.admit = append(d.admit, admission{turn: turn, daemon: daemon, model: model})
@@ -319,10 +340,12 @@ func deliveryWait(turn pendingTurn) string {
 	return "waits for the task's turn to end"
 }
 
-// budgetWait says why the budget holds turn, or returns "" when it does
-// not.
-func budgetWait(turn pendingTurn, b budget, policy SchedulePolicy) string {
+// budgetHold says why the budget b holds turn, or returns "" when it
+// does not.
+func budgetHold(turn pendingTurn, b budget, policy SchedulePolicy) string {
 	switch {
+	case !b.rejectedUntil.IsZero():
+		return "rejected by the account's usage limits until " + b.rejectedUntil.UTC().Format("2006-01-02 15:04 MST")
 	case turn.Filler && !b.known:
 		return "budget: filler needs a current reading of the five-hour window"
 	case turn.Filler && b.fiveHour >= policy.FillerThreshold:
@@ -337,9 +360,9 @@ func percent(fraction float64) string {
 	return fmt.Sprintf("%.0f%%", fraction*100)
 }
 
-// unavailable says why daemon takes no turn now, or returns "" when it
-// does: a daemon whose harness reports that it is not logged in takes
-// none (docs/adr/2026-10-10-harness-login.md).
+// unavailable says why daemon takes no turn now, whatever its budget, or
+// returns "" when it does: a daemon whose harness reports that it is not
+// logged in takes none (docs/adr/2026-10-10-harness-login.md).
 func (s schedule) unavailable(_ pendingTurn, daemon protocol.DaemonID) string {
 	if s.labels[daemon][protocol.FactLogin] == protocol.LoginNo {
 		return "daemon " + string(daemon) + " is not logged in"
@@ -682,7 +705,10 @@ func readSchedule(ctx context.Context, tx *sql.Tx, policy SchedulePolicy, connec
 	if s.turns, err = queryWaitingTurns(ctx, tx); err != nil {
 		return schedule{}, err
 	}
-	if s.reading, err = queryReading(ctx, tx); err != nil {
+	if s.keys, err = queryBudgetKeys(ctx, tx); err != nil {
+		return schedule{}, err
+	}
+	if s.readings, err = queryReadings(ctx, tx); err != nil {
 		return schedule{}, err
 	}
 	return s, nil
@@ -745,31 +771,6 @@ func queryWaitingTurns(ctx context.Context, tx *sql.Tx) ([]pendingTurn, error) {
 		return nil, fmt.Errorf("read waiting turns: %w", err)
 	}
 	return turns, nil
-}
-
-// queryReading returns the newest quota reading any daemon reported, or
-// nil when there is none or it does not decode. Stored times keep the
-// daemon's zone offset and trim trailing zeros, so they do not sort as
-// text; julianday compares the instants, to the millisecond, and the row
-// id, which follows storage order, breaks ties.
-func queryReading(ctx context.Context, tx *sql.Tx) (*quotaReading, error) {
-	var at, payload string
-	err := tx.QueryRowContext(ctx, `
-		SELECT time, payload FROM events WHERE kind = ? ORDER BY julianday(time) DESC, rowid DESC LIMIT 1`,
-		string(protocol.KindQuotaObserved)).Scan(&at, &payload)
-	if errors.Is(err, sql.ErrNoRows) {
-		return nil, nil
-	}
-	if err != nil {
-		return nil, fmt.Errorf("read the quota reading: %w", err)
-	}
-	var reading quotaReading
-	taken, err := parseTime(at)
-	if err != nil || json.Unmarshal([]byte(payload), &reading.QuotaObserved) != nil {
-		return nil, nil
-	}
-	reading.At = taken
-	return &reading, nil
 }
 
 // admit issues the command of a.turn on a.daemon and records the turn

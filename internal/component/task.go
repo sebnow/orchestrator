@@ -698,19 +698,35 @@ func connection(daemon Daemon) html.Node {
 	return html.Text(yesNo(daemon.Connected))
 }
 
-// Budget is the account's quota reading as the scheduler uses it: quota,
-// taken at at and age old, or nil when there is none; and the five-hour
-// utilization that filler and low-priority turns must stay below.
-func Budget(quota *protocol.QuotaObserved, at time.Time, age time.Duration, fillerBelow, lowBelow float64) html.Node {
+// BudgetReading is one budget's newest quota reading: Name says whose
+// budget it is, Quota was taken at At, and is Age old.
+type BudgetReading struct {
+	Name  string
+	Quota protocol.QuotaObserved
+	At    time.Time
+	Age   time.Duration
+}
+
+// Budget shows each budget's newest quota reading as the scheduler uses
+// it, and the five-hour utilization that filler and low-priority turns
+// must stay below. Each account has a budget of its own, as has each
+// daemon that reports no account.
+func Budget(readings []BudgetReading, fillerBelow, lowBelow float64) html.Node {
 	thresholds := html.El("p", attrs("class", "notice"), html.Text(fmt.Sprintf(
-		"Filler runs while the five-hour window is below %s used, low priority below %s; "+
+		"Each account has its own budget, as has each daemon that reports none; a turn is checked against the budget of the daemon it goes to. "+
+			"Filler runs while the five-hour window is below %s used, low priority below %s; "+
 			"a rejected reading holds every turn until its window resets.", percent(fillerBelow), percent(lowBelow))))
-	if quota == nil {
+	if len(readings) == 0 {
 		return html.Fragment(html.El("p", attrs("class", "empty"), html.Text("No reading yet, so filler waits for one.")), thresholds)
 	}
-	return html.Fragment(QuotaReadout(*quota, at),
-		html.El("p", attrs("class", "notice"), html.Text("Taken "+ago(age)+" ago, by the newest turn on any daemon.")),
-		thresholds)
+	items := make([]html.Node, len(readings))
+	for idx, reading := range readings {
+		items[idx] = html.El("li", nil,
+			html.El("strong", nil, html.Text(reading.Name)),
+			QuotaReadout(reading.Quota, reading.At),
+			html.El("p", attrs("class", "notice"), html.Text("Taken "+ago(reading.Age)+" ago, by the newest turn on this budget.")))
+	}
+	return html.Fragment(html.El("ul", attrs("class", "budgets"), items...), thresholds)
 }
 
 func percent(fraction float64) string {

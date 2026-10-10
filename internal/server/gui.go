@@ -176,7 +176,7 @@ func (s *Server) taskChoices(ctx context.Context, daemons []string) (component.T
 }
 
 // dashboardLists renders the tasks needing attention, every task, newest
-// first, the account's quota reading, and every daemon. It also returns
+// first, each budget's quota reading, and every daemon. It also returns
 // the daemons' ids. Dismissed tasks need no attention, and the task list
 // leaves them out unless showDismissed is set.
 func (s *Server) dashboardLists(ctx context.Context, showDismissed bool) (html.Node, []string, error) {
@@ -192,7 +192,7 @@ func (s *Server) dashboardLists(ctx context.Context, showDismissed bool) (html.N
 	if err != nil {
 		return nil, nil, err
 	}
-	reading, err := s.store.reading(ctx)
+	readings, err := s.store.readings(ctx)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -238,7 +238,7 @@ func (s *Server) dashboardLists(ctx context.Context, showDismissed bool) (html.N
 		component.Section("Needs attention", component.AttentionList(attention, component.DashboardURL(showDismissed))),
 		component.Section("Tasks", component.Table(component.TaskColumns, "No tasks yet.", taskRows...),
 			component.DismissedToggle(dismissed, showDismissed)),
-		component.Section("Budget", s.budget(reading)),
+		component.Section("Budget", s.budget(readings)),
 		component.Section("Daemons", component.Table(component.DaemonColumns, "No daemon has connected yet.", daemonRows...)),
 	), ids, nil
 }
@@ -257,13 +257,13 @@ func daemonHarness(daemon daemonSummary) string {
 	return name + " " + version
 }
 
-// budget shows the account's quota reading as the scheduler uses it.
-func (s *Server) budget(reading *quotaReading) html.Node {
-	policy := s.sched.policy
-	if reading == nil {
-		return component.Budget(nil, time.Time{}, 0, policy.FillerThreshold, policy.LowThreshold)
+// budget shows each budget's newest reading as the scheduler uses it.
+func (s *Server) budget(readings []keyedReading) html.Node {
+	shown := make([]component.BudgetReading, len(readings))
+	for idx, reading := range readings {
+		shown[idx] = component.BudgetReading{Name: reading.key.String(), Quota: reading.QuotaObserved, At: reading.At, Age: s.sched.now().Sub(reading.At)}
 	}
-	return component.Budget(&reading.QuotaObserved, reading.At, s.sched.now().Sub(reading.At), policy.FillerThreshold, policy.LowThreshold)
+	return component.Budget(shown, s.sched.policy.FillerThreshold, s.sched.policy.LowThreshold)
 }
 
 // attentionReason says why a task waits for the owner, or returns "" when
