@@ -109,6 +109,9 @@ func serve(args []string, stderr io.Writer) int {
 	hetznerImage := flags.String("hetzner-image", "debian-13", "Hetzner image of a provisioned VPS")
 	daemonBinaryURL := flags.String("daemon-binary-url", "", "https URL a provisioned VPS downloads the daemon binary from; the literal {arch} is replaced with amd64 or arm64 according to the server type")
 	publicURL := flags.String("public-url", "", "the server's https URL as a provisioned VPS's daemon dials it, such as https://orchestrator.example:8443")
+	backupDir := flags.String("backup-dir", "", "directory the database's backups are written to, created when missing; backups/ beside -db by default")
+	backupEvery := flags.Duration("backup-every", 6*time.Hour, "time between scheduled backups of the database; 0 backs up only on demand")
+	backupKeep := flags.Int("backup-keep", 14, "how many backups are kept; older ones are deleted after each backup")
 	permissions := flags.String("permissions", "allow-all", "who answers the agents' permission requests: allow-all, the server, allowing every one at once; or ask, the owner")
 	if err := flags.Parse(args); err != nil {
 		return exitCode(err)
@@ -123,6 +126,13 @@ func serve(args []string, stderr io.Writer) int {
 	if *daemonTimeout < minDaemonTimeout {
 		fmt.Fprintf(stderr, "server: -daemon-timeout must be at least %s\n", minDaemonTimeout)
 		return 2
+	}
+	if *backupEvery < 0 || *backupKeep < 1 {
+		fmt.Fprintln(stderr, "server: -backup-every must not be negative, and -backup-keep must be at least 1")
+		return 2
+	}
+	if *backupDir == "" {
+		*backupDir = filepath.Join(filepath.Dir(*dbPath), "backups")
 	}
 	policy, ok := permissionPolicies[*permissions]
 	if !ok {
@@ -210,6 +220,7 @@ func serve(args []string, stderr io.Writer) int {
 		Permissions:  policy,
 		CA:           ca,
 		Provisioning: provisioning,
+		Backups:      &server.BackupPolicy{Dir: *backupDir, Every: *backupEvery, Keep: *backupKeep},
 	})
 	httpServer := &http.Server{
 		Handler:   srv,
@@ -225,11 +236,17 @@ func serve(args []string, stderr io.Writer) int {
 		defer close(scheduled)
 		srv.Schedule(scheduleCtx)
 	}()
-	// The scheduler writes to the store, so it stops before the store
-	// closes.
+	backedUp := make(chan struct{})
+	go func() {
+		defer close(backedUp)
+		srv.RunBackups(scheduleCtx)
+	}()
+	// The scheduler and the backups use the store, so they stop before
+	// the store closes.
 	defer func() {
 		stopScheduling()
 		<-scheduled
+		<-backedUp
 	}()
 	listener, err := net.Listen("tcp", *listen)
 	if err != nil {
@@ -245,7 +262,7 @@ func serve(args []string, stderr io.Writer) int {
 		served <- httpServer.ServeTLS(listener, "", "")
 	}()
 	log.Info("serving", "address", listener.Addr().String(), "tls", !*insecure, "db", *dbPath,
-		"enrolment", ca != nil, "provisioning", provisioning != nil)
+		"enrolment", ca != nil, "provisioning", provisioning != nil, "backups", *backupDir)
 
 	select {
 	case err := <-served:

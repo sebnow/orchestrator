@@ -139,3 +139,13 @@ func TestMain(m *testing.M) {
 	os.Unsetenv("HETZNER_TOKEN")
 	os.Exit(m.Run())
 }
+
+func TestGivenBadBackupScheduleWhenStartingThenTheServerRefuses(t *testing.T) {
+	for _, args := range [][]string{{"-backup-keep", "0"}, {"-backup-every", "-1h"}} {
+		dbPath := filepath.Join(t.TempDir(), "server.db")
+		status, _, stderr := runCommand(append([]string{"-insecure-loopback", "-db", dbPath}, args...)...)
+		if status != 2 || !strings.Contains(stderr, args[0]) {
+			t.Errorf("%v: status %d, stderr %q; want 2 naming %s", args, status, stderr, args[0])
+		}
+	}
+}

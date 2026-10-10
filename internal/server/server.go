@@ -46,6 +46,8 @@ type Server struct {
 	ca *pki.CA
 	// provisioning creates daemon VPSes; nil turns provisioning off.
 	provisioning *Provisioning
+	// backups writes copies of the database; nil turns backups off.
+	backups *backups
 
 	mu      sync.Mutex
 	streams map[protocol.DaemonID]*commandStream
@@ -99,6 +101,9 @@ type Options struct {
 	// Provisioning creates daemon VPSes, whose daemons enrol, so it
 	// needs CA; nil turns provisioning off.
 	Provisioning *Provisioning
+	// Backups is where and how often the database is backed up
+	// (docs/adr/2026-10-10-sqlite-backups.md); nil turns backups off.
+	Backups *BackupPolicy
 }
 
 // New returns a server over store. The server hears of store's changes
@@ -129,6 +134,9 @@ func New(store *Store, log *slog.Logger, options Options) *Server {
 		now = time.Now
 	}
 	store.now = now
+	if options.Backups != nil {
+		s.backups = &backups{policy: *options.Backups, store: store, now: now}
+	}
 	store.permissions = options.Permissions
 	s.sched = &scheduler{store: store, log: log, policy: policy, now: now, connected: s.connectedDaemons, upSince: now(), wake: make(chan struct{}, 1)}
 	store.published = s.storeChanged
