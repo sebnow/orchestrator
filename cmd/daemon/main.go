@@ -7,7 +7,10 @@
 // common name is its id, and trusts only servers whose certificates its
 // CA issued (docs/adr/2026-10-08-daemon-authentication.md). A plain
 // http:// server URL is accepted only for a loopback IP address, for a
-// server run with -insecure-loopback.
+// server run with -insecure-loopback. Without -cert and -key it uses the
+// certificate in its state directory, which it gets the first time from
+// the server with -enrol-token
+// (docs/adr/2026-10-10-vps-provisioning.md).
 //
 // With -harness-user it runs Claude Code, and every command that touches
 // a workspace, as that OS user through sudo, so that the agent cannot
@@ -21,8 +24,10 @@ package main
 import (
 	"context"
 	"crypto/tls"
+	"errors"
 	"flag"
 	"fmt"
+	"io/fs"
 	"log/slog"
 	"net/http"
 	"net/netip"
@@ -31,10 +36,12 @@ import (
 	"os/signal"
 	"path/filepath"
 	"syscall"
+	"time"
 
 	"github.com/sebnow/orchestrator/internal/daemon"
 	"github.com/sebnow/orchestrator/internal/harness/claude"
 	"github.com/sebnow/orchestrator/internal/pki"
+	"github.com/sebnow/orchestrator/internal/protocol"
 	"github.com/sebnow/orchestrator/internal/runas"
 	"github.com/sebnow/orchestrator/internal/sshagent"
 )
@@ -45,8 +52,9 @@ func main() {
 
 func run() int {
 	serverURL := flag.String("server", "", "base URL of the server, such as https://orchestrator.example:8443 (required)")
-	certPath := flag.String("cert", "", "this daemon's certificate, from the server's issue-daemon-cert; its common name is the daemon's id (required)")
-	keyPath := flag.String("key", "", "the certificate's private key (required)")
+	certPath := flag.String("cert", "", "this daemon's certificate, from the server's issue-daemon-cert; its common name is the daemon's id (default: daemon.crt in -state-dir, written by enrolment)")
+	keyPath := flag.String("key", "", "the certificate's private key (default: daemon.key in -state-dir, written by enrolment)")
+	enrolToken := flag.String("enrol-token", "", `a one-time token from the server, "<daemon id>:<secret>", to get the daemon's certificate with when -state-dir holds none yet; replaces -cert and -key, and needs an https -server and -ca`)
 	caPath := flag.String("ca", "", "the CA certificate to verify the server with (required for https)")
 	stateDir := flag.String("state-dir", "", "directory for the daemon's state, task journals, ssh key, repository mirrors and workspaces (required)")
 	workspaceDir := flag.String("workspace-dir", "", "directory for the task workspaces, which must exist and be owned by -harness-user when that is set (required with -harness-user; default <state-dir>/workspaces)")
@@ -54,9 +62,30 @@ func run() int {
 	claudePath := flag.String("claude", "claude", "path of the claude executable; with -harness-user, the absolute path the sudoers rule names")
 	gitIdentity := flag.String("git-identity", "orchestrator <orchestrator@localhost>", `name and email for the commits an agent makes, as "Name <email>"`)
 	flag.Parse()
-	if *serverURL == "" || *certPath == "" || *keyPath == "" || *stateDir == "" || flag.NArg() > 0 {
+	if *serverURL == "" || *stateDir == "" || flag.NArg() > 0 || (*certPath == "") != (*keyPath == "") {
 		flag.Usage()
 		return 2
+	}
+	if *certPath != "" && *enrolToken != "" {
+		fmt.Fprintln(os.Stderr, "daemon: -enrol-token replaces -cert and -key; give one or the other")
+		return 2
+	}
+	enrolling := false
+	if *certPath == "" {
+		*certPath = filepath.Join(*stateDir, daemon.EnrolledName+".crt")
+		*keyPath = filepath.Join(*stateDir, daemon.EnrolledName+".key")
+		_, err := os.Stat(*certPath)
+		switch {
+		case err == nil:
+		case errors.Is(err, fs.ErrNotExist) && *enrolToken != "":
+			enrolling = true
+		case errors.Is(err, fs.ErrNotExist):
+			fmt.Fprintf(os.Stderr, "daemon: %s does not exist: give -cert and -key, or -enrol-token to get it from the server\n", *certPath)
+			return 2
+		default:
+			fmt.Fprintln(os.Stderr, "daemon:", err)
+			return 1
+		}
 	}
 	if *harnessUser != "" {
 		if *workspaceDir == "" {
@@ -87,6 +116,12 @@ func run() int {
 		fmt.Fprintln(os.Stderr, "daemon: -ca is required for an https server")
 		return 2
 	}
+	log := slog.New(slog.NewTextHandler(os.Stderr, nil))
+	if enrolling {
+		if status := enrol(server, *caPath, *enrolToken, *stateDir, log); status != 0 {
+			return status
+		}
+	}
 	cert, err := tls.LoadX509KeyPair(*certPath, *keyPath)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "daemon: load the daemon certificate:", err)
@@ -106,7 +141,6 @@ func run() int {
 		}
 		transport.TLSClientConfig = pki.ClientConfig(cert, roots)
 	}
-	log := slog.New(slog.NewTextHandler(os.Stderr, nil))
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
@@ -155,5 +189,44 @@ func run() int {
 		log.Error("serve", "error", err)
 		return 1
 	}
+	return 0
+}
+
+// enrolTimeout bounds enrolment, one request and answer.
+const enrolTimeout = time.Minute
+
+// enrol gets the daemon's certificate from server with token, into
+// stateDir, and returns the exit status when it cannot.
+func enrol(server *url.URL, caPath, rawToken, stateDir string, log *slog.Logger) int {
+	token, err := protocol.ParseEnrolmentToken(rawToken)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "daemon: -enrol-token:", err)
+		return 2
+	}
+	if server.Scheme != "https" {
+		fmt.Fprintln(os.Stderr, "daemon: -enrol-token needs an https -server")
+		return 2
+	}
+	roots, err := pki.LoadPool(caPath)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "daemon: -ca:", err)
+		return 1
+	}
+	if err := os.MkdirAll(stateDir, 0o700); err != nil {
+		log.Error("create the state directory", "error", err)
+		return 1
+	}
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	ctx, cancel := context.WithTimeout(ctx, enrolTimeout)
+	defer cancel()
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	transport.TLSClientConfig = &tls.Config{RootCAs: roots, MinVersion: tls.VersionTLS13}
+	log.Info("enrolling", "server", server.String(), "daemon", token.Daemon)
+	if err := daemon.Enrol(ctx, &http.Client{Transport: transport}, server, token, stateDir); err != nil {
+		log.Error("enrol", "error", err)
+		return 1
+	}
+	log.Info("enrolled", "daemon", token.Daemon, "dir", stateDir)
 	return 0
 }

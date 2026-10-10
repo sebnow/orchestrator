@@ -80,3 +80,17 @@ func TestGivenSchedulingFlagsOutOfRangeWhenStartingThenTheServerRefusesAndNamesT
 		}
 	}
 }
+
+func TestGivenCAKeyThatIsNotTheClientCAsWhenStartingThenTheServerRefusesAndNamesTheFlag(t *testing.T) {
+	dir, other := t.TempDir(), t.TempDir()
+	mustRun(t, "init-ca", "-pki-dir", dir)
+	mustRun(t, "init-ca", "-pki-dir", other)
+	mustRun(t, "issue-server-cert", "-pki-dir", dir, "-host", "127.0.0.1")
+
+	status, _, stderr := runCommand("-listen", "127.0.0.1:0", "-db", filepath.Join(dir, "server.db"),
+		"-tls-cert", filepath.Join(dir, "server.crt"), "-tls-key", filepath.Join(dir, "server.key"),
+		"-client-ca", filepath.Join(dir, "ca.crt"), "-ca-key", filepath.Join(other, "ca.key"))
+	if status != 1 || !strings.Contains(stderr, "-ca-key") {
+		t.Errorf("status %d, stderr %q; want 1 naming -ca-key", status, stderr)
+	}
+}

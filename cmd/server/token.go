@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 
+	"github.com/sebnow/orchestrator/internal/protocol"
 	"github.com/sebnow/orchestrator/internal/server"
 )
 
@@ -36,6 +37,48 @@ func issueOwnerToken(args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 	fmt.Fprintln(stderr, "The owner token follows. It is not shown again; keep it somewhere safe. Earlier tokens and sessions no longer work.")
+	fmt.Fprintln(stdout, token)
+	return 0
+}
+
+// enrolToken issues a token that lets the daemon -id enrol once, for a
+// machine the server did not provision: the daemon started with it gets
+// its certificate from the server
+// (docs/adr/2026-10-10-vps-provisioning.md).
+func enrolToken(args []string, stdout, stderr io.Writer) int {
+	flags := subcommandFlags("enrol-token", "-db FILE -id DAEMON [-lifetime DURATION]", stderr)
+	dbPath := flags.String("db", "", "the server's SQLite database file, created with its directory when missing (required)")
+	id := flags.String("id", "", "the daemon's id: letters, digits, '.', '_' and '-' (required)")
+	lifetime := flags.Duration("lifetime", server.DefaultEnrolmentTokenLifetime, "how long the token can be used")
+	if status, ok := parseSubcommand(flags, args, dbPath, id); !ok {
+		return status
+	}
+	daemon, err := protocol.ParseDaemonID(*id)
+	if err != nil {
+		fmt.Fprintln(stderr, "server enrol-token: -id:", err)
+		return 2
+	}
+	if *lifetime <= 0 {
+		fmt.Fprintln(stderr, "server enrol-token: -lifetime must be positive")
+		return 2
+	}
+	if err := os.MkdirAll(filepath.Dir(*dbPath), 0o700); err != nil {
+		fmt.Fprintln(stderr, "server enrol-token:", err)
+		return 1
+	}
+	ctx := context.Background()
+	store, err := server.OpenStore(ctx, *dbPath)
+	if err != nil {
+		fmt.Fprintln(stderr, "server enrol-token:", err)
+		return 1
+	}
+	defer store.Close()
+	token, err := store.IssueEnrolmentToken(ctx, daemon, *lifetime)
+	if err != nil {
+		fmt.Fprintln(stderr, "server enrol-token:", err)
+		return 1
+	}
+	fmt.Fprintf(stderr, "The enrolment token for daemon %s follows; it works once, for %s, on a server started with -ca-key. Start the daemon with -enrol-token, -server and -ca, without -cert and -key.\n", daemon, *lifetime)
 	fmt.Fprintln(stdout, token)
 	return 0
 }

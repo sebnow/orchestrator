@@ -236,6 +236,15 @@ var migrations = [...]string{
 		budget_daemon = (SELECT t.daemon_id FROM tasks t WHERE t.id = events.task_id)
 	WHERE kind = 'quota_observed';
 	CREATE INDEX events_by_budget ON events (kind, budget_harness, budget_account, budget_daemon);`,
+	// Version 24 keeps the enrolment tokens not yet used: the SHA-256 of
+	// each one's secret, the daemon it enrols, which need not have been
+	// seen, and when it expires, in Unix seconds
+	// (docs/adr/2026-10-10-vps-provisioning.md).
+	`CREATE TABLE enrolment_tokens (
+		secret_sha256 TEXT PRIMARY KEY,
+		daemon_id TEXT NOT NULL,
+		expires_at INTEGER NOT NULL
+	) STRICT;`,
 }
 
 // schemaVersion is the version this server migrates databases to. A

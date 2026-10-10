@@ -24,13 +24,21 @@ type tlsTestServer struct {
 
 func startTLSTestServer(t *testing.T) tlsTestServer {
 	t.Helper()
+	return startTLSTestServerWith(t, Options{})
+}
+
+// startTLSTestServerWith is startTLSTestServer with options, and with
+// its CA as the one daemons enrol with.
+func startTLSTestServerWith(t *testing.T, options Options) tlsTestServer {
+	t.Helper()
 	store, _ := openTestStore(t)
 	logs := &syncBuffer{}
-	srv := New(store, slog.New(slog.NewTextHandler(logs, nil)), Options{DefaultModel: testDefaultModel})
 	ca, err := pki.NewCA()
 	if err != nil {
 		t.Fatal(err)
 	}
+	options.DefaultModel, options.CA = testDefaultModel, ca
+	srv := New(store, slog.New(slog.NewTextHandler(logs, nil)), options)
 	issued, err := ca.IssueServer([]string{"127.0.0.1"})
 	if err != nil {
 		t.Fatal(err)

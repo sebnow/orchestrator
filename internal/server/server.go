@@ -41,6 +41,9 @@ type Server struct {
 	defaultModel string
 	// insecure serves every route without authentication.
 	insecure bool
+	// ca issues the certificates of daemons that enrol; nil turns
+	// enrolment off.
+	ca *pki.CA
 
 	mu      sync.Mutex
 	streams map[protocol.DaemonID]*commandStream
@@ -88,6 +91,9 @@ type Options struct {
 	// (docs/adr/2026-10-08-permission-policy.md); nil hands every request
 	// to the owner, as AskOwner does.
 	Permissions Policy
+	// CA, with its key, issues the certificates of daemons that enrol
+	// (docs/adr/2026-10-10-vps-provisioning.md); nil turns enrolment off.
+	CA *pki.CA
 }
 
 // New returns a server over store. The server hears of store's changes
@@ -98,6 +104,7 @@ func New(store *Store, log *slog.Logger, options Options) *Server {
 		log:          log,
 		defaultModel: options.DefaultModel,
 		insecure:     options.Insecure,
+		ca:           options.CA,
 		mux:          http.NewServeMux(),
 		streams:      make(map[protocol.DaemonID]*commandStream),
 		ended:        make(chan struct{}),
@@ -125,6 +132,7 @@ func New(store *Store, log *slog.Logger, options Options) *Server {
 	s.mux.Handle("POST /v1/daemons/{daemon}/tasks/{task}/requests", s.daemonOnly(s.postAgentRequest))
 	s.mux.Handle("PUT /v1/daemons/{daemon}/facts", s.daemonOnly(s.putFacts))
 	s.mux.Handle("POST /v1/daemons/{daemon}/login-events", s.daemonOnly(s.postLoginEvent))
+	s.mux.HandleFunc("POST "+protocol.EnrolPath, s.postEnrol)
 	s.mux.Handle("GET /static/", http.StripPrefix("/static/", http.FileServerFS(component.Static)))
 	s.routeLogin()
 

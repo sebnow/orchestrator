@@ -212,3 +212,52 @@ func TestGivenExistingFilesWhenWritingThenTheyAreKept(t *testing.T) {
 		t.Error("the CA key was replaced")
 	}
 }
+
+func TestGivenDaemonRequestWhenSignedThenTheCertificateIsTheDaemonsForItsOwnKeyAndConnects(t *testing.T) {
+	ca := newCA(t)
+	keyPEM, csrPEM, err := pki.NewDaemonRequest("vps-ab12")
+	if err != nil {
+		t.Fatal(err)
+	}
+	certPEM, err := ca.SignDaemon("vps-ab12", csrPEM)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cert := certificate(t)(pki.Issued{CertPEM: certPEM, KeyPEM: keyPEM}, nil)
+	if len(cert.Leaf.ExtKeyUsage) != 1 || cert.Leaf.ExtKeyUsage[0] != x509.ExtKeyUsageClientAuth {
+		t.Errorf("extended key usage = %v, want client auth only", cert.Leaf.ExtKeyUsage)
+	}
+	if validity := cert.Leaf.NotAfter.Sub(time.Now()); validity < 364*24*time.Hour || validity > 366*24*time.Hour {
+		t.Errorf("valid for %s more, want about a year", validity)
+	}
+	got, err := get(t, pki.ClientConfig(cert, ca.Pool()), serveTLS(t, ca))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != "vps-ab12" {
+		t.Errorf("server saw %q, want vps-ab12", got)
+	}
+}
+
+func TestGivenRequestForAnotherDaemonWhenSigningThenItIsRefused(t *testing.T) {
+	_, csrPEM, err := pki.NewDaemonRequest("laptop")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := newCA(t).SignDaemon("vps-ab12", csrPEM); !errors.Is(err, pki.ErrInvalidRequest) {
+		t.Errorf("err = %v, want ErrInvalidRequest", err)
+	}
+}
+
+func TestGivenMalformedRequestWhenSigningThenItIsRefused(t *testing.T) {
+	ca := newCA(t)
+	for name, csrPEM := range map[string][]byte{
+		"empty":       nil,
+		"certificate": ca.CertPEM(),
+		"garbage":     []byte("-----BEGIN CERTIFICATE REQUEST-----\nAAAA\n-----END CERTIFICATE REQUEST-----\n"),
+	} {
+		if _, err := ca.SignDaemon("vps-ab12", csrPEM); !errors.Is(err, pki.ErrInvalidRequest) {
+			t.Errorf("%s: err = %v, want ErrInvalidRequest", name, err)
+		}
+	}
+}

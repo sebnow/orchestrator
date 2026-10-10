@@ -60,6 +60,7 @@ var subcommands = map[string]func(args []string, stdout, stderr io.Writer) int{
 	"issue-server-cert": issueServerCert,
 	"issue-daemon-cert": issueDaemonCert,
 	"issue-owner-token": issueOwnerToken,
+	"enrol-token":       enrolToken,
 }
 
 func run(args []string, stdout, stderr io.Writer) int {
@@ -95,6 +96,7 @@ func serve(args []string, stderr io.Writer) int {
 	tlsCert := flags.String("tls-cert", "", "the server's certificate, from issue-server-cert (required unless -insecure-loopback)")
 	tlsKey := flags.String("tls-key", "", "the server certificate's key (required unless -insecure-loopback)")
 	clientCA := flags.String("client-ca", "", "the CA certificate that daemons' certificates are verified against, from init-ca (required unless -insecure-loopback)")
+	caKey := flags.String("ca-key", "", "the key of the -client-ca certificate, from init-ca; turns on enrolment, where daemons get their certificates from the server")
 	insecure := flags.Bool("insecure-loopback", false, "serve plain HTTP without authentication, for development; -listen must be a loopback IP address")
 	fillerThreshold := flags.Float64("filler-threshold", server.DefaultSchedulePolicy.FillerThreshold, "five-hour window utilization, from 0 to 1, below which filler tasks run")
 	lowThreshold := flags.Float64("low-threshold", server.DefaultSchedulePolicy.LowThreshold, "five-hour window utilization, from 0 to 1, below which low-priority tasks run")
@@ -126,9 +128,10 @@ func serve(args []string, stderr io.Writer) int {
 		}
 	}
 	var tlsConfig *tls.Config
+	var ca *pki.CA
 	if *insecure {
-		if *tlsCert != "" || *tlsKey != "" || *clientCA != "" {
-			fmt.Fprintln(stderr, "server: -insecure-loopback serves plain HTTP; drop -tls-cert, -tls-key and -client-ca")
+		if *tlsCert != "" || *tlsKey != "" || *clientCA != "" || *caKey != "" {
+			fmt.Fprintln(stderr, "server: -insecure-loopback serves plain HTTP; drop -tls-cert, -tls-key, -client-ca and -ca-key")
 			return 2
 		}
 		if err := requireLoopback(*listen); err != nil {
@@ -151,6 +154,12 @@ func serve(args []string, stderr io.Writer) int {
 			return 1
 		}
 		tlsConfig = pki.ServerConfig(cert, clientCAs)
+		if *caKey != "" {
+			if ca, err = pki.LoadCAFiles(*clientCA, *caKey); err != nil {
+				fmt.Fprintln(stderr, "server: -ca-key:", err)
+				return 1
+			}
+		}
 	}
 	log := slog.New(slog.NewTextHandler(stderr, nil))
 
@@ -184,6 +193,7 @@ func serve(args []string, stderr io.Writer) int {
 		Schedule: server.SchedulePolicy{FillerThreshold: *fillerThreshold, LowThreshold: *lowThreshold,
 			DaemonTimeout: *daemonTimeout},
 		Permissions: policy,
+		CA:          ca,
 	})
 	httpServer := &http.Server{
 		Handler:   srv,

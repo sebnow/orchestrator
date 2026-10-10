@@ -76,11 +76,16 @@ func NewCA() (*CA, error) {
 
 // LoadCA reads the CA that Write wrote to dir.
 func LoadCA(dir string) (*CA, error) {
-	certPEM, err := os.ReadFile(filepath.Join(dir, "ca.crt"))
+	return LoadCAFiles(filepath.Join(dir, "ca.crt"), filepath.Join(dir, "ca.key"))
+}
+
+// LoadCAFiles reads the CA from its certificate and key files.
+func LoadCAFiles(certPath, keyPath string) (*CA, error) {
+	certPEM, err := os.ReadFile(certPath)
 	if err != nil {
 		return nil, fmt.Errorf("load CA: %w", err)
 	}
-	keyPEM, err := os.ReadFile(filepath.Join(dir, "ca.key"))
+	keyPEM, err := os.ReadFile(keyPath)
 	if err != nil {
 		return nil, fmt.Errorf("load CA: %w", err)
 	}
@@ -90,7 +95,7 @@ func LoadCA(dir string) (*CA, error) {
 	}
 	key, ok := pair.PrivateKey.(*ecdsa.PrivateKey)
 	if !ok || !pair.Leaf.IsCA {
-		return nil, fmt.Errorf("load CA: %s does not hold a CA certificate with an ECDSA key", dir)
+		return nil, fmt.Errorf("load CA: %s does not hold a CA certificate with an ECDSA key", certPath)
 	}
 	return &CA{cert: pair.Leaf, key: key}, nil
 }
@@ -124,10 +129,69 @@ func (ca *CA) IssueDaemon(daemon protocol.DaemonID) (Issued, error) {
 	if _, err := protocol.ParseDaemonID(string(daemon)); err != nil {
 		return Issued{}, err
 	}
-	return ca.issue(&x509.Certificate{
+	return ca.issue(daemonTemplate(daemon))
+}
+
+func daemonTemplate(daemon protocol.DaemonID) *x509.Certificate {
+	return &x509.Certificate{
 		Subject:     pkix.Name{CommonName: string(daemon)},
 		ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth},
-	})
+	}
+}
+
+// ErrInvalidRequest reports a certificate signing request the CA refuses
+// to sign: one that does not parse, whose signature does not verify,
+// whose key is not ECDSA P-256, or that names another daemon. Sending it
+// again unchanged gets the same answer.
+var ErrInvalidRequest = errors.New("invalid certificate signing request")
+
+// NewDaemonRequest makes a key for daemon and a certificate signing
+// request for it, both PEM-encoded, for a daemon that enrols rather
+// than being handed a key (docs/adr/2026-10-10-vps-provisioning.md).
+func NewDaemonRequest(daemon protocol.DaemonID) (keyPEM, csrPEM []byte, err error) {
+	if _, err := protocol.ParseDaemonID(string(daemon)); err != nil {
+		return nil, nil, err
+	}
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		return nil, nil, fmt.Errorf("generate key: %w", err)
+	}
+	der, err := x509.CreateCertificateRequest(rand.Reader, &x509.CertificateRequest{
+		Subject: pkix.Name{CommonName: string(daemon)},
+	}, key)
+	if err != nil {
+		return nil, nil, fmt.Errorf("create certificate signing request: %w", err)
+	}
+	if keyPEM, err = encodeKey(key); err != nil {
+		return nil, nil, err
+	}
+	return keyPEM, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE REQUEST", Bytes: der}), nil
+}
+
+// SignDaemon issues daemon its client certificate for the key in csrPEM,
+// a PEM-encoded certificate signing request whose Common Name must be
+// the daemon's id, and returns the certificate PEM-encoded. The
+// certificate is the one IssueDaemon would issue; only the key differs.
+// Everything in the request but its Common Name and key is ignored.
+func (ca *CA) SignDaemon(daemon protocol.DaemonID, csrPEM []byte) ([]byte, error) {
+	block, _ := pem.Decode(csrPEM)
+	if block == nil || block.Type != "CERTIFICATE REQUEST" {
+		return nil, fmt.Errorf("%w: not a PEM CERTIFICATE REQUEST", ErrInvalidRequest)
+	}
+	csr, err := x509.ParseCertificateRequest(block.Bytes)
+	if err != nil {
+		return nil, fmt.Errorf("%w: %v", ErrInvalidRequest, err)
+	}
+	if err := csr.CheckSignature(); err != nil {
+		return nil, fmt.Errorf("%w: %v", ErrInvalidRequest, err)
+	}
+	if key, ok := csr.PublicKey.(*ecdsa.PublicKey); !ok || key.Curve != elliptic.P256() {
+		return nil, fmt.Errorf("%w: the key is not ECDSA P-256", ErrInvalidRequest)
+	}
+	if csr.Subject.CommonName != string(daemon) {
+		return nil, fmt.Errorf("%w: its common name %q is not the daemon's id %q", ErrInvalidRequest, csr.Subject.CommonName, daemon)
+	}
+	return ca.sign(daemonTemplate(daemon), csr.PublicKey)
 }
 
 // IssueServer issues the server's certificate, valid for each of hosts,
@@ -159,6 +223,20 @@ func (ca *CA) issue(template *x509.Certificate) (Issued, error) {
 	if err != nil {
 		return Issued{}, fmt.Errorf("generate key: %w", err)
 	}
+	certPEM, err := ca.sign(template, &key.PublicKey)
+	if err != nil {
+		return Issued{}, err
+	}
+	keyPEM, err := encodeKey(key)
+	if err != nil {
+		return Issued{}, err
+	}
+	return Issued{CertPEM: certPEM, KeyPEM: keyPEM}, nil
+}
+
+// sign signs template, given its subject and use, for key, valid for
+// leafValidity but not beyond the CA, and returns it PEM-encoded.
+func (ca *CA) sign(template *x509.Certificate, key any) ([]byte, error) {
 	now := time.Now()
 	template.NotBefore = now.Add(-backdate)
 	template.NotAfter = now.Add(leafValidity)
@@ -166,15 +244,11 @@ func (ca *CA) issue(template *x509.Certificate) (Issued, error) {
 		template.NotAfter = ca.cert.NotAfter
 	}
 	template.KeyUsage = x509.KeyUsageDigitalSignature
-	der, err := x509.CreateCertificate(rand.Reader, template, ca.cert, &key.PublicKey, ca.key)
+	der, err := x509.CreateCertificate(rand.Reader, template, ca.cert, key, ca.key)
 	if err != nil {
-		return Issued{}, fmt.Errorf("create certificate: %w", err)
+		return nil, fmt.Errorf("create certificate: %w", err)
 	}
-	keyPEM, err := encodeKey(key)
-	if err != nil {
-		return Issued{}, err
-	}
-	return Issued{CertPEM: pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der}), KeyPEM: keyPEM}, nil
+	return pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der}), nil
 }
 
 func encodeKey(key *ecdsa.PrivateKey) ([]byte, error) {
