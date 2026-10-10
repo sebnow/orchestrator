@@ -274,7 +274,11 @@ real_checks() {
 		check "stop: task D's harness exited" wait_for "$D" 'any(.[]; .kind == "harness_exited")' 60
 		echo "# stop to harness_exited event seen: $(since "$t0")s; harness_exited: $(payload "$D" harness_exited | cut -c1-600)"
 		grep "task=$D" "$DAEMON_LOG" | grep -E 'process ended|kill|did not exit' | evidence
-		check "stop: the daemon deleted the stopped task's workspace" wait_until 30 test ! -e "$WS/$D"
+		check "stop: the stopped task's workspace is kept for a follow-up" \
+			sh -c "test -e '$WS/$D' && ! grep -qF 'COMMAND=/usr/bin/rm -rf -- $WS/$D' '$SUDO_LOG'"
+		curl -sf -o /dev/null -X POST "$API/v1/tasks/$D/dismiss"
+		check "dismiss: the daemon deleted the dismissed task's workspace through rm as orch-agent" \
+			wait_until 30 sh -c "! test -e '$WS/$D' && grep -F 'COMMAND=/usr/bin/rm -rf -- $WS/$D' '$SUDO_LOG' | grep -q 'USER=orch-agent'"
 		task_cost "task D" "$D"
 	fi
 
