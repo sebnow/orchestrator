@@ -111,4 +111,6 @@ Living document; revise in place. Decisions live in docs/adr, findings in docs/d
 
 ## Order as of 2026-10-10
 
-recurring work -> project memory -> credentials when needed.
+the move of the server to a VPS (README: Running the server on a VPS),
+then the live Hetzner and bucket tests; recurring work -> project memory
+-> credentials when needed.

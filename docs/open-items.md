@@ -143,6 +143,3 @@ Known gaps and UNVERIFIED behaviours, from the workers' reports, grouped by area
 - The harness-user record still says the checklist has not been run.
 - The work-delivery record says `branch_pushed` reports each push while
   it also reports uncommitted-only turns.
-- The push-identity record's ssh wording predates the host-key change
-  (the daemon's ssh now checks host keys against the server's keys); a
-  record for the change is pending.

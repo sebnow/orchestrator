@@ -117,6 +117,59 @@ issue the server's and every remaining daemon's certificate from it,
 restart the server and those daemons with the new files, and have
 browsers trust the new `ca.crt`.
 
+### Running the server on a VPS
+
+To run the server itself on a VPS, rather than on a laptop as above:
+
+1. Build the server, and the daemon for provisioning other VPSes, from
+   the repository root:
+
+       go build ./cmd/server
+       GOOS=linux GOARCH=amd64 go build -o DIR/daemon-linux-amd64 ./cmd/daemon
+       GOOS=linux GOARCH=arm64 go build -o DIR/daemon-linux-arm64 ./cmd/daemon
+
+2. On the VPS, create the PKI: `server init-ca -pki-dir DIR` writes
+   `ca.crt` and `ca.key`; `server issue-server-cert -pki-dir DIR -host
+   <dns name> [-host <ip>]` writes `server.crt` and `server.key`, valid
+   for every name daemons and the browser reach the server by. Keep
+   `ca.key` mode 0600; only `-ca-key` reads it.
+3. `server issue-owner-token -db FILE` prints the owner token once. The
+   GUI's `/login` takes it and sets a 30-day session cookie; scripts
+   send it as `Authorization: Bearer <token>`.
+4. Start the server:
+
+       server -listen :8443 -db FILE \
+           -tls-cert DIR/server.crt -tls-key DIR/server.key -client-ca DIR/ca.crt \
+           -ca-key DIR/ca.key -public-url https://<name>:8443 \
+           -daemon-binaries-dir <dir> -hetzner-token-file <0600 file> \
+           [-backup-s3-endpoint … -backup-s3-region … -backup-s3-bucket … \
+            -backup-s3-credentials <0600 file>]
+
+   Open the firewall's listen port to daemons and the browser only;
+   daemons dial out to the server, and nothing dials a daemon.
+5. Three files are secrets, kept in owner-only mode and never in the
+   database: the Hetzner token (`-hetzner-token-file`, or
+   `HETZNER_TOKEN`), the bucket's credentials
+   (`-backup-s3-credentials`), and `ca.key`.
+6. Moving from a laptop server: stop the laptop's server; copy its
+   database file together with its `-wal` and `-shm` files (or back it
+   up and run `server restore` on the VPS instead), and `ca.crt` and
+   `ca.key`. Issue the server certificate again, for the VPS's name.
+   Daemons the laptop server certified keep working, since the CA is
+   unchanged; enrol new machines with `server enrol-token -db FILE -id
+   <daemon>` on the VPS and `daemon -enrol-token <id:secret> -server
+   https://… -ca ca.crt` on each (see [Enrolling a machine by
+   hand](#enrolling-a-machine-by-hand)). The laptop's own daemon, kept
+   running, joins the same way, or with `issue-daemon-cert`; without
+   `-insecure-loopback`, its `-server` must now be the public URL, not
+   loopback.
+7. After the move, set each daemon's `models` label, paste the other
+   forges' host keys on `/settings` (GitHub's are fetched on its own,
+   see [Forge host keys](#forge-host-keys)), log each daemon in from its
+   page (see [Logging a daemon in](#logging-a-daemon-in)), and provision
+   further VPSes from the dashboard (see [Provisioning a
+   VPS](#provisioning-a-vps)).
+
 ### On one machine, for development
 
 Run the server and the daemon in separate terminals:
