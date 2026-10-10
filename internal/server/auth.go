@@ -201,10 +201,10 @@ func (s *Server) isOwner(r *http.Request) (bool, error) {
 	return s.store.isSession(r.Context(), cookie.Value, time.Now())
 }
 
-func (s *Server) routeLogin() {
-	s.mux.HandleFunc("GET /login", s.getLogin)
-	s.mux.HandleFunc("POST /login", s.postLogin)
-	s.mux.HandleFunc("POST /logout", s.postLogout)
+func (s *Server) routeLogin(mux *http.ServeMux) {
+	mux.HandleFunc("GET /login", s.getLogin)
+	mux.HandleFunc("POST /login", s.postLogin)
+	mux.HandleFunc("POST /logout", s.postLogout)
 }
 
 func (s *Server) getLogin(w http.ResponseWriter, r *http.Request) {

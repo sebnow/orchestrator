@@ -33,9 +33,11 @@ const (
 type Server struct {
 	store *Store
 	log   *slog.Logger
-	mux   *http.ServeMux
-	// handler is mux behind the cross-origin check.
-	handler http.Handler
+	// handler serves every route, the daemons' and the owner's, behind
+	// the cross-origin check; ownerHandler serves the owner's alone,
+	// behind it too, and daemonHandler the daemons' alone
+	// (docs/adr/2026-10-10-gui-access.md).
+	handler, ownerHandler, daemonHandler http.Handler
 	// defaultModel is the model of a task created without one.
 	defaultModel string
 	// insecure serves every route without authentication.
@@ -131,7 +133,6 @@ func New(store *Store, log *slog.Logger, options Options) *Server {
 		insecure:     options.Insecure,
 		ca:           options.CA,
 		provisioning: options.Provisioning,
-		mux:          http.NewServeMux(),
 		streams:      make(map[protocol.DaemonID]*commandStream),
 		ended:        make(chan struct{}),
 		watchers:     watchers{byTask: make(map[protocol.TaskID]map[chan struct{}]struct{}), byDaemon: make(map[protocol.DaemonID]map[chan struct{}]struct{})},
@@ -159,20 +160,21 @@ func New(store *Store, log *slog.Logger, options Options) *Server {
 	store.permissions = options.Permissions
 	s.sched = &scheduler{store: store, log: log, policy: policy, now: now, connected: s.connectedDaemons, upSince: now(), wake: make(chan struct{}, 1)}
 	store.published = s.storeChanged
-	s.mux.Handle("POST /v1/daemons/{daemon}/events", s.daemonOnly(s.postEvents))
-	s.mux.Handle("GET /v1/daemons/{daemon}/acks", s.daemonOnly(s.getAcks))
-	s.mux.Handle("GET /v1/daemons/{daemon}/commands", s.daemonOnly(s.streamCommands))
-	s.mux.Handle("POST /v1/daemons/{daemon}/tasks/{task}/requests", s.daemonOnly(s.postAgentRequest))
-	s.mux.Handle("PUT /v1/daemons/{daemon}/facts", s.daemonOnly(s.putFacts))
-	s.mux.Handle("POST /v1/daemons/{daemon}/login-events", s.daemonOnly(s.postLoginEvent))
-	s.mux.HandleFunc("POST "+protocol.EnrolPath, s.postEnrol)
-	if options.DaemonBinariesDir != "" {
-		s.routeDaemonBinaries(options.DaemonBinariesDir)
+	routeDaemons := func(mux *http.ServeMux) {
+		mux.Handle("POST /v1/daemons/{daemon}/events", s.daemonOnly(s.postEvents))
+		mux.Handle("GET /v1/daemons/{daemon}/acks", s.daemonOnly(s.getAcks))
+		mux.Handle("GET /v1/daemons/{daemon}/commands", s.daemonOnly(s.streamCommands))
+		mux.Handle("POST /v1/daemons/{daemon}/tasks/{task}/requests", s.daemonOnly(s.postAgentRequest))
+		mux.Handle("PUT /v1/daemons/{daemon}/facts", s.daemonOnly(s.putFacts))
+		mux.Handle("POST /v1/daemons/{daemon}/login-events", s.daemonOnly(s.postLoginEvent))
+		mux.HandleFunc("POST "+protocol.EnrolPath, s.postEnrol)
+		if options.DaemonBinariesDir != "" {
+			routeDaemonBinaries(mux, options.DaemonBinariesDir)
+		}
 	}
-	s.mux.Handle("GET /static/", http.StripPrefix("/static/", http.FileServerFS(component.Static)))
-	s.routeLogin()
 
-	// Every other route is the owner's.
+	// Every route but the daemons', the static files and the login form
+	// is the owner's.
 	owner := http.NewServeMux()
 	owner.HandleFunc("GET /v1/tasks", s.getTasks)
 	owner.HandleFunc("POST /v1/tasks", s.postTask)
@@ -204,14 +206,41 @@ func New(store *Store, log *slog.Logger, options Options) *Server {
 	owner.HandleFunc("PUT /v1/projects/{project}", s.putProject)
 	owner.HandleFunc("DELETE /v1/projects/{project}", s.deleteProjectRequest)
 	s.routeGUI(owner)
-	s.mux.Handle("/", s.ownerOnly(owner))
+	ownersOnly := s.ownerOnly(owner)
+	routeOwners := func(mux *http.ServeMux) {
+		mux.Handle("GET /static/", http.StripPrefix("/static/", http.FileServerFS(component.Static)))
+		s.routeLogin(mux)
+		mux.Handle("/", ownersOnly)
+	}
 
+	all, owners, daemons := http.NewServeMux(), http.NewServeMux(), http.NewServeMux()
+	routeDaemons(all)
+	routeOwners(all)
+	routeOwners(owners)
+	routeDaemons(daemons)
 	// Rejects requests other than GET, HEAD and OPTIONS that a browser
 	// sent from another origin, so that a page on another site cannot
 	// submit the owner's forms, the login form included. Daemons and
 	// scripts send neither Sec-Fetch-Site nor Origin, and pass.
-	s.handler = http.NewCrossOriginProtection().Handler(s.mux)
+	s.handler = http.NewCrossOriginProtection().Handler(all)
+	s.ownerHandler = http.NewCrossOriginProtection().Handler(owners)
+	s.daemonHandler = daemons
 	return s
+}
+
+// OwnerHandler serves the owner's routes alone: the owner API, the GUI,
+// its static files and the login form. A daemon's route there is not
+// found, or refused as the owner's routes refuse a request without the
+// owner's token.
+func (s *Server) OwnerHandler() http.Handler {
+	return s.ownerHandler
+}
+
+// DaemonHandler serves the daemons' routes alone: the daemon API,
+// enrolment and the daemon binaries. Any other route there is not
+// found.
+func (s *Server) DaemonHandler() http.Handler {
+	return s.daemonHandler
 }
 
 // daemonOnly serves next only to the daemon the path names. Unless the
