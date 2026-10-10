@@ -121,7 +121,7 @@ write_files:
       echo "$sum  /usr/local/bin/claude.download" | sha256sum -c -
       install -m 0755 /usr/local/bin/claude.download /usr/local/bin/claude
       rm /usr/local/bin/claude.download
-      curl -fsSL -o /usr/local/bin/orchestrator-daemon.download {{quote .DaemonURL}}
+      curl -fsSL{{if .DaemonFromServer}} --cacert /etc/orchestrator/ca.crt{{end}} -o /usr/local/bin/orchestrator-daemon.download {{quote .DaemonURL}}
       install -m 0755 /usr/local/bin/orchestrator-daemon.download /usr/local/bin/orchestrator-daemon
       rm /usr/local/bin/orchestrator-daemon.download
       install -d -o orchestrator -g orchestrator -m 0700 /var/lib/orchestrator
@@ -136,7 +136,10 @@ runcmd:
 // renderUserData renders the user data of a VPS from input. The server
 // URL and token go on a systemd command line unquoted, so they may hold
 // no space, quote, backslash, '%' or '$'; the daemon URL is quoted for
-// the shell, so it may hold none of '"', '\\', '$' and '`'.
+// the shell, so it may hold none of '"', '\\', '$' and '`'. A daemon URL
+// under the server URL is the server's, whose certificate the CA
+// issued, so the VPS verifies it against the CA rather than the system's
+// roots.
 func renderUserData(input userDataInput) (string, error) {
 	if strings.ContainsAny(input.ServerURL, " \t\r\n\"'\\%$") || strings.ContainsAny(input.Token.String(), " \t\r\n\"'\\%$") {
 		return "", fmt.Errorf("render user data: the server URL or token holds a character a systemd command line would change")
@@ -147,10 +150,12 @@ func renderUserData(input userDataInput) (string, error) {
 	var buf bytes.Buffer
 	err := userDataTemplate.Execute(&buf, struct {
 		userDataInput
-		Token         string
-		CA            string
-		ClaudeVersion string
-	}{userDataInput: input, Token: input.Token.String(), CA: string(input.CA), ClaudeVersion: claudeVersion})
+		Token            string
+		CA               string
+		ClaudeVersion    string
+		DaemonFromServer bool
+	}{userDataInput: input, Token: input.Token.String(), CA: string(input.CA), ClaudeVersion: claudeVersion,
+		DaemonFromServer: strings.HasPrefix(input.DaemonURL, strings.TrimSuffix(input.ServerURL, "/")+"/")})
 	if err != nil {
 		return "", fmt.Errorf("render user data: %w", err)
 	}

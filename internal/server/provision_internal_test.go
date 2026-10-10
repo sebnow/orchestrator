@@ -360,6 +360,23 @@ func TestGivenUserDataWhenRenderedThenItHoldsTheTokenTheCAAndTheHarnessUserSetUp
 	}
 }
 
+func TestGivenDaemonURLOnTheServerWhenRenderingUserDataThenTheDownloadIsVerifiedAgainstTheCA(t *testing.T) {
+	token := protocol.EnrolmentToken{Daemon: "vps-abcdefgh", Secret: newSecret()}
+	for url, want := range map[string]string{
+		"https://orchestrator.example:8443/daemon/linux-amd64": `curl -fsSL --cacert /etc/orchestrator/ca.crt -o /usr/local/bin/orchestrator-daemon.download "https://orchestrator.example:8443/daemon/linux-amd64"`,
+		"https://downloads.example/daemon-linux-amd64":         `curl -fsSL -o /usr/local/bin/orchestrator-daemon.download "https://downloads.example/daemon-linux-amd64"`,
+		"https://orchestrator.example:8443.evil/daemon":        `curl -fsSL -o /usr/local/bin/orchestrator-daemon.download "https://orchestrator.example:8443.evil/daemon"`,
+	} {
+		data, err := renderUserData(userDataInput{Token: token, CA: []byte("CA"), ServerURL: "https://orchestrator.example:8443", DaemonURL: url})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(data, want+"\n") {
+			t.Errorf("%s: user data lacks %q:\n%s", url, want, data)
+		}
+	}
+}
+
 func TestGivenServerTypeWhenRenderingTheDaemonBinaryURLThenArchIsItsArchitecture(t *testing.T) {
 	for _, tt := range []struct {
 		serverType, template, want string

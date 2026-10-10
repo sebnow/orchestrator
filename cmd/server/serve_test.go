@@ -196,3 +196,26 @@ func TestGivenBucketCredentialsOthersCanReadWhenStartingThenTheServerRefusesWith
 		t.Errorf("status %d, stderr %q; want 1 naming -backup-s3-credentials without the secret", status, stderr)
 	}
 }
+
+func TestGivenDaemonBinariesDirWhenNoDaemonBinaryURLIsGivenThenItDefaultsToTheServersOwnRoute(t *testing.T) {
+	for _, tc := range []struct {
+		daemonURL, publicURL, dir, want string
+	}{
+		{"", "https://orchestrator.example:8443", "/srv/binaries", "https://orchestrator.example:8443/daemon/linux-{arch}"},
+		{"", "https://orchestrator.example:8443/", "/srv/binaries", "https://orchestrator.example:8443/daemon/linux-{arch}"},
+		{"https://downloads.example/daemon-{arch}", "https://orchestrator.example:8443", "/srv/binaries", "https://downloads.example/daemon-{arch}"},
+		{"", "https://orchestrator.example:8443", "", ""},
+		{"", "", "/srv/binaries", ""},
+	} {
+		if got := defaultDaemonBinaryURL(tc.daemonURL, tc.publicURL, tc.dir); got != tc.want {
+			t.Errorf("defaultDaemonBinaryURL(%q, %q, %q) = %q, want %q", tc.daemonURL, tc.publicURL, tc.dir, got, tc.want)
+		}
+	}
+}
+
+func TestGivenDaemonBinariesDirThatIsNotADirectoryWhenStartingThenTheServerRefuses(t *testing.T) {
+	status, _, stderr := runCommand("-insecure-loopback", "-db", filepath.Join(t.TempDir(), "server.db"), "-daemon-binaries-dir", filepath.Join(t.TempDir(), "missing"))
+	if status != 2 || !strings.Contains(stderr, "-daemon-binaries-dir") {
+		t.Errorf("status %d, stderr %q; want 2 naming the flag", status, stderr)
+	}
+}

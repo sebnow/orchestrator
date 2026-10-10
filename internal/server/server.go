@@ -115,6 +115,11 @@ type Options struct {
 	// fetches none. GitHubClient fetches them; nil uses a new client.
 	GitHubMeta   string
 	GitHubClient *http.Client
+	// DaemonBinariesDir, when set, holds daemon-linux-amd64 and
+	// daemon-linux-arm64, which the server serves to anyone at
+	// DaemonBinaryPath followed by the architecture, so that a VPS it
+	// provisions can download the daemon from it.
+	DaemonBinariesDir string
 }
 
 // New returns a server over store. The server hears of store's changes
@@ -162,6 +167,9 @@ func New(store *Store, log *slog.Logger, options Options) *Server {
 	s.mux.Handle("PUT /v1/daemons/{daemon}/facts", s.daemonOnly(s.putFacts))
 	s.mux.Handle("POST /v1/daemons/{daemon}/login-events", s.daemonOnly(s.postLoginEvent))
 	s.mux.HandleFunc("POST "+protocol.EnrolPath, s.postEnrol)
+	if options.DaemonBinariesDir != "" {
+		s.routeDaemonBinaries(options.DaemonBinariesDir)
+	}
 	s.mux.Handle("GET /static/", http.StripPrefix("/static/", http.FileServerFS(component.Static)))
 	s.routeLogin()
 

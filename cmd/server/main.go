@@ -104,11 +104,12 @@ func serve(args []string, stderr io.Writer) int {
 	fillerThreshold := flags.Float64("filler-threshold", server.DefaultSchedulePolicy.FillerThreshold, "five-hour window utilization, from 0 to 1, below which filler tasks run")
 	lowThreshold := flags.Float64("low-threshold", server.DefaultSchedulePolicy.LowThreshold, "five-hour window utilization, from 0 to 1, below which low-priority tasks run")
 	daemonTimeout := flags.Duration("daemon-timeout", server.DefaultDaemonTimeout, "how long a daemon may go unseen, with no command stream open, before it is lost and its tasks move to other daemons; at least 1m")
-	hetznerTokenFile := flags.String("hetzner-token-file", "", "file holding the Hetzner Cloud API token, readable by its owner only; without it, the HETZNER_TOKEN environment variable. Either turns provisioning on, which needs -ca-key, -public-url and -daemon-binary-url")
+	hetznerTokenFile := flags.String("hetzner-token-file", "", "file holding the Hetzner Cloud API token, readable by its owner only; without it, the HETZNER_TOKEN environment variable. Either turns provisioning on, which needs -ca-key, -public-url, and -daemon-binary-url or -daemon-binaries-dir")
 	hetznerServerType := flags.String("hetzner-server-type", "cx23", "Hetzner server type of a provisioned VPS")
 	hetznerLocation := flags.String("hetzner-location", "fsn1", "Hetzner location of a provisioned VPS")
 	hetznerImage := flags.String("hetzner-image", "debian-13", "Hetzner image of a provisioned VPS")
-	daemonBinaryURL := flags.String("daemon-binary-url", "", "https URL a provisioned VPS downloads the daemon binary from; the literal {arch} is replaced with amd64 or arm64 according to the server type")
+	daemonBinaryURL := flags.String("daemon-binary-url", "", "https URL a provisioned VPS downloads the daemon binary from; the literal {arch} is replaced with amd64 or arm64 according to the server type (default: the server's own route under -public-url when -daemon-binaries-dir is set)")
+	daemonBinariesDir := flags.String("daemon-binaries-dir", "", "directory holding daemon-linux-amd64 and daemon-linux-arm64, which the server serves without authentication at /daemon/linux-amd64 and /daemon/linux-arm64")
 	publicURL := flags.String("public-url", "", "the server's https URL as a provisioned VPS's daemon dials it, such as https://orchestrator.example:8443")
 	backupDir := flags.String("backup-dir", "", "directory the database's backups are written to, created when missing; backups/ beside -db by default")
 	backupEvery := flags.Duration("backup-every", 6*time.Hour, "time between scheduled backups of the database; 0 backs up only on demand")
@@ -187,7 +188,13 @@ func serve(args []string, stderr io.Writer) int {
 			}
 		}
 	}
-	provisioning, status := provisioningFrom(*hetznerTokenFile, ca, *publicURL, *daemonBinaryURL, stderr)
+	if *daemonBinariesDir != "" {
+		if info, err := os.Stat(*daemonBinariesDir); err != nil || !info.IsDir() {
+			fmt.Fprintf(stderr, "server: -daemon-binaries-dir %s is not a directory\n", *daemonBinariesDir)
+			return 2
+		}
+	}
+	provisioning, status := provisioningFrom(*hetznerTokenFile, ca, *publicURL, defaultDaemonBinaryURL(*daemonBinaryURL, *publicURL, *daemonBinariesDir), stderr)
 	if status != 0 {
 		return status
 	}
@@ -195,6 +202,9 @@ func serve(args []string, stderr io.Writer) int {
 		provisioning.ServerType, provisioning.Location, provisioning.Image = *hetznerServerType, *hetznerLocation, *hetznerImage
 	}
 	log := slog.New(slog.NewTextHandler(stderr, nil))
+	for _, file := range missingDaemonBinaries(*daemonBinariesDir) {
+		log.Warn("no daemon binary to serve; its route answers 404", "file", file)
+	}
 
 	if err := os.MkdirAll(filepath.Dir(*dbPath), 0o700); err != nil {
 		log.Error("create database directory", "error", err)
@@ -230,7 +240,8 @@ func serve(args []string, stderr io.Writer) int {
 		Provisioning: provisioning,
 		Backups: &server.BackupPolicy{Dir: *backupDir, Every: *backupEvery, Keep: *backupKeep,
 			Bucket: backupBucket, Prefix: *backupPrefix},
-		GitHubMeta: *githubMeta,
+		GitHubMeta:        *githubMeta,
+		DaemonBinariesDir: *daemonBinariesDir,
 	})
 	httpServer := &http.Server{
 		Handler:   srv,
@@ -324,6 +335,32 @@ func requireLoopback(listen string) error {
 		return fmt.Errorf("-listen %s is not on a loopback IP address such as 127.0.0.1 or [::1]", listen)
 	}
 	return nil
+}
+
+// defaultDaemonBinaryURL is daemonURL, or, when that is empty and the
+// server serves the daemon binaries from binariesDir, their route under
+// publicURL, with {arch} for the architecture.
+func defaultDaemonBinaryURL(daemonURL, publicURL, binariesDir string) string {
+	if daemonURL != "" || binariesDir == "" || publicURL == "" {
+		return daemonURL
+	}
+	return strings.TrimSuffix(publicURL, "/") + server.DaemonBinaryPath + "{arch}"
+}
+
+// missingDaemonBinaries lists the daemon binaries that dir, when set,
+// lacks.
+func missingDaemonBinaries(dir string) []string {
+	if dir == "" {
+		return nil
+	}
+	var missing []string
+	for _, arch := range []string{"amd64", "arm64"} {
+		file := filepath.Join(dir, "daemon-linux-"+arch)
+		if _, err := os.Stat(file); err != nil {
+			missing = append(missing, file)
+		}
+	}
+	return missing
 }
 
 // provisioningFrom returns how the server provisions daemon VPSes: nil

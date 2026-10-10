@@ -421,13 +421,27 @@ to start if the file is readable by anyone but its owner (use mode
   can issue each new daemon its certificate.
 - `-public-url`: the server's `https://` URL as the VPS dials it. The
   server's certificate must name this URL's host.
-- `-daemon-binary-url`: an `https://` URL the VPS downloads the
-  `daemon` binary from, built for Linux and the server type's
-  architecture, such as with `GOOS=linux GOARCH=amd64 go build
-  ./cmd/daemon` for `cx` server types (x86) or `GOARCH=arm64` for `cax`
-  types. The literal `{arch}` in the URL is replaced with `amd64` or
-  `arm64` according to the server type being provisioned, so one URL
-  template can serve both.
+- the `daemon` binary, built for Linux and the server type's
+  architecture: `amd64` for `cx` server types (x86), `arm64` for `cax`
+  types. Either the server serves it or another host does:
+  - `-daemon-binaries-dir DIR`: the server serves the files
+    `daemon-linux-amd64` and `daemon-linux-arm64` in DIR at
+    `GET /daemon/linux-amd64` and `GET /daemon/linux-arm64`, without
+    authentication, since a new VPS has no certificate yet and the
+    binary is public. `-daemon-binary-url` then defaults to
+    `<public-url>/daemon/linux-{arch}`, and the VPS verifies the
+    download against `ca.crt`. The server logs a warning at start for
+    each file DIR lacks, whose route answers 404. Build both into DIR
+    from the repository root:
+
+        GOOS=linux GOARCH=amd64 go build -o DIR/daemon-linux-amd64 ./cmd/daemon
+        GOOS=linux GOARCH=arm64 go build -o DIR/daemon-linux-arm64 ./cmd/daemon
+
+  - `-daemon-binary-url`: an `https://` URL the VPS downloads the
+    binary from, verified against the system's certificate authorities
+    unless it is under `-public-url`. The literal `{arch}` in the URL
+    is replaced with `amd64` or `arm64` according to the server type
+    being provisioned, so one URL template can serve both.
 
 `-hetzner-server-type`, `-hetzner-location` and `-hetzner-image` choose
 the VPS, `cx23` in `fsn1` with `debian-13` by default. For example:
@@ -439,7 +453,7 @@ the VPS, `cx23` in `fsn1` with `debian-13` by default. For example:
         -ca-key ~/.local/state/orchestrator/pki/ca.key \
         -hetzner-token-file ~/.config/orchestrator/hetzner-token \
         -public-url https://orchestrator.example:8443 \
-        -daemon-binary-url https://downloads.example/daemon-linux-amd64
+        -daemon-binaries-dir ~/.local/state/orchestrator/binaries
 
 The dashboard's VPSes section has a "Provision a VPS" button, and
 scripts call `POST /v1/provision`. Either way the server:
@@ -468,7 +482,8 @@ On its first boot, cloud-init gives the VPS:
   checked against the release manifest's checksum, as
   `test/harness-user/Dockerfile` installs it;
 - the daemon at `/usr/local/bin/orchestrator-daemon`, from
-  `-daemon-binary-url`;
+  `-daemon-binary-url`, with `curl --cacert /etc/orchestrator/ca.crt`
+  when the URL is under `-public-url`;
 - the CA certificate at `/etc/orchestrator/ca.crt`;
 - the sudoers rule of [Running the harness as another
   user](#running-the-harness-as-another-user), with `/usr/bin/git` and
@@ -908,14 +923,20 @@ Server flags:
 - `-hetzner-token-file`: the file holding the Hetzner Cloud API token,
   readable by its owner only; without it, the environment variable
   `HETZNER_TOKEN`. Either turns provisioning on, which then needs
-  `-ca-key`, `-public-url` and `-daemon-binary-url`.
+  `-ca-key`, `-public-url`, and `-daemon-binary-url` or
+  `-daemon-binaries-dir`.
 - `-hetzner-server-type`, `-hetzner-location`, `-hetzner-image`: the
   server type, location and image of a provisioned VPS, `cx23`, `fsn1`
   and `debian-13` by default.
 - `-public-url`: the server's `https://` URL as a provisioned VPS's
   daemon dials it.
 - `-daemon-binary-url`: the `https://` URL a provisioned VPS downloads
-  the daemon binary from.
+  the daemon binary from; with `-daemon-binaries-dir` and
+  `-public-url`, `<public-url>/daemon/linux-{arch}` by default.
+- `-daemon-binaries-dir`: a directory holding `daemon-linux-amd64` and
+  `daemon-linux-arm64`, which the server serves without authentication
+  at `/daemon/linux-amd64` and `/daemon/linux-arm64` (see [Provisioning
+  a VPS](#provisioning-a-vps)).
 - `-github-meta-url`: GitHub's meta API, `https://api.github.com/meta`
   by default, from which the server fetches `github.com`'s ssh host
   keys (see [Forge host keys](#forge-host-keys)); empty fetches none.
