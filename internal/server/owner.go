@@ -125,14 +125,17 @@ var errInvalidTask = errors.New("invalid task")
 // returns its queued start. What the request and its agent leave out is
 // the defaults: normal priority, not filler, the server's model, and
 // both gateway tools. The system prompt is composed from the server's
-// instructions, the agent's system prompt and the request's.
+// instructions, the agent's system prompt, the project's instructions and
+// the request's.
 func (s *Server) startTask(ctx context.Context, request taskRequest) (queuedTurn, error) {
 	start := request.Start
+	var instructions string
 	if request.Project != "" {
 		p, err := s.store.project(ctx, request.Project)
 		if err != nil {
 			return queuedTurn{}, err
 		}
+		instructions = p.Instructions
 		if request.Agent == "" {
 			request.Agent = p.DefaultAgent
 		}
@@ -176,7 +179,7 @@ func (s *Server) startTask(ctx context.Context, request taskRequest) (queuedTurn
 	if err != nil {
 		return queuedTurn{}, err
 	}
-	start.SystemPrompt = systemPrompt(nil, start.Tools, spawnable(start.Tools, agents), agentPrompt, start.SystemPrompt)
+	start.SystemPrompt = systemPrompt(promptParts{Tools: start.Tools, Agents: agents, Agent: agentPrompt, Project: instructions, Task: start.SystemPrompt})
 	purpose := oneLine(request.Purpose)
 	start.Prompt = withPurpose(purpose, start.Prompt)
 	placed := placementBound

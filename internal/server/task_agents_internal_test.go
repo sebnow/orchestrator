@@ -49,9 +49,9 @@ func TestGivenAgentWhenTheOwnerStartsATaskAsItThenTheTaskTakesWhatTheRequestLeav
 		detail.Start.PauseLimits != *seniorAgent.PauseLimits || !reflect.DeepEqual(detail.Start.Tools, []string{protocol.ToolSpawnTask}) {
 		t.Errorf("task = %+v, start %+v; want the senior agent's defaults", detail.taskSummary, detail.Start)
 	}
-	wantPrompt := systemPrompt(nil, []string{protocol.ToolSpawnTask},
-		"You can start a child task as one of these agents by giving its name as spawn_task's agent:\n- junior: Does what it is told.\n- senior: Owns the design.",
-		"You are the senior engineer.", "Be brief.")
+	wantPrompt := toolsPrompt([]string{protocol.ToolSpawnTask}) + "\n\n" +
+		"You can start a child task as one of these agents by giving its name as spawn_task's agent:\n- junior: Does what it is told.\n- senior: Owns the design.\n\n" +
+		"You are the senior engineer.\n\nBe brief."
 	if detail.Start.SystemPrompt != wantPrompt {
 		t.Errorf("system prompt = %q\nwant %q", detail.Start.SystemPrompt, wantPrompt)
 	}
@@ -129,7 +129,7 @@ func TestGivenRunningParentWhenItSpawnsAChildAsAnAgentThenTheChildHasTheAgentsSe
 		child.Start.Tools == nil || len(child.Start.Tools) != 0 {
 		t.Errorf("child = %+v, start %+v; want the reviewer's settings and the parent's pause limits", child.taskSummary, child.Start)
 	}
-	want := systemPrompt(fromTask("parent"), []string{}, "You review.")
+	want := systemPrompt(promptParts{Parent: fromTask("parent"), Tools: []string{}, Agent: "You review."})
 	if child.Start.SystemPrompt != want {
 		t.Errorf("system prompt = %q\nwant %q", child.Start.SystemPrompt, want)
 	}

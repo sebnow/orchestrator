@@ -225,3 +225,25 @@ func TestGivenProjectWhenATaskInItAsksForAnotherRepositoryOrTheProjectIsUnknownT
 		t.Errorf("task in a project without a repository = %+v, start %+v; want its own repository", detail.taskSummary, detail.Start)
 	}
 }
+
+func TestGivenProjectWithInstructionsWhenATaskInItStartsOrSpawnsThenBothSystemPromptsHaveTheInstructionsAfterTheAgentsPrompt(t *testing.T) {
+	srv := startTestServer(t)
+	doRequest(t, http.MethodGet, srv.url+"/v1/daemons/laptop/acks", "")
+	createAgents(t, srv.store, Agent{Name: "brain", SystemPrompt: "You coordinate.", Tools: []string{protocol.ToolSpawnTask}, Priority: PriorityNormal, Requires: Labels{}})
+	p := createProject(t, srv.store, Project{Name: "tools", Instructions: "Scope commits by path.", DefaultAgent: "brain"})
+
+	turn := postForTurn(t, srv.url+"/v1/tasks", `{"daemon_id":"laptop","project":"`+p.ID+`","prompt":"Plan.","system_prompt":"Be brief."}`, http.StatusCreated)
+	admitTurns(t, srv.store)
+	(&lifecycle{t: t, store: srv.store, task: turn.TaskID}).event(protocol.KindHarnessStarted, started, TaskRunning)
+	if _, err := srv.store.spawnTask(t.Context(), "laptop", turn.TaskID, "child", protocol.Spawn{Purpose: "Help.", Prompt: "Help."}); err != nil {
+		t.Fatal(err)
+	}
+
+	root, child := readTask(t, srv.store, turn.TaskID), readTask(t, srv.store, "child")
+	if !strings.HasSuffix(root.Start.SystemPrompt, "\n\nYou coordinate.\n\nScope commits by path.\n\nBe brief.") {
+		t.Errorf("root system prompt = %q; want the agent's, then the project's, then the request's", root.Start.SystemPrompt)
+	}
+	if child.Project != p.ID || !strings.HasSuffix(child.Start.SystemPrompt, "\n\nScope commits by path.") {
+		t.Errorf("child = %+v, system prompt %q; want the project and its instructions", child.taskSummary, child.Start.SystemPrompt)
+	}
+}

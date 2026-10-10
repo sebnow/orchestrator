@@ -297,7 +297,7 @@ func TestGivenRunningParentWhenItSpawnsThenTheChildStartsOnItsDaemonWithItsSetti
 	}
 	want := parentStart
 	want.Prompt = "Say PEAR."
-	want.SystemPrompt = systemPrompt(fromTask("parent"), nil)
+	want.SystemPrompt = systemPrompt(promptParts{Parent: fromTask("parent")})
 	if child.ParentID == nil || *child.ParentID != "parent" || child.DaemonID != "laptop" || child.State != TaskPending || !reflect.DeepEqual(child.Start, want) {
 		t.Errorf("child = %+v, start %+v; want a pending child of parent on laptop with %+v", child.taskSummary, child.Start, want)
 	}

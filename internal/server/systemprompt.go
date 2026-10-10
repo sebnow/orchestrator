@@ -47,26 +47,46 @@ func toolsPrompt(tools []string) string {
 	return intro + "You have no tool that reaches other tasks, and no other messaging or agent tool reaches them either."
 }
 
+// promptParts are what a task's system prompt is composed of. Parent is
+// the task's parent, nil for the owner's task; Tools the gateway tools it
+// is allowed, as protocol.StartTask.Tools has them; Agents those it may be
+// told of, which it is when Tools let it spawn. Agent is its agent
+// definition's system prompt, Project its project's instructions and
+// Task what the owner's request adds, each empty for none.
+type promptParts struct {
+	Parent  *protocol.TaskID
+	Tools   []string
+	Agents  []Agent
+	Agent   string
+	Project string
+	Task    string
+}
+
 // systemPrompt composes a task's system prompt
-// (docs/adr/2026-10-07-task-interface.md): how to reach other tasks with
-// the gateway tools the task is allowed; for a child, its parent and its
-// duty to report; then each of extra that is not empty, such as what the
-// owner gave.
-func systemPrompt(parent *protocol.TaskID, tools []string, extra ...string) string {
-	parts := []string{toolsPrompt(tools)}
-	if parent != nil {
+// (docs/adr/2026-10-07-task-interface.md,
+// docs/adr/2026-10-09-agents-and-placement.md,
+// docs/adr/2026-10-10-projects-and-lineage.md): how to reach other tasks
+// with the gateway tools the task is allowed; for a child, its parent and
+// its duty to report; the agents it may spawn; then the agent's system
+// prompt, the project's instructions and the request's, so that the
+// agent's role comes before the project's conventions. Empty parts are
+// left out.
+func systemPrompt(p promptParts) string {
+	parts := []string{toolsPrompt(p.Tools)}
+	if p.Parent != nil {
+		parent, tools := *p.Parent, p.Tools
 		report := fmt.Sprintf("You are a child task of task %[1]s, which waits for your result. "+
 			"When you have it, either send it to task %[1]s with the orchestrator's send_message tool, "+
 			"or end your turn with it as your final reply: if you end a turn without having sent a message during it, "+
-			"your final reply is handed back to task %[1]s as your report.", *parent)
+			"your final reply is handed back to task %[1]s as your report.", parent)
 		if tools != nil && !slices.Contains(tools, protocol.ToolSendMessage) {
 			report = fmt.Sprintf("You are a child task of task %[1]s, which waits for your result. "+
 				"When you end your turn, your final reply is handed back to task %[1]s as your report, "+
-				"so end it with your result.", *parent)
+				"so end it with your result.", parent)
 		}
 		parts = append(parts, report)
 	}
-	for _, part := range extra {
+	for _, part := range []string{spawnable(p.Tools, p.Agents), p.Agent, p.Project, p.Task} {
 		if part != "" {
 			parts = append(parts, part)
 		}

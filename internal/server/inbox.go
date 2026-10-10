@@ -126,7 +126,15 @@ func (s *Store) spawnTask(ctx context.Context, daemon protocol.DaemonID, parent,
 	if err != nil {
 		return queuedTurn{}, err
 	}
-	start.SystemPrompt = systemPrompt(&parent, start.Tools, spawnable(start.Tools, agents), agentPrompt)
+	var instructions string
+	if project != "" {
+		p, err := queryProject(ctx, tx, project)
+		if err != nil {
+			return queuedTurn{}, err
+		}
+		instructions = p.Instructions
+	}
+	start.SystemPrompt = systemPrompt(promptParts{Parent: &parent, Tools: start.Tools, Agents: agents, Agent: agentPrompt, Project: instructions})
 	if repo.Valid {
 		start.Workspace = &protocol.Workspace{Repo: repo.String, Ref: ref.String}
 	}
