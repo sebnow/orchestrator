@@ -157,6 +157,13 @@ var migrations = [...]string{
 	ALTER TABLE tasks ADD COLUMN project TEXT REFERENCES projects (id);
 	CREATE INDEX tasks_by_project ON tasks (project);
 	ALTER TABLE tasks ADD COLUMN purpose TEXT NOT NULL DEFAULT '';`,
+	// Version 16 keeps whether a stop issued to a task's process waits
+	// for that process's exit, which leaves the task stopped. Until now
+	// any stop ever issued did, since a stopped task never ran again.
+	`ALTER TABLE tasks ADD COLUMN stop_pending INTEGER NOT NULL DEFAULT 0 CHECK (stop_pending IN (0, 1));
+	UPDATE tasks SET stop_pending = 1
+	WHERE state IN ('pending', 'running', 'awaiting_permission', 'pausing')
+		AND EXISTS (SELECT 1 FROM commands c WHERE c.task_id = tasks.id AND c.kind = 'stop');`,
 }
 
 // schemaVersion is the version this server migrates databases to. A
@@ -166,8 +173,12 @@ const schemaVersion = 1 + len(migrations)
 var (
 	errUnknownDaemon = errors.New("unknown daemon")
 	errUnknownTask   = errors.New("unknown task")
-	// errTaskEnded reports a command for a task that is stopped or failed.
+	// errTaskEnded reports a command other than a follow-up for a task
+	// that is stopped or failed, which has no process to take it.
 	errTaskEnded = errors.New("task has ended")
+	// errDismissed reports a command or follow-up for a task the owner
+	// dismissed, which takes none.
+	errDismissed = errors.New("task was dismissed")
 	// errNotEnded reports a dismissal of a task that is not stopped or
 	// failed.
 	errNotEnded = errors.New("task has not ended")
@@ -446,13 +457,7 @@ func (s *Store) appendEvents(ctx context.Context, daemon protocol.DaemonID, even
 			if event.Kind == protocol.KindPermissionRequested {
 				requests = append(requests, event)
 			}
-			stopped := false
-			if event.Kind == protocol.KindHarnessExited {
-				if stopped, err = stopIssued(ctx, tx, event.TaskID); err != nil {
-					return nil, nil, err
-				}
-			}
-			progresses[event.TaskID].seeEvent(event, stopped)
+			progresses[event.TaskID].seeEvent(event)
 			continue
 		}
 		var kind, harnessName, harnessVersion, eventTime, payload string
@@ -479,7 +484,7 @@ func (s *Store) appendEvents(ctx context.Context, daemon protocol.DaemonID, even
 	fx := effects{reschedule: len(events) > 0}
 	for _, task := range tasks {
 		state := progresses[task].State
-		if !before[task].Terminal() && state.Terminal() {
+		if !before[task].Ended() && state.Ended() {
 			if err := taskEnded(ctx, tx, task, state, &fx); err != nil {
 				return nil, nil, err
 			}
@@ -575,9 +580,13 @@ func nullable(s string) any {
 //
 // A task whose start has not been admitted is unknown to every daemon:
 // a stop ends it without sending anything, and returns a command with no
-// ID, and any other command is refused with errNotStarted. A pause to a
-// yielded task takes the scheduler's hold over for the owner, so the
-// scheduler's resume is dropped.
+// ID, and any other command is refused with errNotStarted. A stopped or
+// failed task takes only a follow-up, which is queued as a turn, so any
+// command is refused with errTaskEnded, and a dismissed task's with
+// errDismissed. A pause to a yielded task takes the scheduler's hold
+// over for the owner, so the scheduler's resume is dropped. A stop drops
+// the task's waiting turns other than deliveries, which would otherwise
+// start it again; a follow-up queued after the stop stays.
 func (s *Store) issueCommand(ctx context.Context, task protocol.TaskID, kind protocol.CommandKind, payload json.RawMessage) (protocol.Command, error) {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -592,11 +601,22 @@ func (s *Store) issueCommand(ctx context.Context, task protocol.TaskID, kind pro
 	if err != nil {
 		return protocol.Command{}, fmt.Errorf("look up task %q: %w", task, err)
 	}
+	if err := requireNotDismissed(ctx, tx, task); err != nil {
+		return protocol.Command{}, err
+	}
 	p, err := loadProgress(ctx, tx, task)
 	if err != nil {
 		return protocol.Command{}, err
 	}
+	if p.State.Ended() {
+		return protocol.Command{}, fmt.Errorf("%w: %q is %s", errTaskEnded, task, p.State)
+	}
 	var fx effects
+	if kind == protocol.CommandStop {
+		if err := dropWaitingTurns(ctx, tx, task, &fx); err != nil {
+			return protocol.Command{}, err
+		}
+	}
 	var command protocol.Command
 	switch {
 	case p.State == TaskQueued && kind == protocol.CommandStop:
@@ -630,17 +650,18 @@ func (s *Store) issueCommand(ctx context.Context, task protocol.TaskID, kind pro
 }
 
 // insertCommand appends a command to the log and folds it into the task's
-// progress. A task that is stopped or failed takes no command. When the
-// command ends the task, its parent and the senders of the messages left
-// undelivered in its inbox are told.
+// progress. A dismissed task takes no command. When the command stops
+// the task, its parent and the senders of the messages left undelivered
+// in its inbox are told.
 func insertCommand(ctx context.Context, tx *sql.Tx, daemon protocol.DaemonID, task protocol.TaskID, kind protocol.CommandKind, payload json.RawMessage, fx *effects) (protocol.Command, error) {
+	if err := requireNotDismissed(ctx, tx, task); err != nil {
+		return protocol.Command{}, err
+	}
 	p, err := loadProgress(ctx, tx, task)
 	if err != nil {
 		return protocol.Command{}, err
 	}
-	if p.State.Terminal() {
-		return protocol.Command{}, fmt.Errorf("%w: %q is %s", errTaskEnded, task, p.State)
-	}
+	before := p.State
 	command := protocol.Command{DaemonID: daemon, TaskID: task, Kind: kind, Time: time.Now().UTC(), Payload: payload}
 	var stored any
 	if payload != nil {
@@ -660,7 +681,7 @@ func insertCommand(ctx context.Context, tx *sql.Tx, daemon protocol.DaemonID, ta
 	}
 	fx.issued = append(fx.issued, command)
 	fx.reschedule = true
-	if p.State.Terminal() {
+	if !before.Ended() && p.State.Ended() {
 		if err := taskEnded(ctx, tx, task, p.State, fx); err != nil {
 			return protocol.Command{}, err
 		}
@@ -740,7 +761,10 @@ type history struct {
 	commands []protocol.Command
 	// byPolicy holds the ids of the commands the permission policy issued.
 	byPolicy map[uint64]bool
-	messages []storedMessage
+	// ownerStarts holds the ids of the start_task commands that admitted a
+	// start the owner queued: a task's first, or a retry.
+	ownerStarts map[uint64]bool
+	messages    []storedMessage
 }
 
 // storedMessage is a message as the messages table keeps it. Exactly one
@@ -790,9 +814,11 @@ func (s *Store) taskHistory(ctx context.Context, task protocol.TaskID) (history,
 		return history{}, err
 	}
 	rows, err := tx.QueryContext(ctx, `
-		SELECT id, daemon_id, task_id, kind, time, payload, by_policy FROM commands
-		WHERE task_id = ?1 OR kind = ?2 AND task_id IN (SELECT id FROM tasks WHERE parent_id = ?1)
-		ORDER BY id`, string(task), string(protocol.CommandStartTask))
+		SELECT c.id, c.daemon_id, c.task_id, c.kind, c.time, c.payload, c.by_policy,
+			EXISTS (SELECT 1 FROM turns u WHERE u.admitted_command_id = c.id AND u.origin = ?3)
+		FROM commands c
+		WHERE c.task_id = ?1 OR c.kind = ?2 AND c.task_id IN (SELECT id FROM tasks WHERE parent_id = ?1)
+		ORDER BY c.id`, string(task), string(protocol.CommandStartTask), string(originOwner))
 	if err != nil {
 		return history{}, fmt.Errorf("read commands of task %q: %w", task, err)
 	}
@@ -801,9 +827,15 @@ func (s *Store) taskHistory(ctx context.Context, task protocol.TaskID) (history,
 		var id int64
 		var daemon, owner, kind, issued string
 		var payload []byte
-		var byPolicy bool
-		if err := rows.Scan(&id, &daemon, &owner, &kind, &issued, &payload, &byPolicy); err != nil {
+		var byPolicy, byOwner bool
+		if err := rows.Scan(&id, &daemon, &owner, &kind, &issued, &payload, &byPolicy, &byOwner); err != nil {
 			return history{}, fmt.Errorf("read commands of task %q: %w", task, err)
+		}
+		if byOwner && kind == string(protocol.CommandStartTask) {
+			if h.ownerStarts == nil {
+				h.ownerStarts = make(map[uint64]bool)
+			}
+			h.ownerStarts[uint64(id)] = true
 		}
 		if byPolicy {
 			if h.byPolicy == nil {
@@ -1021,4 +1053,36 @@ func (s *Store) daemons(ctx context.Context) ([]daemonSummary, error) {
 		return nil, fmt.Errorf("read daemons: %w", err)
 	}
 	return daemons, nil
+}
+
+// requireNotDismissed returns errDismissed when the owner has dismissed
+// task.
+func requireNotDismissed(ctx context.Context, tx *sql.Tx, task protocol.TaskID) error {
+	var dismissed bool
+	err := tx.QueryRowContext(ctx, `SELECT dismissed_at IS NOT NULL FROM tasks WHERE id = ?`, string(task)).Scan(&dismissed)
+	if errors.Is(err, sql.ErrNoRows) {
+		return fmt.Errorf("%w: %q", errUnknownTask, task)
+	}
+	if err != nil {
+		return fmt.Errorf("look up task %q: %w", task, err)
+	}
+	if dismissed {
+		return fmt.Errorf("%w: %q", errDismissed, task)
+	}
+	return nil
+}
+
+// dropWaitingTurns removes task's turns that wait for the scheduler, but
+// for deliveries, which wait for the task to finish.
+func dropWaitingTurns(ctx context.Context, tx *sql.Tx, task protocol.TaskID, fx *effects) error {
+	result, err := tx.ExecContext(ctx, `DELETE FROM turns WHERE task_id = ? AND kind <> ? AND admitted_command_id IS NULL`,
+		string(task), string(turnDeliver))
+	if err != nil {
+		return fmt.Errorf("drop the waiting turns of task %q: %w", task, err)
+	}
+	if n, _ := result.RowsAffected(); n > 0 {
+		fx.changed = append(fx.changed, task)
+		fx.reschedule = true
+	}
+	return nil
 }

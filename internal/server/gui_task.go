@@ -121,19 +121,23 @@ func guiTreeNode(node taskNode) component.TreeNode {
 
 // header is the task's header with the controls its state offers. A task
 // between processes can be resumed or stopped, but has nothing running to
-// pause or interrupt. An ended task can be dismissed once.
+// pause or interrupt. A stopped or failed task can be resumed, or retried
+// when it has no session to resume, until it is dismissed, which it can
+// be once.
 func (v taskView) header() html.Node {
 	state := v.detail.State
-	live := !state.Terminal() && !state.Idle()
+	live := !state.Idle()
+	dismissed := v.detail.DismissedAt != nil
 	var dismiss html.Node
-	if state.Terminal() && v.detail.DismissedAt == nil {
+	if state.Ended() && !dismissed {
 		dismiss = component.DismissForm(v.id(), "/tasks/"+v.id())
 	}
 	return component.TaskHeader(v.task(), html.Fragment(component.Controls(v.id(), component.ControlSet{
 		Pause:     state == TaskRunning || state == TaskAwaitingPermission,
-		Resume:    state == TaskPaused || state == TaskYielded,
+		Resume:    state == TaskPaused || state == TaskYielded || state.Ended() && v.detail.HasSession && !dismissed,
+		Retry:     state.Ended() && !v.detail.HasSession && !dismissed,
 		Interrupt: live,
-		Stop:      !state.Terminal(),
+		Stop:      !state.Ended(),
 	}), dismiss))
 }
 
@@ -193,7 +197,7 @@ func (s *Server) postDismissForm(w http.ResponseWriter, r *http.Request) {
 // transcript decides, not the state, which reads pausing while a request
 // waits; a task with no process can no longer take an answer.
 func (v taskView) pending() []transcript.PermissionRequested {
-	if v.detail.State.Terminal() || v.detail.State.Idle() {
+	if v.detail.State.Idle() {
 		return nil
 	}
 	return pendingPermissions(v.entries)
@@ -203,20 +207,25 @@ func (v taskView) permission(problem string) html.Node {
 	return component.PermissionPrompt(v.id(), v.pending(), problem)
 }
 
-// promptClosed says why the task takes no follow-up prompt now, or
-// returns "" when it takes one.
-func (v taskView) promptClosed() string {
+// followUp is what the task's follow-up form offers: nothing while the
+// task is pausing or once it is dismissed, and otherwise a prompt, which
+// starts afresh a stopped or failed task that has no session to continue.
+func (v taskView) followUp() component.FollowUp {
+	var offer component.FollowUp
 	switch {
+	case v.detail.DismissedAt != nil:
+		offer.Closed = "The task was dismissed; it takes no more prompts."
 	case v.detail.State == TaskPausing:
-		return "The task is pausing; prompts open again once it has paused."
-	case v.detail.State.Terminal():
-		return "The task has ended; it takes no more prompts."
+		offer.Closed = "The task is pausing; prompts open again once it has paused."
+	case v.detail.State.Ended() && !v.detail.HasSession:
+		offer.Notes = append(offer.Notes, "The task's harness never started, so it has no session to continue. "+
+			"A prompt starts it afresh, on whichever daemon fits, with its first prompt followed by yours; Retry starts it with its first prompt alone.")
 	}
-	return ""
+	return offer
 }
 
 func (v taskView) promptForm(text, problem string) html.Node {
-	return component.PromptForm(v.id(), v.promptClosed(), text, problem)
+	return component.PromptForm(v.id(), v.followUp(), text, problem)
 }
 
 // refusal is a task form the server refused: what the owner entered and
@@ -315,8 +324,10 @@ func (s *Server) postCommandForm(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, err.Error(), http.StatusNotFound)
 			return
 		}
-		if errors.Is(err, errTaskEnded) {
-			refused.problem = "The task has ended; it takes no more commands."
+		if errors.Is(err, errDismissed) {
+			refused.problem = "The task was dismissed; it takes no more commands."
+		} else if errors.Is(err, errTaskEnded) {
+			refused.problem = "The task has no process; send a follow-up prompt, Resume or Retry instead."
 		} else if errors.Is(err, errNotStarted) {
 			refused.problem = "The task has not started yet; it can only be stopped."
 		} else if err != nil {

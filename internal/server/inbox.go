@@ -40,7 +40,7 @@ func requireRunning(ctx context.Context, tx *sql.Tx, daemon protocol.DaemonID, t
 	if err != nil {
 		return err
 	}
-	if p.State.Terminal() || p.State.Idle() {
+	if p.State.Idle() {
 		return fmt.Errorf("%w: %q is %s", errNotRunning, task, p.State)
 	}
 	return nil
@@ -226,7 +226,7 @@ func (s *Store) sendMessage(ctx context.Context, daemon protocol.DaemonID, from 
 	if err != nil {
 		return false, err
 	}
-	if recipient.State.Terminal() {
+	if recipient.State.Ended() {
 		return false, fmt.Errorf("%w: task %q has ended as %s and takes no messages", errRefused, send.To, recipient.State)
 	}
 	if err := insertMessage(ctx, tx, &from, nil, send.To, send.Text); err != nil {
@@ -338,7 +338,7 @@ func notify(ctx context.Context, tx *sql.Tx, recipient, about protocol.TaskID, t
 	if err != nil {
 		return err
 	}
-	if p.State.Terminal() {
+	if p.State.Ended() {
 		return nil
 	}
 	if err := insertMessage(ctx, tx, nil, &about, recipient, text); err != nil {

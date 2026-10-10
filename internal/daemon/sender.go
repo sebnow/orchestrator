@@ -182,6 +182,13 @@ func (s *sender) run(ctx context.Context, drain <-chan struct{}) {
 // the server could not be reached or answered with a server error.
 func (s *sender) pass(ctx context.Context) error {
 	s.mu.Lock()
+	// A task forgotten since the last pass, because the server moved it
+	// or the owner dismissed it, has nothing left to send.
+	for task := range s.outboxes {
+		if !s.state.known(task) {
+			delete(s.outboxes, task)
+		}
+	}
 	for task := range s.told {
 		// A task the state does not know has been forgotten, or was
 		// never accepted.
@@ -227,7 +234,7 @@ func (s *sender) setAcked(task protocol.TaskID, ob *outbox, held uint64) {
 		return
 	}
 	ob.acked = held
-	if err := s.state.recordAcked(task, held); err != nil {
+	if err := s.state.recordAckedIfKnown(task, held); err != nil {
 		// The watermark only saves resending; the server ignores
 		// duplicates.
 		s.log.Error("record acknowledged events", "task", task, "error", err)

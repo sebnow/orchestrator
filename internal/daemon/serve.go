@@ -274,8 +274,22 @@ func Serve(ctx context.Context, cfg Config) error {
 // saved as known together with the command id before anything else
 // happens, so that a restart neither runs the command again nor forgets
 // the task.
+//
+// A start for a task the daemon ended for good, because its start failed,
+// is the owner's retry: once the server holds every event of the failed
+// start, the daemon forgets it and takes the new start. Until then it
+// returns an error, so that the stream ends and the command is sent
+// again; sending the old events after the new start's would number them
+// as the new start's.
 func (s *service) accept(command protocol.Command) error {
 	task := command.TaskID
+	if rec, ok := s.state.record(task); ok && rec.Ended && !rec.Running {
+		if rec.Acked < rec.Seq {
+			return fmt.Errorf("start_task for task %s, whose failed start the server does not hold yet", task)
+		}
+		s.log.Info("start_task for a task whose start failed here; starting it afresh", "command", command.ID, "task", task)
+		s.forget(task)
+	}
 	if _, err := os.Stat(JournalPath(s.cfg.StateDir, task)); s.state.known(task) || err == nil {
 		s.log.Warn("start_task for a task this daemon has already run; skipped", "command", command.ID, "task", task)
 		s.recordApplied(command.ID)
@@ -434,14 +448,12 @@ func (s *service) cutShortByInterrupt(task protocol.TaskID) func(string, protoco
 }
 
 // processEnded records the end of task's process t: the harness session
-// and the seq to resume from, whether it was paused, and whether the task
-// has ended for good, because it was stopped or the harness failed
-// without the daemon cutting its turn short. The journal is released to
-// the sender. A task that has ended for good has its workspace
-// deleted.
+// and the seq to resume from, and whether it was paused. The journal is
+// released to the sender. A task stays resumable however its process
+// ended, stopped or failed included, so that the owner can follow it up
+// in its session and workspace until dismissing it.
 func (s *service) processEnded(task protocol.TaskID, t *Task, stopped bool) {
 	st := t.State()
-	clean := st.Exit != nil && st.Exit.ExitCode == 0 && st.Exit.Error == ""
 	err := s.state.closeJournal(task, func(rec *taskRecord) {
 		rec.Seq = t.lastSeq()
 		if st.SessionID != "" {
@@ -452,7 +464,6 @@ func (s *service) processEnded(task protocol.TaskID, t *Task, stopped bool) {
 		if rec.Paused {
 			rec.StopNote = st.StopNote
 		}
-		rec.Ended = rec.Ended || stopped || !clean && !st.CutShort
 		rec.CutShort = st.CutShort
 		rec.Interrupted = st.CutShort && (st.Exit.Error == interruptError || st.Exit.Error == interruptNoSessionError)
 		rec.Harness = nil
@@ -510,7 +521,7 @@ func (s *service) startTask(command protocol.Command) *Task {
 		SystemPrompt: start.SystemPrompt,
 		Pause:        limits,
 		Tools:        start.Tools,
-	})
+	}, true)
 }
 
 // resume starts a new process of task that continues its harness session
@@ -518,22 +529,32 @@ func (s *service) startTask(command protocol.Command) *Task {
 // empty, with the daemon's words for resuming the task. A task with no
 // recorded session starts a new one with its first prompt, followed by
 // followUp (docs/adr/2026-10-08-restart-recovery.md). A task that cannot
-// be resumed gets a harness_exited saying why, which ends it for good.
+// be resumed, because its start failed or it ended for good before
+// stopped and failed tasks could be followed up, gets a harness_exited
+// with exitNoSession, which tells the server to start it afresh next.
+// A task the daemon has forgotten cannot be told anything.
 func (s *service) resume(task protocol.TaskID, followUp string) (*Task, error) {
 	if s.stopping.Err() != nil {
 		return nil, errors.New("the daemon is shutting down")
 	}
 	rec, ok := s.state.record(task)
-	if !ok || rec.Ended {
-		return nil, errors.New("the task has ended")
+	if !ok {
+		return nil, errors.New("the daemon has forgotten the task")
+	}
+	if !rec.resumable() {
+		j, err := s.openTaskJournal(task)
+		if err != nil {
+			return nil, err
+		}
+		s.log.Warn("task cannot be resumed", "task", task, "error", exitNoSession)
+		j.appendControl(protocol.KindHarnessExited, protocol.HarnessExited{ExitCode: -1, Error: exitNoSession})
+		j.close()
+		s.journalEnded(task, j)
+		return nil, errors.New(exitNoSession)
 	}
 	j, err := s.openTaskJournal(task)
 	if err != nil {
 		return nil, err
-	}
-	if !rec.resumable() {
-		s.failStart(task, j, errors.New("no harness session to resume"))
-		return nil, errors.New("no harness session to resume")
 	}
 	prompt := followUp
 	switch {
@@ -555,7 +576,7 @@ func (s *service) resume(task protocol.TaskID, followUp string) (*Task, error) {
 		Pause:        rec.Settings.limits(),
 		Session:      rec.Session,
 		Tools:        rec.Settings.Tools,
-	})
+	}, false)
 	if t == nil {
 		return nil, errors.New("the harness did not start")
 	}
@@ -563,15 +584,21 @@ func (s *service) resume(task protocol.TaskID, followUp string) (*Task, error) {
 }
 
 // startProcess starts a process of task on its open journal j. When the
-// harness does not start the journal ends with harness_exited saying why,
-// the task has ended for good, and startProcess returns nil.
-func (s *service) startProcess(task protocol.TaskID, j *journal, spec TaskSpec) *Task {
+// harness does not start the journal ends with harness_exited saying why
+// and startProcess returns nil. A first start that fails ends the task
+// for good, since the server starts such a task afresh; a later one
+// leaves the task resumable in its session and workspace.
+func (s *service) startProcess(task protocol.TaskID, j *journal, spec TaskSpec, first bool) *Task {
 	// The harness outlives the daemon's context; shutting down stops it
 	// gracefully.
 	t, err := s.daemon.start(context.Background(), j, spec)
 	if t == nil {
 		s.log.Warn("task did not start", "task", task, "error", err)
-		s.journalEnded(task, j)
+		if first {
+			s.journalEnded(task, j)
+		} else {
+			s.journalClosed(task, j)
+		}
 		return nil
 	}
 	if err != nil {
@@ -602,6 +629,18 @@ func (s *service) journalEnded(task protocol.TaskID, j *journal) {
 		s.log.Error("record the end of a task", "task", task, "error", err)
 	}
 	s.discardWorkspace(task)
+	s.sender.notify(task)
+}
+
+// journalClosed records the end of a process of task that did not start,
+// releasing its closed journal j; the task stays resumable.
+func (s *service) journalClosed(task protocol.TaskID, j *journal) {
+	if err := s.state.closeJournal(task, func(rec *taskRecord) {
+		rec.Seq = j.lastSeq()
+		rec.Harness = nil
+	}); err != nil {
+		s.log.Error("record the end of a process", "task", task, "error", err)
+	}
 	s.sender.notify(task)
 }
 
@@ -672,7 +711,8 @@ func (s *service) forget(task protocol.TaskID) {
 }
 
 // discardWorkspace deletes the workspace of task, which has ended for
-// good on this daemon: it was stopped, or failed in the daemon's view.
+// good on this daemon: its first start failed, or it could not be
+// resumed.
 func (s *service) discardWorkspace(task protocol.TaskID) {
 	if err := s.daemon.deleteWorkspace(task); err != nil {
 		s.log.Error("delete the workspace of an ended task", "task", task, "error", err)
@@ -706,3 +746,9 @@ func resolveWorkspaceDir(stateDir, dir string, user runas.User) (string, error) 
 	}
 	return dir, nil
 }
+
+// exitNoSession is the error of the harness_exited a daemon reports when
+// it is asked to continue a task it holds no session or workspace for.
+// internal/server words it the same, and starts such a task afresh on its
+// next follow-up.
+const exitNoSession = "harness could not be started: no harness session to resume"

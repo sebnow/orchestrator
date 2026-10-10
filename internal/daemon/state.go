@@ -50,8 +50,9 @@ type taskRecord struct {
 	// StopNote the agent's note.
 	Paused   bool   `json:"paused,omitempty"`
 	StopNote string `json:"stop_note,omitempty"`
-	// Ended says the task was stopped or failed; it is never resumed and
-	// is forgotten once the server holds all of it.
+	// Ended says the task's first start failed, or it could not be
+	// resumed, so that the server starts it afresh rather than resume it;
+	// it is forgotten once the server holds all of it.
 	Ended bool `json:"ended,omitempty"`
 	// CutShort says the daemon cut the latest process's turn short, by
 	// dying or by shutting down (docs/adr/2026-10-08-shutdown-recovery.md). Its JSON name
@@ -195,6 +196,17 @@ func (s *state) recordStart(id uint64, task protocol.TaskID) error {
 // recordAcked sets the acknowledged seq of task, making it known.
 func (s *state) recordAcked(task protocol.TaskID, seq uint64) error {
 	return s.updateTask(task, func(rec *taskRecord) { rec.Acked = seq })
+}
+
+// recordAckedIfKnown sets the acknowledged seq of task unless the daemon
+// has forgotten it, which an acknowledgement must not undo.
+func (s *state) recordAckedIfKnown(task protocol.TaskID, seq uint64) error {
+	return s.update(func(saved *savedState) {
+		if rec, ok := saved.Tasks[task]; ok {
+			rec.Acked = seq
+			saved.Tasks[task] = rec
+		}
+	})
 }
 
 // updateTask changes the record of task, creating it when missing.

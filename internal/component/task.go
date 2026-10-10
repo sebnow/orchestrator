@@ -302,13 +302,14 @@ func TaskHeader(task Task, controls html.Node) html.Node {
 	)
 }
 
-// ControlSet says which controls a task offers.
+// ControlSet says which controls a task offers. Retry resumes a task that
+// has no session to continue, which starts it afresh.
 type ControlSet struct {
-	Pause, Resume, Interrupt, Stop bool
+	Pause, Resume, Retry, Interrupt, Stop bool
 }
 
-// Controls are the buttons that pause, resume, interrupt or stop a task,
-// those of offered only.
+// Controls are the buttons that pause, resume, retry, interrupt or stop a
+// task, those of offered only.
 func Controls(taskID string, offered ControlSet) html.Node {
 	var buttons []html.Node
 	add := func(on bool, label string, variant Variant, kind protocol.CommandKind) {
@@ -318,6 +319,7 @@ func Controls(taskID string, offered ControlSet) html.Node {
 	}
 	add(offered.Pause, "Pause", VariantPlain, protocol.CommandPause)
 	add(offered.Resume, "Resume", VariantPrimary, protocol.CommandResume)
+	add(offered.Retry, "Retry", VariantPrimary, protocol.CommandResume)
 	add(offered.Interrupt, "Interrupt", VariantDanger, protocol.CommandInterrupt)
 	add(offered.Stop, "Stop", VariantDanger, protocol.CommandStop)
 	if len(buttons) == 0 {
@@ -408,26 +410,37 @@ func PermissionPrompt(taskID string, pending []transcript.PermissionRequested, p
 	return html.Fragment(cards...)
 }
 
-// PromptForm sends the task a follow-up prompt. closed, when set, says why
-// the task takes no prompt now, and disables the form's button.
-func PromptForm(taskID, closed, text, problem string) html.Node {
+// FollowUp is what a task's follow-up form offers as the task stands.
+// Closed, when set, says why the task takes no prompt now. Notes say what
+// sending one will do.
+type FollowUp struct {
+	Closed string
+	Notes  []string
+}
+
+// PromptForm sends the task a follow-up prompt, as offer allows.
+func PromptForm(taskID string, offer FollowUp, text, problem string) html.Node {
 	return Form(commandsURL(taskID), problem,
 		Field(FieldSpec{Kind: FieldHidden, Name: "kind", Value: string(protocol.CommandPrompt)}),
 		Field(FieldSpec{Kind: FieldTextarea, Name: "text", Label: "Follow-up prompt", Value: text, Required: true}),
-		RegionOf(RegionPromptSubmit, PromptSubmit(closed)),
+		RegionOf(RegionPromptSubmit, PromptSubmit(offer)),
 	)
 }
 
-// PromptSubmit is PromptForm's button, disabled with the reason closed
-// when that is set. It is a region of its own so that it can change
-// without losing what the owner has typed.
-func PromptSubmit(closed string) html.Node {
-	if closed != "" {
-		return html.Fragment(
-			html.El("button", attrs("type", "submit", "class", string(VariantPrimary), "disabled", ""), html.Text("Send")),
-			html.El("span", attrs("class", "reason"), html.Text(" "+closed)))
+// PromptSubmit is PromptForm's notes and button, disabled with the reason
+// offer.Closed when that is set. It is a region of its own so that it can
+// change without losing what the owner has typed.
+func PromptSubmit(offer FollowUp) html.Node {
+	notes := make([]html.Node, len(offer.Notes))
+	for idx, note := range offer.Notes {
+		notes[idx] = html.El("p", attrs("class", "notice"), html.Text(note))
 	}
-	return Button("Send", VariantPrimary, "", "")
+	if offer.Closed != "" {
+		return html.Fragment(html.Fragment(notes...),
+			html.El("button", attrs("type", "submit", "class", string(VariantPrimary), "disabled", ""), html.Text("Send")),
+			html.El("span", attrs("class", "reason"), html.Text(" "+offer.Closed)))
+	}
+	return html.Fragment(html.Fragment(notes...), Button("Send", VariantPrimary, "", ""))
 }
 
 // NewTask is what the owner entered to start a task. An empty Agent is

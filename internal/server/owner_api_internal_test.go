@@ -328,7 +328,7 @@ func TestGivenRunningTaskWhenListingAndGettingItThenItsStateActivityAndCostAreSh
 	}
 	requireJSONEqual(t, detail, map[string]any{
 		"id": string(first.TaskID), "daemon_id": "laptop", "state": "running", "model": "haiku", "priority": "normal", "filler": false,
-		"created_at": list[0]["created_at"], "last_activity_at": active.Format(time.RFC3339Nano), "cost_usd": 0.25,
+		"created_at": list[0]["created_at"], "last_activity_at": active.Format(time.RFC3339Nano), "cost_usd": 0.25, "has_session": true,
 		"start": map[string]any{
 			"prompt": "count to three", "system_prompt": systemPrompt(promptParts{Task: "be brief"}),
 			"workspace":    map[string]any{"repo": "https://example.com/o/r.git", "ref": "main"},

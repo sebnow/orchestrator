@@ -201,7 +201,7 @@ func (s *Server) dashboardLists(ctx context.Context, showDismissed bool) (html.N
 			return nil, nil, err
 		}
 		if reason != "" {
-			attention = append(attention, component.Attention{Task: task, Reason: reason, Dismissable: summary.State.Terminal()})
+			attention = append(attention, component.Attention{Task: task, Reason: reason, Dismissable: summary.State.Ended()})
 		}
 	}
 	connected := s.connectedDaemons()

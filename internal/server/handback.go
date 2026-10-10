@@ -34,7 +34,7 @@ func handBack(ctx context.Context, tx *sql.Tx, task protocol.TaskID, fx *effects
 	if err != nil {
 		return err
 	}
-	if p.State.Terminal() {
+	if p.State.Ended() {
 		return nil
 	}
 	text, err := finalReply(ctx, tx, task)

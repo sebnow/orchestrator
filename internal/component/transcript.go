@@ -351,6 +351,11 @@ func transcriptEntry(entry transcript.Entry, nested html.Node) html.Node {
 	case transcript.TaskMoved:
 		label = "Daemon " + string(b.From) + " was lost; the task started afresh on daemon " + string(b.To)
 		body = preformatted(b.Prompt)
+	case transcript.TaskRetried:
+		from, label = "owner", "Owner retried the task, which had no session to continue; it started afresh on daemon "+string(b.On)
+		body = preformatted(b.Prompt)
+	case transcript.TaskDiscarded:
+		from, label = "owner", "Owner dismissed the task; daemon "+string(b.Daemon)+" deletes its workspace"
 	case transcript.Unknown:
 		label = "Unrecognised " + b.RecordKind
 		if b.Type != "" {

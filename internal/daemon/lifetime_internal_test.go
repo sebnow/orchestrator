@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"net/http"
 	"os"
 	"slices"
 	"strings"
@@ -204,7 +205,7 @@ func TestGivenPauseThatSettlesWhenTheOwnerResumesThenANewProcessResumesWithTheSt
 	})
 }
 
-func TestGivenTaskBetweenProcessesWhenTheOwnerStopsItThenItIsForgottenAndAPromptStartsNothing(t *testing.T) {
+func TestGivenTaskBetweenProcessesWhenTheOwnerStopsItThenItKeepsItsSessionAndAPromptResumesIt(t *testing.T) {
 	srv := startServer(t)
 	d := runDaemon(t, srv.url, t.TempDir())
 	task := srv.createTask(t, testDaemon, protocol.StartTask{Prompt: "Do the work.", PauseLimits: testPauseLimits})
@@ -221,14 +222,20 @@ func TestGivenTaskBetweenProcessesWhenTheOwnerStopsItThenItIsForgottenAndAPrompt
 	if last := events[len(events)-1]; string(last.Payload) != `{"exit_code":-1,"error":"stopped with no process running"}` {
 		t.Errorf("events: %s", describe(events))
 	}
-	eventually(t, "the task to be forgotten", func() bool { return !mustLoadState(t, d.stateDir).known(task) })
-	next := srv.createTask(t, testDaemon, protocol.StartTask{Prompt: "Next.", PauseLimits: testPauseLimits})
-	if proc := d.nextProcess(t); !strings.HasSuffix(proc.spec.Workdir, string(next)) {
-		t.Errorf("a harness started in %s, want only the next task's", proc.spec.Workdir)
+	srv.waitForState(t, task, "stopped")
+	if rec, _ := mustLoadState(t, d.stateDir).record(task); !rec.resumable() || rec.Session != "session-1" {
+		t.Errorf("record = %+v, want it resumable in session-1", rec)
+	}
+
+	srv.command(t, task, protocol.CommandPrompt, protocol.Prompt{Text: "Carry on."})
+
+	resumed := d.nextProcess(t)
+	if in := resumed.nextInput(t); in.text != "Carry on." || resumed.spec.Resume != "session-1" || !strings.HasSuffix(resumed.spec.Workdir, string(task)) {
+		t.Errorf("input %+v in spec %+v, want the prompt resuming session-1 in the task's workspace", in, resumed.spec)
 	}
 }
 
-func TestGivenRunningTaskWhenTheOwnerStopsItThenItIsForgottenOnceTheServerHoldsItsExit(t *testing.T) {
+func TestGivenRunningTaskWhenTheOwnerStopsAndDismissesItThenItIsForgottenOnceTheServerHoldsItsExit(t *testing.T) {
 	srv := startServer(t)
 	d := runDaemon(t, srv.url, t.TempDir())
 	task := srv.createTask(t, testDaemon, protocol.StartTask{Prompt: "Do the work.", PauseLimits: testPauseLimits})
@@ -237,13 +244,17 @@ func TestGivenRunningTaskWhenTheOwnerStopsItThenItIsForgottenOnceTheServerHoldsI
 	proc.emit(harness.Output{Line: []byte(`{"type":"system","subtype":"init"}`), SessionID: "session-1"})
 
 	srv.command(t, task, protocol.CommandStop, nil)
+	srv.waitForState(t, task, "stopped")
+	if !mustLoadState(t, d.stateDir).known(task) {
+		t.Fatal("the stopped task was forgotten before its dismissal")
+	}
+	srv.call(t, http.MethodPost, "/v1/tasks/"+string(task)+"/dismiss", nil, nil)
 
-	srv.waitForEvent(t, task, "harness_exited", isKind(protocol.KindHarnessExited))
 	eventually(t, "the task to be forgotten", func() bool { return !mustLoadState(t, d.stateDir).known(task) })
 	eventually(t, "the journal to be deleted", journalGone(t, d.stateDir, task))
 }
 
-func TestGivenTaskWhoseHarnessFailedWhenTheOwnerPromptsThenNoProcessStarts(t *testing.T) {
+func TestGivenTaskWhoseHarnessFailedWhenTheOwnerPromptsThenItsSessionIsResumed(t *testing.T) {
 	srv := startServer(t)
 	d := runDaemon(t, srv.url, t.TempDir())
 	task := srv.createTask(t, testDaemon, protocol.StartTask{Prompt: "Do the work.", PauseLimits: testPauseLimits})
@@ -251,14 +262,33 @@ func TestGivenTaskWhoseHarnessFailedWhenTheOwnerPromptsThenNoProcessStarts(t *te
 	proc.nextInput(t)
 	proc.emit(harness.Output{Line: []byte(`{"type":"system","subtype":"init"}`), SessionID: "session-1"})
 	proc.end(protocol.HarnessExited{ExitCode: 1})
-	srv.waitForEvent(t, task, "harness_exited", isKind(protocol.KindHarnessExited))
-	eventually(t, "the task to be forgotten", func() bool { return !mustLoadState(t, d.stateDir).known(task) })
+	srv.waitForState(t, task, "failed")
 
-	srv.tryCommand(t, task, protocol.CommandPrompt, protocol.Prompt{Text: "Try again."})
+	srv.command(t, task, protocol.CommandPrompt, protocol.Prompt{Text: "Try again."})
 
-	next := srv.createTask(t, testDaemon, protocol.StartTask{Prompt: "Next.", PauseLimits: testPauseLimits})
-	if proc := d.nextProcess(t); !strings.HasSuffix(proc.spec.Workdir, string(next)) {
-		t.Errorf("a harness started in %s, want only the next task's", proc.spec.Workdir)
+	resumed := d.nextProcess(t)
+	if in := resumed.nextInput(t); in.text != "Try again." || resumed.spec.Resume != "session-1" {
+		t.Errorf("input %+v in spec %+v, want the prompt resuming session-1", in, resumed.spec)
+	}
+	srv.waitForState(t, task, "running")
+}
+
+func TestGivenTaskWhoseWorkspaceCouldNotBePreparedWhenRetriedThenTheDaemonStartsItAfresh(t *testing.T) {
+	srv := startServer(t)
+	d := runDaemon(t, srv.url, t.TempDir())
+	task := srv.createTask(t, testDaemon, protocol.StartTask{
+		Prompt: "Do the work.", PauseLimits: testPauseLimits,
+		Workspace: &protocol.Workspace{Repo: "file:///nonexistent/repository.git", Ref: "main"},
+	})
+	srv.waitForState(t, task, "failed")
+	eventually(t, "the failed task to be forgotten", func() bool { return !mustLoadState(t, d.stateDir).known(task) })
+
+	srv.call(t, http.MethodPost, "/v1/tasks/"+string(task)+"/commands", map[string]any{"kind": protocol.CommandResume}, nil)
+
+	events := srv.waitForCount(t, task, protocol.KindHarnessExited, 2)
+	assertContiguous(t, events)
+	if len(events) != 2 {
+		t.Errorf("events: %s, want the retry's failure stored after the first start's", describe(events))
 	}
 }
 
@@ -419,8 +449,13 @@ func TestGivenProcessThatDoesNotExitAfterItsTurnWhenAPromptWaitsForItThenItIsKil
 	srv.command(t, task, protocol.CommandPrompt, protocol.Prompt{Text: "And then?"})
 
 	events := srv.waitForEvent(t, task, "harness_exited", isKind(protocol.KindHarnessExited))
-	if last := events[len(events)-1]; string(last.Payload) != `{"exit_code":-1,"error":"signal: killed"}` {
+	if exit := events[2]; exit.Kind != protocol.KindHarnessExited || string(exit.Payload) != `{"exit_code":-1,"error":"signal: killed"}` {
 		t.Errorf("events: %s", describe(events))
+	}
+	// The killed process leaves the task resumable, so the prompt starts
+	// the next process.
+	if in := d.nextProcess(t).nextInput(t); in.text != "And then?" {
+		t.Errorf("prompt = %q", in.text)
 	}
 }
 

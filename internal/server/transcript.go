@@ -72,18 +72,18 @@ func assemble(task protocol.TaskID, h history) []transcript.Entry {
 	var fromCommands []transcript.Entry
 	// started maps each task whose start is among the commands to the
 	// daemon its latest start went to, so that a later start reads as a
-	// move.
+	// move, or, when the owner queued it, a retry.
 	started := make(map[protocol.TaskID]protocol.DaemonID)
 	for _, command := range h.commands {
 		source := transcript.Source{TaskID: command.TaskID, CommandID: command.ID}
-		var movedFrom *protocol.DaemonID
+		var again *restart
 		if command.Kind == protocol.CommandStartTask {
 			if from, ok := started[command.TaskID]; ok {
-				movedFrom = &from
+				again = &restart{from: from, retry: h.ownerStarts[command.ID]}
 			}
 			started[command.TaskID] = command.DaemonID
 		}
-		for _, body := range commandBodies(task, h.parent, command, movedFrom, delivered[command.ID], h.byPolicy[command.ID]) {
+		for _, body := range commandBodies(task, h.parent, command, again, delivered[command.ID], h.byPolicy[command.ID]) {
 			fromCommands = append(fromCommands, transcript.Entry{Time: command.Time, Source: source, Body: body})
 		}
 	}
@@ -148,26 +148,40 @@ func eventBodies(event protocol.Event) []transcript.Body {
 	return []transcript.Body{body}
 }
 
+// restart is a start_task after an earlier one of the same task, which
+// went to the daemon from: the owner's retry of a task with no session to
+// continue, or else the server's move of a task off that lost daemon.
+type restart struct {
+	from  protocol.DaemonID
+	retry bool
+}
+
 // commandBodies describes a command in task's transcript. A start_task of
 // another task is a child of task starting; task's own is spawned by
-// parent, when that is set. A start_task after an earlier one, which went
-// to the daemon movedFrom, restarts a task moved off that lost daemon:
-// task's own is a TaskMoved, and a child's adds nothing. A prompt with
+// parent, when that is set. A start_task that is again, a restart of the
+// task, is a TaskRetried or a TaskMoved for task's own, and adds nothing
+// for a child's. A discard is the owner's dismissal. A prompt with
 // a sender delivered the messages in delivered, one entry each; when they
 // cannot be found, the prompt's own text and sender stand for them.
 // An answer_permission was given by the permission policy when byPolicy
 // is set, and by the owner otherwise.
-func commandBodies(task protocol.TaskID, parent *protocol.TaskID, command protocol.Command, movedFrom *protocol.DaemonID, delivered []storedMessage, byPolicy bool) []transcript.Body {
+func commandBodies(task protocol.TaskID, parent *protocol.TaskID, command protocol.Command, again *restart, delivered []storedMessage, byPolicy bool) []transcript.Body {
 	var body transcript.Body
 	ok := true
 	switch command.Kind {
 	case protocol.CommandStartTask:
-		if movedFrom != nil && command.TaskID != task {
+		if again != nil && command.TaskID != task {
 			return nil
 		}
-		if movedFrom != nil {
+		if again != nil && again.retry {
 			body, ok = decodeBody(command.Payload, func(p protocol.StartTask) transcript.Body {
-				return transcript.TaskMoved{From: *movedFrom, To: command.DaemonID, Prompt: p.Prompt}
+				return transcript.TaskRetried{On: command.DaemonID, Prompt: p.Prompt}
+			})
+			break
+		}
+		if again != nil {
+			body, ok = decodeBody(command.Payload, func(p protocol.StartTask) transcript.Body {
+				return transcript.TaskMoved{From: again.from, To: command.DaemonID, Prompt: p.Prompt}
 			})
 			break
 		}
@@ -206,6 +220,8 @@ func commandBodies(task protocol.TaskID, parent *protocol.TaskID, command protoc
 		body = transcript.Interrupted{}
 	case protocol.CommandStop:
 		body = transcript.StopRequested{}
+	case protocol.CommandDiscard:
+		body = transcript.TaskDiscarded{Daemon: command.DaemonID}
 	case protocol.CommandAnswerPermission:
 		answeredBy := transcript.AnsweredByOwner
 		if byPolicy {

@@ -26,6 +26,11 @@ const (
 	CommandStop CommandKind = "stop"
 	// CommandAnswerPermission: AnswerPermission.
 	CommandAnswerPermission CommandKind = "answer_permission"
+	// CommandDiscard tells the daemon that the owner dismissed the task,
+	// which has no process and takes no more commands: the daemon deletes
+	// what it keeps of the task, its record, journal and workspace. No
+	// payload.
+	CommandDiscard CommandKind = "discard"
 )
 
 // Command is one entry in a daemon's command log. ID increases with every

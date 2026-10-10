@@ -42,22 +42,26 @@ const (
 	// with no stop issued and no pause in effect. A prompt starts its next
 	// process (docs/adr/2026-10-08-task-lifetime.md).
 	TaskFinished TaskState = "finished"
-	// TaskStopped: the owner stopped the task. It is terminal.
+	// TaskStopped: the owner stopped the task. A follow-up starts its next
+	// process, as for a finished task; only dismissal ends it for good.
 	TaskStopped TaskState = "stopped"
-	// TaskFailed: the harness exited otherwise, or never started. It is
-	// terminal.
+	// TaskFailed: the harness exited otherwise, or never started. A
+	// follow-up starts its next process, or, when its harness never
+	// started, starts it afresh; only dismissal ends it for good.
 	TaskFailed TaskState = "failed"
 )
 
-// Terminal reports whether the task can take no more commands.
-func (s TaskState) Terminal() bool {
+// Ended reports whether the task's work ended without finishing: it was
+// stopped or failed. Such a task waits for the owner, who may follow it
+// up or dismiss it; agents' messages to it are refused.
+func (s TaskState) Ended() bool {
 	return s == TaskStopped || s == TaskFailed
 }
 
 // Idle reports whether the task has no process: it has not started, or
 // it is between processes.
 func (s TaskState) Idle() bool {
-	return s == TaskQueued || s == TaskFinished || s == TaskPaused || s == TaskYielded
+	return s == TaskQueued || s == TaskFinished || s == TaskPaused || s == TaskYielded || s.Ended()
 }
 
 // pauseOrigin says who asked for the pause a task is under: the owner,
@@ -74,15 +78,13 @@ const (
 //
 // Admitting a queued task's start makes it pending. A prompt or a
 // resume to a task between processes starts its next process: the daemon
-// treats both alike, and resumes a finished task too. Either one issued
-// while a pause is under way applies once the pause settles, so the task
-// is running thereafter. A pause to a yielded task makes the scheduler's
-// hold the owner's. A stop to a task with no process ends it at once, as
-// no process is left to report it.
+// treats both alike, and resumes a finished, stopped or failed task too.
+// Either one issued while a pause is under way applies once the pause
+// settles, so the task is running thereafter. A pause to a yielded task
+// makes the scheduler's hold the owner's. A stop to a task with no
+// process stops it at once, as no process is left to report it.
 func (s TaskState) afterCommand(kind protocol.CommandKind) TaskState {
 	switch {
-	case s.Terminal():
-		return s
 	case kind == protocol.CommandStop && s.Idle():
 		return TaskStopped
 	case kind == protocol.CommandStartTask && s == TaskQueued:
@@ -100,9 +102,9 @@ func (s TaskState) afterCommand(kind protocol.CommandKind) TaskState {
 }
 
 // afterEvent returns the state once event is stored. stopIssued says
-// whether a stop has been issued for the task; it matters only for
-// harness_exited. pausedBy names who asked for the pause under way; it
-// matters only for pause_settled.
+// whether a stop has been issued to the task's running process; it
+// matters only for harness_exited. pausedBy names who asked for the pause
+// under way; it matters only for pause_settled.
 //
 // pause_settled takes effect only while pausing: when a resume or prompt
 // was issued before the pause settled, the task resumes right after. A
@@ -112,12 +114,11 @@ func (s TaskState) afterCommand(kind protocol.CommandKind) TaskState {
 // restarting or shutting down or by the owner's interrupt, pauses a task
 // with a process for the owner to resume
 // (docs/adr/2026-10-08-shutdown-recovery.md), and leaves
-// a task between processes as it is. A process started after a clean
-// exit makes the task running again.
+// a task between processes as it is. The exit a daemon reports when it
+// stops a task with no process leaves the task stopped. A process
+// started after any exit makes the task running again.
 func (s TaskState) afterEvent(event protocol.Event, stopIssued bool, pausedBy pauseOrigin) TaskState {
 	switch {
-	case s.Terminal():
-		return s
 	case event.Kind == protocol.KindHarnessStarted && (s == TaskPending || s.Idle()):
 		return TaskRunning
 	case event.Kind == protocol.KindPermissionRequested && s == TaskRunning:
@@ -132,7 +133,7 @@ func (s TaskState) afterEvent(event protocol.Event, stopIssued bool, pausedBy pa
 		by, _ := cutShortOf(exit)
 		cutShort := decoded && by != ""
 		switch {
-		case stopIssued:
+		case stopIssued, s == TaskStopped:
 			return TaskStopped
 		case cutShort && s.Idle():
 			// The turn ended before the daemon restarted; only the
@@ -219,13 +220,19 @@ type progress struct {
 	// PausedBy names who asked for the pause while the task is pausing,
 	// paused or yielded; it is empty otherwise.
 	PausedBy pauseOrigin
+	// StopPending says a stop was issued to the task's process and its
+	// exit has not been stored yet; that exit leaves the task stopped.
+	StopPending bool
 }
 
 // seeEvent folds a stored event into p. A task an event leaves paused
 // waits for the owner, even when the scheduler had asked for the pause
 // and a daemon restart cut it short.
-func (p *progress) seeEvent(event protocol.Event, stopIssued bool) {
-	p.State = p.State.afterEvent(event, stopIssued, p.PausedBy)
+func (p *progress) seeEvent(event protocol.Event) {
+	p.State = p.State.afterEvent(event, p.StopPending, p.PausedBy)
+	if event.Kind == protocol.KindHarnessExited {
+		p.StopPending = false
+	}
 	if p.State == TaskPaused {
 		p.PausedBy = pauseByOwner
 	}
@@ -261,8 +268,12 @@ func (p *progress) newSession() {
 }
 
 // seeCommand folds an issued command into p. A pause the command puts
-// the task under is the owner's; the scheduler marks its own.
+// the task under is the owner's; the scheduler marks its own. A stop to a
+// task with a process leaves the stop pending until the process exits.
 func (p *progress) seeCommand(command protocol.Command) {
+	if command.Kind == protocol.CommandStop && !p.State.Idle() {
+		p.StopPending = true
+	}
 	p.State = p.State.afterCommand(command.Kind)
 	if command.Kind == protocol.CommandPause && (p.State == TaskPausing || p.State == TaskPaused) {
 		p.PausedBy = pauseByOwner
@@ -288,8 +299,8 @@ func loadProgress(ctx context.Context, tx *sql.Tx, task protocol.TaskID) (progre
 	var state, lastActivity string
 	var pausedBy sql.NullString
 	var p progress
-	err := tx.QueryRowContext(ctx, `SELECT state, last_activity_at, cost_usd, cost_base, pause_origin FROM tasks WHERE id = ?`, string(task)).
-		Scan(&state, &lastActivity, &p.CostUSD, &p.CostBase, &pausedBy)
+	err := tx.QueryRowContext(ctx, `SELECT state, last_activity_at, cost_usd, cost_base, pause_origin, stop_pending FROM tasks WHERE id = ?`, string(task)).
+		Scan(&state, &lastActivity, &p.CostUSD, &p.CostBase, &pausedBy, &p.StopPending)
 	if err != nil {
 		return progress{}, fmt.Errorf("read progress of task %q: %w", task, err)
 	}
@@ -305,23 +316,12 @@ func saveProgress(ctx context.Context, tx *sql.Tx, task protocol.TaskID, p progr
 	if p.PausedBy != "" {
 		pausedBy = string(p.PausedBy)
 	}
-	_, err := tx.ExecContext(ctx, `UPDATE tasks SET state = ?, last_activity_at = ?, cost_usd = ?, cost_base = ?, pause_origin = ? WHERE id = ?`,
-		string(p.State), formatTime(p.LastActivity), p.CostUSD, p.CostBase, pausedBy, string(task))
+	_, err := tx.ExecContext(ctx, `UPDATE tasks SET state = ?, last_activity_at = ?, cost_usd = ?, cost_base = ?, pause_origin = ?, stop_pending = ? WHERE id = ?`,
+		string(p.State), formatTime(p.LastActivity), p.CostUSD, p.CostBase, pausedBy, p.StopPending, string(task))
 	if err != nil {
 		return fmt.Errorf("record progress of task %q: %w", task, err)
 	}
 	return nil
-}
-
-// stopIssued reports whether a stop has been issued for task.
-func stopIssued(ctx context.Context, tx *sql.Tx, task protocol.TaskID) (bool, error) {
-	var issued bool
-	err := tx.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 FROM commands WHERE task_id = ? AND kind = ?)`,
-		string(task), string(protocol.CommandStop)).Scan(&issued)
-	if err != nil {
-		return false, fmt.Errorf("look up stop of task %q: %w", task, err)
-	}
-	return issued, nil
 }
 
 // taskSummary is a task as the task list shows it.
@@ -362,9 +362,13 @@ type taskSummary struct {
 }
 
 // taskDetail is one task: its summary and what it was started with.
+// HasSession says its latest start got as far as starting its harness, so
+// that a follow-up continues its session; a stopped or failed task
+// without one is started afresh instead.
 type taskDetail struct {
 	taskSummary
-	Start protocol.StartTask `json:"start"`
+	Start      protocol.StartTask `json:"start"`
+	HasSession bool               `json:"has_session"`
 }
 
 const summaryColumns = `id, daemon_id, placement, parent_id, coalesce(agent, ''), coalesce(project, ''), purpose, requires, state, model, priority, filler, created_at, last_activity_at, cost_usd, dismissed_at`
@@ -460,6 +464,11 @@ func (s *Store) task(ctx context.Context, task protocol.TaskID) (taskDetail, err
 		return taskDetail{}, fmt.Errorf("read task %q: %w", task, err)
 	}
 	defer tx.Rollback()
+	return readTaskDetail(ctx, tx, task)
+}
+
+// readTaskDetail reads one task in tx, or returns errUnknownTask.
+func readTaskDetail(ctx context.Context, tx *sql.Tx, task protocol.TaskID) (taskDetail, error) {
 	var detail taskDetail
 	var repo, ref, tools sql.NullString
 	var acknowledge, cleanup int64
@@ -493,6 +502,9 @@ func (s *Store) task(ctx context.Context, task protocol.TaskID) (taskDetail, err
 		if err := json.Unmarshal([]byte(tools.String), &detail.Start.Tools); err != nil {
 			return taskDetail{}, fmt.Errorf("read tools of task %q: %w", task, err)
 		}
+	}
+	if detail.HasSession, err = hasSession(ctx, tx, task); err != nil {
+		return taskDetail{}, err
 	}
 	return detail, nil
 }
@@ -575,7 +587,10 @@ func (s *Store) children(ctx context.Context, task protocol.TaskID) ([]childSumm
 
 // dismissTask records that the owner dismissed task, which must be
 // stopped or failed, from the dashboard's lists, and returns the task. A
-// task dismissed already keeps the time of its first dismissal.
+// task dismissed already keeps the time of its first dismissal. A
+// dismissed task takes no more follow-ups, so its waiting turns are
+// dropped, and the daemon its latest start went to is told to discard
+// what it keeps of the task.
 func (s *Store) dismissTask(ctx context.Context, task protocol.TaskID) (taskDetail, error) {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -590,8 +605,26 @@ func (s *Store) dismissTask(ctx context.Context, task protocol.TaskID) (taskDeta
 	if err != nil {
 		return taskDetail{}, fmt.Errorf("dismiss task %q: %w", task, err)
 	}
-	if !TaskState(state).Terminal() {
+	if !TaskState(state).Ended() {
 		return taskDetail{}, fmt.Errorf("%w: %q is %s", errNotEnded, task, state)
+	}
+	fx := effects{changed: []protocol.TaskID{task}}
+	var daemon sql.NullString
+	err = tx.QueryRowContext(ctx, `
+		SELECT t.daemon_id FROM tasks t
+		WHERE t.id = ?1 AND t.dismissed_at IS NULL
+			AND EXISTS (SELECT 1 FROM commands c WHERE c.task_id = t.id AND c.daemon_id = t.daemon_id AND c.kind = ?2)`,
+		string(task), string(protocol.CommandStartTask)).Scan(&daemon)
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return taskDetail{}, fmt.Errorf("dismiss task %q: %w", task, err)
+	}
+	if daemon.Valid {
+		if _, err := insertCommand(ctx, tx, protocol.DaemonID(daemon.String), task, protocol.CommandDiscard, nil, &fx); err != nil {
+			return taskDetail{}, err
+		}
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM turns WHERE task_id = ? AND admitted_command_id IS NULL`, string(task)); err != nil {
+		return taskDetail{}, fmt.Errorf("dismiss task %q: %w", task, err)
 	}
 	_, err = tx.ExecContext(ctx, `UPDATE tasks SET dismissed_at = coalesce(dismissed_at, ?) WHERE id = ?`,
 		formatTime(time.Now().UTC()), string(task))
@@ -601,7 +634,7 @@ func (s *Store) dismissTask(ctx context.Context, task protocol.TaskID) (taskDeta
 	if err := tx.Commit(); err != nil {
 		return taskDetail{}, fmt.Errorf("dismiss task %q: %w", task, err)
 	}
-	s.publish(&effects{changed: []protocol.TaskID{task}})
+	s.publish(&fx)
 	return s.task(ctx, task)
 }
 

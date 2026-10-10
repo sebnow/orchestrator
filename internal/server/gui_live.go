@@ -128,7 +128,7 @@ func (v taskView) update(c cursor, polling bool) (html.Node, cursor) {
 		component.OutOfBand(component.RegionTree, v.treeView()),
 		component.OutOfBand(component.RegionUnknown, v.unknownToggle()),
 		permission,
-		component.OutOfBand(component.RegionPromptSubmit, component.PromptSubmit(v.promptClosed())),
+		component.OutOfBand(component.RegionPromptSubmit, component.PromptSubmit(v.followUp())),
 		live,
 	), next
 }

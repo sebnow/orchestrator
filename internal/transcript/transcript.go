@@ -61,6 +61,8 @@ const (
 	KindChildEnded           Kind = "child_ended"
 	KindMessageUndeliverable Kind = "message_undeliverable"
 	KindTaskMoved            Kind = "task_moved"
+	KindTaskRetried          Kind = "task_retried"
+	KindTaskDiscarded        Kind = "task_discarded"
 	KindBranchPushed         Kind = "branch_pushed"
 	KindUnknown              Kind = "unknown"
 )
@@ -265,6 +267,21 @@ type TaskMoved struct {
 	Prompt string
 }
 
+// TaskRetried is the owner starting afresh, on the daemon On, a task
+// whose harness never started, so that it had no session to continue.
+// Prompt is what the new session starts with: the task's first prompt,
+// and the owner's follow-up when one was sent.
+type TaskRetried struct {
+	On     protocol.DaemonID
+	Prompt string
+}
+
+// TaskDiscarded is the owner's dismissal of the task reaching the daemon
+// its latest start went to, which deletes what it keeps of the task.
+type TaskDiscarded struct {
+	Daemon protocol.DaemonID
+}
+
 // BranchPushed is the daemon reporting, at the end of a turn, the branch
 // the task's work is delivered on (docs/adr/2026-10-08-work-delivery.md),
 // with the meaning of protocol.BranchPushed: Commit is the commit the
@@ -332,6 +349,8 @@ func (ChildSpawned) Kind() Kind         { return KindChildSpawned }
 func (ChildEnded) Kind() Kind           { return KindChildEnded }
 func (MessageUndeliverable) Kind() Kind { return KindMessageUndeliverable }
 func (TaskMoved) Kind() Kind            { return KindTaskMoved }
+func (TaskRetried) Kind() Kind          { return KindTaskRetried }
+func (TaskDiscarded) Kind() Kind        { return KindTaskDiscarded }
 func (BranchPushed) Kind() Kind         { return KindBranchPushed }
 func (Unknown) Kind() Kind              { return KindUnknown }
 
@@ -357,5 +376,8 @@ func (ChildSpawned) body()         {}
 func (ChildEnded) body()           {}
 func (MessageUndeliverable) body() {}
 func (TaskMoved) body()            {}
-func (BranchPushed) body()         {}
-func (Unknown) body()              {}
+func (TaskRetried) body()          {}
+func (TaskDiscarded) body()        {}
+
+func (BranchPushed) body() {}
+func (Unknown) body()      {}

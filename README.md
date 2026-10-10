@@ -450,7 +450,9 @@ needs attention and is left out of the dashboard's list of every task,
 which says how many dismissed tasks it leaves out; `/?dismissed=show`
 includes them, marked as dismissed. Scripts dismiss a task with
 `POST /v1/tasks/{task}/dismiss`, which answers 409 unless the task is
-`stopped` or `failed`.
+`stopped` or `failed`. Dismissal is the only act that ends a task for
+good: a dismissed task takes no follow-up, and its daemon deletes its
+record, journal and workspace.
 
 ### Flags
 
@@ -634,8 +636,14 @@ Each turn of a task runs in its own `claude` process, which exits when
 the turn ends. The task is then `finished`, `paused` if the owner paused
 it during the turn, or `yielded` if the scheduler did. A follow-up
 prompt, or Resume on a paused or yielded task, starts a new process that continues the same Claude Code session in the same
-working directory. A task ends for good as `stopped` when stopped from
-its page, or as `failed`; the task page then takes no more prompts.
+working directory. A `stopped` or `failed` task takes a follow-up
+prompt, or Resume, in the same way, until the owner dismisses it; its
+daemon keeps its session and workspace until then. A task whose harness
+never started, because its workspace could not be prepared or its
+harness could not be started, has no session to continue: its page
+offers Retry instead of Resume, and Retry or a follow-up starts it
+afresh, as a new start placed on whichever daemon fits, with its first
+prompt followed by the follow-up, if any.
 
 Interrupt, on the task page, ends the running turn at once. Claude Code
 2.1.289 then exited with code 1. Unless the exit code is 0, the task
@@ -647,8 +655,10 @@ A follow-up prompt sent after the interrupt runs as the next turn, and
 the task ends as that turn does.
 
 The daemon deletes a task's working directory, with everything in it,
-when the task ends for good on that daemon: when the owner stops it,
-and when its `claude` process fails or it cannot start. A daemon
+when the task ends for good on that daemon: when the owner dismisses
+it, and when its first start fails, since a follow-up then starts it
+afresh. A stopped or failed task keeps its working directory until it
+is dismissed. A daemon
 starting on its `-state-dir` also deletes every working directory under
 `workspaces/` of a task it no longer knows or cannot run again. A task
 a shutdown or restart paused keeps its working directory. Before it

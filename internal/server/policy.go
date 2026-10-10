@@ -82,7 +82,7 @@ func decidePermission(policy Policy, harness string, task protocol.TaskID, reque
 
 // answerByPolicy decides each request in requests, which were
 // stored in tx and belong to tasks of daemon, and issues the answer of
-// each one it decides. A task that ended in the same batch is skipped, as
+// each one it decides. A task whose process exited in the same batch is skipped, as
 // its process holds no request any more.
 func answerByPolicy(ctx context.Context, tx *sql.Tx, policy Policy, daemon protocol.DaemonID, requests []protocol.Event, fx *effects) error {
 	for _, event := range requests {
@@ -96,6 +96,13 @@ func answerByPolicy(ctx context.Context, tx *sql.Tx, policy Policy, daemon proto
 		if decision.Verdict == VerdictAsk {
 			continue
 		}
+		p, err := loadProgress(ctx, tx, event.TaskID)
+		if err != nil {
+			return err
+		}
+		if p.State.Idle() {
+			continue
+		}
 		answer := protocol.AnswerPermission{RequestID: request.RequestID, Allow: decision.Verdict == VerdictAllow}
 		if !answer.Allow {
 			answer.Message = decision.Message
@@ -105,7 +112,7 @@ func answerByPolicy(ctx context.Context, tx *sql.Tx, policy Policy, daemon proto
 			return fmt.Errorf("encode the policy's answer to %s: %w", request.RequestID, err)
 		}
 		command, err := insertCommand(ctx, tx, daemon, event.TaskID, protocol.CommandAnswerPermission, payload, fx)
-		if errors.Is(err, errTaskEnded) {
+		if errors.Is(err, errDismissed) {
 			continue
 		}
 		if err != nil {

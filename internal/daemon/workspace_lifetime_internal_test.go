@@ -3,6 +3,7 @@ package daemon
 import (
 	"errors"
 	"io/fs"
+	"net/http"
 	"os"
 	"path/filepath"
 	"testing"
@@ -31,7 +32,21 @@ func startedTask(t *testing.T, srv *serverFixture, d *daemonFixture) (protocol.T
 	return task, proc
 }
 
-func TestGivenRunningTaskWhenTheOwnerStopsItThenItsWorkspaceIsDeleted(t *testing.T) {
+// dismissAndExpectWorkspaceGone has the owner dismiss task, which the
+// server must hold as ended in state, and expects the daemon to delete
+// its workspace and forget it.
+func dismissAndExpectWorkspaceGone(t *testing.T, srv *serverFixture, d *daemonFixture, task protocol.TaskID, state string) {
+	t.Helper()
+	srv.waitForState(t, task, state)
+	if workspaceGone(d.stateDir, task)() {
+		t.Fatalf("the workspace of a %s task was deleted before its dismissal", state)
+	}
+	srv.call(t, http.MethodPost, "/v1/tasks/"+string(task)+"/dismiss", nil, nil)
+	eventually(t, "the workspace to be deleted", workspaceGone(d.stateDir, task))
+	eventually(t, "the task to be forgotten", func() bool { return !mustLoadState(t, d.stateDir).known(task) })
+}
+
+func TestGivenRunningTaskWhenTheOwnerStopsItThenItsWorkspaceIsKeptUntilItIsDismissed(t *testing.T) {
 	srv := startServer(t)
 	d := runDaemon(t, srv.url, t.TempDir())
 	task, proc := startedTask(t, srv, d)
@@ -39,26 +54,23 @@ func TestGivenRunningTaskWhenTheOwnerStopsItThenItsWorkspaceIsDeleted(t *testing
 
 	srv.command(t, task, protocol.CommandStop, nil)
 
-	eventually(t, "the workspace to be deleted", workspaceGone(d.stateDir, task))
+	dismissAndExpectWorkspaceGone(t, srv, d, task, "stopped")
 }
 
-func TestGivenTaskBetweenProcessesWhenTheOwnerStopsItThenItsWorkspaceIsDeleted(t *testing.T) {
+func TestGivenTaskBetweenProcessesWhenTheOwnerStopsItThenItsWorkspaceIsKeptUntilItIsDismissed(t *testing.T) {
 	srv := startServer(t)
 	d := runDaemon(t, srv.url, t.TempDir())
 	task, proc := startedTask(t, srv, d)
 	finishTurn(t, proc, "session-1")
 	expectExit(t, proc)
 	srv.waitForEvent(t, task, "harness_exited", isKind(protocol.KindHarnessExited))
-	if workspaceGone(d.stateDir, task)() {
-		t.Fatal("the workspace of a finished task was deleted")
-	}
 
 	srv.command(t, task, protocol.CommandStop, nil)
 
-	eventually(t, "the workspace to be deleted", workspaceGone(d.stateDir, task))
+	dismissAndExpectWorkspaceGone(t, srv, d, task, "stopped")
 }
 
-func TestGivenRunningTaskWhenItsHarnessFailsThenItsWorkspaceIsDeleted(t *testing.T) {
+func TestGivenRunningTaskWhenItsHarnessFailsThenItsWorkspaceIsKeptUntilItIsDismissed(t *testing.T) {
 	srv := startServer(t)
 	d := runDaemon(t, srv.url, t.TempDir())
 	task, proc := startedTask(t, srv, d)
@@ -66,7 +78,7 @@ func TestGivenRunningTaskWhenItsHarnessFailsThenItsWorkspaceIsDeleted(t *testing
 
 	proc.end(protocol.HarnessExited{ExitCode: 1})
 
-	eventually(t, "the workspace to be deleted", workspaceGone(d.stateDir, task))
+	dismissAndExpectWorkspaceGone(t, srv, d, task, "failed")
 }
 
 func TestGivenRunningTurnWhenTheDaemonShutsDownThenTheWorkspaceOfTheResumableTaskIsKept(t *testing.T) {

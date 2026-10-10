@@ -48,10 +48,13 @@ func TestGivenEachStateWhenACommandIsIssuedThenTheStateFollowsTheTable(t *testin
 		{TaskFinished, protocol.CommandInterrupt, TaskFinished},
 		{TaskFinished, protocol.CommandStop, TaskStopped},
 		{TaskPaused, protocol.CommandStop, TaskStopped},
-		{TaskStopped, protocol.CommandPrompt, TaskStopped},
-		{TaskFailed, protocol.CommandPrompt, TaskFailed},
-		{TaskStopped, protocol.CommandResume, TaskStopped},
+		{TaskStopped, protocol.CommandPrompt, TaskRunning},
+		{TaskFailed, protocol.CommandPrompt, TaskRunning},
+		{TaskStopped, protocol.CommandResume, TaskRunning},
+		{TaskFailed, protocol.CommandResume, TaskRunning},
 		{TaskFailed, protocol.CommandPause, TaskFailed},
+		{TaskFailed, protocol.CommandStop, TaskStopped},
+		{TaskStopped, protocol.CommandInterrupt, TaskStopped},
 	} {
 		if got := tc.from.afterCommand(tc.kind); got != tc.want {
 			t.Errorf("%s + %s command = %s, want %s", tc.from, tc.kind, got, tc.want)
@@ -118,7 +121,9 @@ func TestGivenEachStateWhenAnEventIsStoredThenTheStateFollowsTheTable(t *testing
 		{"exit 0 with an error", TaskRunning, zeroWithError, false, TaskFailed},
 		{"undecodable exit", TaskRunning, controlEvent(protocol.KindHarnessExited, `"gone"`), false, TaskFailed},
 		{"exit after a stop took effect", TaskStopped, exitedNonZero, false, TaskStopped},
-		{"start after the end", TaskFailed, started, false, TaskFailed},
+		{"next process of a failed task", TaskFailed, started, false, TaskRunning},
+		{"next process of a stopped task", TaskStopped, started, false, TaskRunning},
+		{"failed exit of a resumed failed task", TaskRunning, exitedNonZero, false, TaskFailed},
 	} {
 		if got := tc.from.afterEvent(tc.event, tc.stopIssued, pauseByOwner); got != tc.want {
 			t.Errorf("%s: %s + %s = %s, want %s", tc.name, tc.from, tc.event.Kind, got, tc.want)
@@ -274,7 +279,7 @@ func TestGivenRunningTaskWhenADaemonRestartCutsItsTurnShortThenItIsPausedForTheO
 func TestGivenYieldUnderWayWhenADaemonRestartCutsTheTurnShortThenTheTaskWaitsForTheOwner(t *testing.T) {
 	p := progress{State: TaskPausing, PausedBy: pauseByScheduler}
 
-	p.seeEvent(controlEvent(protocol.KindHarnessExited, `{"exit_code":-1,"error":"`+exitRestarted+`"}`), false)
+	p.seeEvent(controlEvent(protocol.KindHarnessExited, `{"exit_code":-1,"error":"`+exitRestarted+`"}`))
 
 	if p.State != TaskPaused || p.PausedBy != pauseByOwner {
 		t.Errorf("progress = %+v, want paused by the owner", p)
@@ -354,8 +359,8 @@ func TestGivenVersionOneDatabaseWhenOpeningStoreThenItIsMigratedAndItsTasksKeepP
 	if err := store.db.QueryRowContext(t.Context(), `SELECT version FROM schema_version`).Scan(&version); err != nil {
 		t.Fatal(err)
 	}
-	if version != schemaVersion || schemaVersion != 15 {
-		t.Errorf("schema version = %d (server knows %d), want 15", version, schemaVersion)
+	if version != schemaVersion || schemaVersion != 16 {
+		t.Errorf("schema version = %d (server knows %d), want 16", version, schemaVersion)
 	}
 	if old := readTask(t, store, "old"); old.Project != "" || old.Purpose != "" {
 		t.Errorf("migrated task project %q, purpose %q; want none", old.Project, old.Purpose)

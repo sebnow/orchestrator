@@ -256,7 +256,7 @@ func (s *service) applyCommand(task protocol.TaskID, t *Task, command protocol.C
 		t.Stop(ctx, nil)
 		s.processEnded(task, t, true)
 		return nil, nil
-	case commandDropMoved:
+	case commandDropMoved, protocol.CommandDiscard:
 		if t != nil {
 			t.Kill()
 			s.processEnded(task, t, true)
@@ -294,9 +294,10 @@ func (s *service) prompt(task protocol.TaskID, t *Task, text string) (*Task, err
 	return s.resume(task, text)
 }
 
-// stopIdle ends a task that has no process for good. It journals a
+// stopIdle stops a task that has no process. It journals a
 // harness_exited, so that the server records the stop even when it still
-// shows the task running.
+// shows the task running. The task keeps its session and workspace, so
+// that the owner can follow it up until dismissing it.
 func (s *service) stopIdle(task protocol.TaskID) error {
 	j, err := s.openTaskJournal(task)
 	if err != nil {
@@ -304,7 +305,7 @@ func (s *service) stopIdle(task protocol.TaskID) error {
 	}
 	_, err = j.appendControl(protocol.KindHarnessExited, protocol.HarnessExited{ExitCode: -1, Error: "stopped with no process running"})
 	j.close()
-	s.journalEnded(task, j)
+	s.journalClosed(task, j)
 	return err
 }
 

@@ -571,22 +571,26 @@ func readSchedule(ctx context.Context, tx *sql.Tx, policy SchedulePolicy, connec
 	return s, nil
 }
 
-// queryWaitingTurns returns the waiting turns of tasks that have not
-// ended, oldest first. A task placed by its parent's daemon has that
+// queryWaitingTurns returns the waiting turns of tasks the owner has not
+// dismissed, oldest first. A task placed by its parent's daemon has that
 // daemon as its own, as it is now: the parent may have been moved since
 // the task was spawned. A daemon id holds no comma, so the daemons a
-// task's starts went to are read as one comma-separated list.
+// task's starts went to are read as one comma-separated list. A start the
+// owner queued for a task that ran before is a retry of a task whose
+// start failed on the daemon it is bound to, which ended the task for
+// good there, so that daemon is not among those the task ran on.
 func queryWaitingTurns(ctx context.Context, tx *sql.Tx) ([]pendingTurn, error) {
 	rows, err := tx.QueryContext(ctx, `
 		SELECT u.id, u.task_id, u.kind, u.payload, u.filler, u.reason,
 			t.state, t.priority,
-			CASE WHEN t.placement = ?3 THEN coalesce((SELECT p.daemon_id FROM tasks p WHERE p.id = t.parent_id), t.daemon_id) ELSE t.daemon_id END,
+			CASE WHEN t.placement = ?1 THEN coalesce((SELECT p.daemon_id FROM tasks p WHERE p.id = t.parent_id), t.daemon_id) ELSE t.daemon_id END,
 			t.placement, coalesce(t.pause_origin, ''),
-			coalesce((SELECT group_concat(DISTINCT c.daemon_id) FROM commands c WHERE c.task_id = t.id AND c.kind = ?4), ''),
+			coalesce((SELECT group_concat(DISTINCT c.daemon_id) FROM commands c WHERE c.task_id = t.id AND c.kind = ?2
+				AND NOT (u.kind = ?2 AND u.origin = ?3 AND c.daemon_id = t.daemon_id)), ''),
 			t.requires
 		FROM turns u JOIN tasks t ON t.id = u.task_id
-		WHERE u.admitted_command_id IS NULL AND t.state NOT IN (?1, ?2)
-		ORDER BY u.id`, string(TaskStopped), string(TaskFailed), string(placementParent), string(protocol.CommandStartTask))
+		WHERE u.admitted_command_id IS NULL AND t.dismissed_at IS NULL
+		ORDER BY u.id`, string(placementParent), string(protocol.CommandStartTask), string(originOwner))
 	if err != nil {
 		return nil, fmt.Errorf("read waiting turns: %w", err)
 	}

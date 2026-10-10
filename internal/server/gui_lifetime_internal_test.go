@@ -3,6 +3,7 @@ package server
 import (
 	"net/http"
 	"net/url"
+	"strings"
 	"testing"
 
 	"github.com/sebnow/orchestrator/internal/protocol"
@@ -15,6 +16,7 @@ const (
 	stopButton      = `value="stop">Stop</button>`
 	openSend        = `<button type="submit" class="primary">Send</button>`
 	closedSend      = `<button type="submit" class="primary" disabled="">Send</button>`
+	retryButton     = `value="resume">Retry</button>`
 )
 
 // taskThatExited starts a task whose first process ran and exited
@@ -70,47 +72,79 @@ func TestGivenPausedTaskWhenItsPageIsShownThenItOffersResumeAFollowUpAndStop(t *
 	requireLacks(t, page, pauseButton, interruptButton, closedSend)
 }
 
-func TestGivenStoppedTaskWhenItsPageIsShownThenItOffersNothingAndSaysWhy(t *testing.T) {
+func TestGivenStoppedTaskWhenItsPageIsShownThenItOffersResumeAFollowUpAndDismissal(t *testing.T) {
 	srv := startTestServer(t)
 	task := taskThatExited(t, srv, false)
 	postForm(t, srv, task, url.Values{"kind": {"stop"}})
 
 	page := getPage(t, srv.url+"/tasks/"+string(task))
 
-	requireContains(t, page, `<span class="badge state-stopped">stopped</span>`, closedSend, "The task has ended; it takes no more prompts.")
-	requireLacks(t, page, pauseButton, resumeButton, interruptButton, stopButton, openSend)
+	requireContains(t, page, `<span class="badge state-stopped">stopped</span>`, resumeButton, openSend, dismissButton)
+	requireLacks(t, page, pauseButton, interruptButton, stopButton, closedSend, retryButton, "takes no more prompts")
 }
 
-func TestGivenStoppedTaskWhenAFollowUpIsPostedThenTheFormSaysWhyAndNothingIsIssued(t *testing.T) {
+func TestGivenStoppedOrFailedTaskWhenAFollowUpIsPostedThenItIsQueuedAndOnceAdmittedContinuesTheSessionOnTheSameDaemon(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		end  func(*testing.T, testServer) protocol.TaskID
+	}{
+		{"stopped", func(t *testing.T, srv testServer) protocol.TaskID {
+			task := taskThatExited(t, srv, false)
+			postForm(t, srv, task, url.Values{"kind": {"stop"}})
+			return task
+		}},
+		{"failed", func(t *testing.T, srv testServer) protocol.TaskID { return failedTask(t, srv, "Doomed work") }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			srv := startTestServer(t)
+			task := tc.end(t, srv)
+
+			got := send(t, http.MethodPost, srv.url+"/tasks/"+string(task)+"/commands", url.Values{"kind": {"prompt"}, "text": {"More."}}, false)
+			admitTurns(t, srv.store)
+
+			if got.status != http.StatusSeeOther {
+				t.Errorf("status = %d, want 303", got.status)
+			}
+			if state := readProgress(t, srv.store, task).State; state != TaskRunning {
+				t.Errorf("state = %s, want running", state)
+			}
+			last := lastCommand(t, srv, "laptop")
+			if last.Kind != protocol.CommandPrompt || last.TaskID != task || !strings.Contains(string(last.Payload), "More.") {
+				t.Errorf("last command = %s %s %s, want the prompt", last.TaskID, last.Kind, last.Payload)
+			}
+		})
+	}
+}
+
+func TestGivenStoppedTaskWhenACommandOtherThanAFollowUpIsIssuedThroughTheAPIThenConflict(t *testing.T) {
 	srv := startTestServer(t)
 	task := taskThatExited(t, srv, false)
 	postForm(t, srv, task, url.Values{"kind": {"stop"}})
 
-	got := send(t, http.MethodPost, srv.url+"/tasks/"+string(task)+"/commands", url.Values{"kind": {"prompt"}, "text": {"More."}}, false)
-
-	if got.status != http.StatusUnprocessableEntity {
-		t.Errorf("status = %d, want 422", got.status)
+	for _, body := range []string{`{"kind":"pause"}`, `{"kind":"interrupt"}`, `{"kind":"stop"}`} {
+		status, response := doRequest(t, http.MethodPost, srv.url+"/v1/tasks/"+string(task)+"/commands", body)
+		if status != http.StatusConflict {
+			t.Errorf("%s: status = %d (%s), want 409", body, status, response)
+		}
 	}
-	requireContains(t, got.body, "The task has ended; it takes no more commands.")
-	commands, err := srv.store.commandsAfter(t.Context(), "laptop", 0)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if last := commands[len(commands)-1]; last.Kind != protocol.CommandStop {
-		t.Errorf("last command = %s, want the stop", last.Kind)
-	}
+	postForTurn(t, srv.url+"/v1/tasks/"+string(task)+"/commands", `{"kind":"prompt","payload":{"text":"More."}}`, http.StatusAccepted)
 }
 
-func TestGivenStoppedTaskWhenACommandIsIssuedThroughTheAPIThenConflict(t *testing.T) {
+func TestGivenDismissedTaskWhenAFollowUpIsPostedThenConflictAndThePageOffersNone(t *testing.T) {
 	srv := startTestServer(t)
-	task := taskThatExited(t, srv, false)
-	postForm(t, srv, task, url.Values{"kind": {"stop"}})
+	task := failedTask(t, srv, "Doomed work")
+	if status, body := doRequest(t, http.MethodPost, srv.url+"/v1/tasks/"+string(task)+"/dismiss", ""); status != http.StatusOK {
+		t.Fatalf("dismiss: %d %s", status, body)
+	}
 
 	status, body := doRequest(t, http.MethodPost, srv.url+"/v1/tasks/"+string(task)+"/commands", `{"kind":"prompt","payload":{"text":"More."}}`)
+	page := getPage(t, srv.url+"/tasks/"+string(task))
 
-	if status != http.StatusConflict {
-		t.Errorf("status = %d (%s), want 409", status, body)
+	if status != http.StatusConflict || !strings.Contains(body, "dismissed") {
+		t.Errorf("status = %d (%s), want 409 saying it was dismissed", status, body)
 	}
+	requireContains(t, page, closedSend, "The task was dismissed; it takes no more prompts.")
+	requireLacks(t, page, resumeButton, retryButton, dismissButton)
 }
 
 // taskCutShortByTheDaemon starts a task whose first turn the daemon cut

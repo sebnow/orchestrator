@@ -270,11 +270,11 @@ func validateTools(tools []string) error {
 	return nil
 }
 
-// postCommand acts on a task that is not stopped or failed. A prompt or
-// a resume is queued as a turn, which it returns with 202. Any other
-// command is issued at once and returned with 201, except a stop of a
-// task that has not started, which ends it with nothing to send and gets
-// 204.
+// postCommand acts on a task the owner has not dismissed. A prompt or a
+// resume is queued as a turn, which it returns with 202; a stopped or
+// failed task takes nothing else. Any other command is issued at once and
+// returned with 201, except a stop of a task that has not started, which
+// ends it with nothing to send and gets 204.
 func (s *Server) postCommand(w http.ResponseWriter, r *http.Request) {
 	task, err := protocol.ParseTaskID(r.PathValue("task"))
 	if err != nil {
@@ -308,7 +308,7 @@ func (s *Server) postCommand(w http.ResponseWriter, r *http.Request) {
 	switch {
 	case errors.Is(err, errUnknownTask):
 		http.Error(w, err.Error(), http.StatusNotFound)
-	case errors.Is(err, errTaskEnded), errors.Is(err, errNotStarted):
+	case errors.Is(err, errTaskEnded), errors.Is(err, errNotStarted), errors.Is(err, errDismissed):
 		http.Error(w, err.Error(), http.StatusConflict)
 	case err != nil:
 		s.internalError(w, err)

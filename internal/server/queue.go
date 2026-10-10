@@ -219,34 +219,52 @@ func insertTask(ctx context.Context, tx *sql.Tx, task newTask, fx *effects) (que
 }
 
 // queueCommand queues the owner's prompt or resume for task as a turn.
+// Every task the owner has not dismissed takes one.
 //
 // A resume of a task the scheduler yielded, or is yielding, is the
 // owner's ordinary turn, not filler: it takes over the resume the
-// scheduler queued, if there is one.
+// scheduler queued, if there is one. A stopped or failed task whose
+// harness never started since its latest start has no session to
+// continue, so either one starts it afresh instead, as retryTask does.
 func (s *Store) queueCommand(ctx context.Context, task protocol.TaskID, kind turnKind, payload json.RawMessage) (queuedTurn, error) {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return queuedTurn{}, fmt.Errorf("queue %s: %w", kind, err)
 	}
 	defer tx.Rollback()
-	if err := requireTask(ctx, tx, task); err != nil {
+	if err := requireNotDismissed(ctx, tx, task); err != nil {
 		return queuedTurn{}, err
 	}
 	p, err := loadProgress(ctx, tx, task)
 	if err != nil {
 		return queuedTurn{}, err
 	}
-	if p.State.Terminal() {
-		return queuedTurn{}, fmt.Errorf("%w: %q is %s", errTaskEnded, task, p.State)
-	}
 	var filler bool
 	if err := tx.QueryRowContext(ctx, `SELECT filler FROM tasks WHERE id = ?`, string(task)).Scan(&filler); err != nil {
 		return queuedTurn{}, fmt.Errorf("read task %q: %w", task, err)
 	}
+	fresh := false
+	if p.State.Ended() {
+		session, err := hasSession(ctx, tx, task)
+		if err != nil {
+			return queuedTurn{}, err
+		}
+		fresh = !session
+	}
 	var fx effects
 	var turn queuedTurn
 	yielded := p.State == TaskYielded || p.State == TaskPausing && p.PausedBy == pauseByScheduler
-	if kind == turnResume && yielded {
+	if fresh {
+		var followUp string
+		if kind == turnPrompt {
+			var prompt protocol.Prompt
+			if err := json.Unmarshal(payload, &prompt); err != nil {
+				return queuedTurn{}, fmt.Errorf("read the prompt for task %q: %w", task, err)
+			}
+			followUp = prompt.Text
+		}
+		turn, err = retryTask(ctx, tx, task, followUp, time.Now(), &fx)
+	} else if kind == turnResume && yielded {
 		turn, err = claimSchedulersResume(ctx, tx, task, &fx)
 		if err == nil && turn.ID == 0 {
 			turn, err = insertTurn(ctx, tx, task, kind, payload, originOwner, false, &fx)
@@ -365,4 +383,78 @@ func queuePlaces(ctx context.Context, tx *sql.Tx) (map[protocol.TaskID]queuePlac
 		places[turn.Task] = queuePlace{Position: idx + 1, Reason: reason}
 	}
 	return places, nil
+}
+
+// exitNoSession is the error a daemon gives in harness_exited when it was
+// asked to continue a task it holds no session or workspace for, such as
+// one it ended for good before stopped and failed tasks could be followed
+// up. internal/daemon words it the same.
+const exitNoSession = "harness could not be started: no harness session to resume"
+
+// hasSession reports whether task's latest start got as far as starting
+// its harness, so that its daemon holds a session and workspace to
+// continue: a harness_started is stored since that start, and no later
+// exit says the daemon holds none.
+func hasSession(ctx context.Context, tx *sql.Tx, task protocol.TaskID) (bool, error) {
+	var started bool
+	var exit string
+	err := tx.QueryRowContext(ctx, `
+		SELECT EXISTS (SELECT 1 FROM events e WHERE e.task_id = t.id AND e.kind = ?2 AND e.seq > t.seq_base),
+			coalesce((SELECT e.payload FROM events e WHERE e.task_id = t.id AND e.kind = ?3 AND e.seq > t.seq_base ORDER BY e.seq DESC LIMIT 1), '')
+		FROM tasks t WHERE t.id = ?1`, string(task), string(protocol.KindHarnessStarted), string(protocol.KindHarnessExited)).Scan(&started, &exit)
+	if err != nil {
+		return false, fmt.Errorf("look up the session of task %q: %w", task, err)
+	}
+	if !started {
+		return false, nil
+	}
+	var exited protocol.HarnessExited
+	if exit != "" && json.Unmarshal([]byte(exit), &exited) == nil && exited.ExitCode == -1 && exited.Error == exitNoSession {
+		return false, nil
+	}
+	return true, nil
+}
+
+// retryTask starts task, which has no harness session to continue, afresh:
+// its next turn is a new start, placed on whichever daemon fits as a
+// task started without a daemon is, or as a child is, with the task's
+// first prompt followed by followUp, when that is set. Like a task moved
+// off a lost daemon (docs/adr/2026-10-08-daemon-loss.md), it waits in the
+// queue, and its queued prompts and resumes give way to the start; unlike
+// one, it may start again on the daemon it last ran on, which ended it
+// for good when its start failed. Queued deliveries stay queued.
+func retryTask(ctx context.Context, tx *sql.Tx, task protocol.TaskID, followUp string, now time.Time, fx *effects) (queuedTurn, error) {
+	detail, err := readTaskDetail(ctx, tx, task)
+	if err != nil {
+		return queuedTurn{}, err
+	}
+	start := detail.Start
+	if followUp != "" {
+		start.Prompt += "\n\n" + followUp
+	}
+	payload, err := json.Marshal(start)
+	if err != nil {
+		return queuedTurn{}, fmt.Errorf("encode the new start of task %q: %w", task, err)
+	}
+	if err := dropWaitingTurns(ctx, tx, task, fx); err != nil {
+		return queuedTurn{}, err
+	}
+	p, err := loadProgress(ctx, tx, task)
+	if err != nil {
+		return queuedTurn{}, err
+	}
+	p.State, p.PausedBy, p.StopPending = TaskQueued, "", false
+	p.newSession()
+	p.see(now)
+	if err := saveProgress(ctx, tx, task, p); err != nil {
+		return queuedTurn{}, err
+	}
+	again := placementAny
+	if detail.ParentID != nil {
+		again = placementParent
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE tasks SET placement = ? WHERE id = ?`, string(again), string(task)); err != nil {
+		return queuedTurn{}, fmt.Errorf("place task %q again: %w", task, err)
+	}
+	return insertTurn(ctx, tx, task, turnStart, payload, originOwner, detail.Filler, fx)
 }

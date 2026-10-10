@@ -104,9 +104,9 @@ func restartExit(rec taskRecord) protocol.HarnessExited {
 // that does not end in harness_exited gets one, with ExitCode -1 and an
 // Error from restartExit. So does a task whose record says a process was
 // running or starting, unless its journal ends in that process's own
-// exit, which ends the task for good unless it was clean. A task that
-// can be resumed stays so, marked as cut short by the restart; any other
-// ends for good.
+// exit, which leaves the task between processes, failed or not. A task
+// that can be resumed stays so, marked as cut short by the restart; any
+// other ends for good.
 // A task the state knows but that has no journal and no event was
 // accepted and never started; it gets a journal holding only that event.
 // A task with events but no journal and no process is between
@@ -141,7 +141,7 @@ func (d *Daemon) recoverTasks(st *state, log *slog.Logger, wait time.Duration) e
 			log.Error("recover task", "task", task, "error", err)
 			continue
 		}
-		cutShort, exitedCleanly := false, false
+		cutShort := false
 		resumable := rec.resumable()
 		// A journal that ends in harness_exited after the seq recorded when
 		// the running process started ends with that process's own exit,
@@ -151,7 +151,6 @@ func (d *Daemon) recoverTasks(st *state, log *slog.Logger, wait time.Duration) e
 		ownExit := rec.Running && end.exited && end.seq > rec.Seq
 		switch {
 		case ownExit:
-			exitedCleanly = end.exit != nil && end.exit.ExitCode == 0 && end.exit.Error == ""
 		case !end.exited || rec.Running:
 			exit := restartExit(rec)
 			if _, err := j.appendControl(protocol.KindHarnessExited, exit); err != nil {
@@ -172,7 +171,8 @@ func (d *Daemon) recoverTasks(st *state, log *slog.Logger, wait time.Duration) e
 			rec.Harness = nil
 			switch {
 			case ownExit:
-				rec.Ended = rec.Ended || !exitedCleanly
+				// A process that failed leaves the task as resumable as a
+				// clean exit does: the owner may follow it up.
 				rec.Paused, rec.StopNote, rec.CutShort, rec.Interrupted = false, "", false, false
 			case cutShort:
 				rec.Ended = rec.Ended || !resumable

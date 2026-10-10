@@ -109,8 +109,8 @@ func moveLostTasks(ctx context.Context, tx *sql.Tx, lost map[protocol.DaemonID]b
 			SELECT t.id, t.state, t.placement, t.parent_id IS NOT NULL,
 				EXISTS (SELECT 1 FROM turns u WHERE u.task_id = t.id AND u.admitted_command_id IS NULL AND u.kind IN (?2, ?3)),
 				EXISTS (SELECT 1 FROM turns u WHERE u.task_id = t.id AND u.admitted_command_id IS NULL AND u.kind = ?4)
-			FROM tasks t WHERE t.daemon_id = ?1 AND t.state NOT IN (?5, ?6)`,
-			string(daemon), string(turnPrompt), string(turnResume), string(turnDeliver), string(TaskStopped), string(TaskFailed))
+			FROM tasks t WHERE t.daemon_id = ?1 AND t.dismissed_at IS NULL`,
+			string(daemon), string(turnPrompt), string(turnResume), string(turnDeliver))
 		if err != nil {
 			return nil, fmt.Errorf("read the tasks of daemon %q: %w", daemon, err)
 		}

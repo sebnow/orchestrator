@@ -269,14 +269,14 @@ func exitedProcess(t *testing.T, stateDir string, task protocol.TaskID, rec task
 	j.appendControl(protocol.KindHarnessExited, exit)
 }
 
-func TestGivenProcessWhoseOwnExitWasJournaledWhenRecoveringThenNoRestartExitFollowsAndAFailureEndsTheTask(t *testing.T) {
+func TestGivenProcessWhoseOwnExitWasJournaledWhenRecoveringThenNoRestartExitFollowsAndTheTaskStaysResumable(t *testing.T) {
 	for _, tc := range []struct {
 		name  string
 		exit  protocol.HarnessExited
 		ended bool
 	}{
 		{"clean", protocol.HarnessExited{}, false},
-		{"non-zero", protocol.HarnessExited{ExitCode: 1}, true},
+		{"non-zero", protocol.HarnessExited{ExitCode: 1}, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			stateDir := t.TempDir()
