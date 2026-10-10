@@ -221,3 +221,46 @@ func TestGivenParentAllowedOnlySpawnTaskWhenItSpawnsAChildAsAnAgentThenTheChildH
 		})
 	}
 }
+
+func TestGivenAgentWithAnEffortWhenTasksAreStartedAsItThenTheyTakeItUnlessTheyNameTheirOwn(t *testing.T) {
+	srv := startTestServer(t)
+	doRequest(t, http.MethodGet, srv.url+"/v1/daemons/laptop/acks", "")
+	createAgents(t, srv.store, Agent{Name: "thinker", Effort: protocol.EffortMax, Tools: []string{}, Priority: PriorityNormal, Requires: Labels{}})
+
+	inherited := postForTurn(t, srv.url+"/v1/tasks", `{"daemon_id":"laptop","agent":"thinker","prompt":"Think."}`, http.StatusCreated)
+	own := postForTurn(t, srv.url+"/v1/tasks", `{"daemon_id":"laptop","agent":"thinker","prompt":"Think.","effort":"low"}`, http.StatusCreated)
+	status, body := doRequest(t, http.MethodPost, srv.url+"/v1/tasks", `{"daemon_id":"laptop","prompt":"Think.","effort":"xhigh","pause_limits":{"acknowledge":"1m","cleanup":"5m"}}`)
+
+	if got := readTask(t, srv.store, inherited.TaskID).Start.Effort; got != protocol.EffortMax {
+		t.Errorf("effort of a task naming none = %q, want the agent's max", got)
+	}
+	if got := readTask(t, srv.store, own.TaskID).Start.Effort; got != protocol.EffortLow {
+		t.Errorf("effort of a task naming low = %q, want low", got)
+	}
+	if status != http.StatusBadRequest || !strings.Contains(body, `effort "xhigh"`) {
+		t.Errorf("unknown effort: %d %s, want 400", status, body)
+	}
+}
+
+func TestGivenParentWithAnEffortWhenItSpawnsThenAChildTakesItsAgentsEffortOrElseTheParents(t *testing.T) {
+	store, _ := openTestStore(t)
+	taskIn(t, store, "parent", TaskRunning)
+	if _, err := store.db.ExecContext(t.Context(), `UPDATE tasks SET effort = 'high' WHERE id = 'parent'`); err != nil {
+		t.Fatal(err)
+	}
+	createAgents(t, store,
+		Agent{Name: "quick", Effort: protocol.EffortLow, Tools: []string{}, Priority: PriorityNormal, Requires: Labels{}},
+		Agent{Name: "plain", Tools: []string{}, Priority: PriorityNormal, Requires: Labels{}})
+
+	for child, agent := range map[protocol.TaskID]string{"quick-child": "quick", "plain-child": "plain", "bare-child": ""} {
+		if _, err := store.spawnTask(t.Context(), "laptop", "parent", child, protocol.Spawn{Prompt: "Work.", Agent: agent}); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	for child, want := range map[protocol.TaskID]string{"quick-child": "low", "plain-child": "high", "bare-child": "high"} {
+		if got := readTask(t, store, child).Start.Effort; got != want {
+			t.Errorf("%s effort = %q, want %q", child, got, want)
+		}
+	}
+}

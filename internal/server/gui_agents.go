@@ -24,7 +24,7 @@ func (s *Server) routeAgentsGUI(mux *http.ServeMux) {
 
 func agentInput(a Agent) component.AgentInput {
 	input := component.AgentInput{
-		Name: a.Name, Description: a.Description, SystemPrompt: a.SystemPrompt, Models: strings.Join(a.Models, "\n"),
+		Name: a.Name, Description: a.Description, SystemPrompt: a.SystemPrompt, Models: strings.Join(a.Models, "\n"), Effort: a.Effort,
 		Tools: a.Tools, Priority: string(a.Priority), Requires: a.Requires.String(),
 	}
 	if a.PauseLimits != nil {
@@ -95,6 +95,7 @@ func (s *Server) postAgentForm(w http.ResponseWriter, r *http.Request) {
 		Description:  r.PostForm.Get("description"),
 		SystemPrompt: r.PostForm.Get("system_prompt"),
 		Models:       r.PostForm.Get("models"),
+		Effort:       r.PostForm.Get("effort"),
 		Tools:        r.PostForm["tools"],
 		Acknowledge:  strings.TrimSpace(r.PostForm.Get("acknowledge")),
 		Cleanup:      strings.TrimSpace(r.PostForm.Get("cleanup")),
@@ -139,7 +140,7 @@ func (s *Server) postAgentForm(w http.ResponseWriter, r *http.Request) {
 // refused, as text for the owner.
 func agentFromInput(input component.AgentInput) (Agent, string) {
 	a := Agent{
-		Name: input.Name, Description: input.Description, SystemPrompt: input.SystemPrompt, Models: strings.Fields(input.Models),
+		Name: input.Name, Description: input.Description, SystemPrompt: input.SystemPrompt, Models: strings.Fields(input.Models), Effort: input.Effort,
 		Tools: input.Tools, Priority: Priority(input.Priority), Filler: input.Filler != "",
 	}
 	switch {

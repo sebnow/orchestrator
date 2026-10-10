@@ -12,7 +12,7 @@ import (
 )
 
 const juniorAgent = `{"name":"junior","description":"Does what it is told.","system_prompt":"You are a junior engineer.",` +
-	`"models":["claude-code:haiku","haiku"],"tools":["send_message"],"pause_limits":{"acknowledge":"30s","cleanup":"2m"},"priority":"low","filler":true,"requires":{"os":"linux"}}`
+	`"models":["claude-code:haiku","haiku"],"effort":"medium","tools":["send_message"],"pause_limits":{"acknowledge":"30s","cleanup":"2m"},"priority":"low","filler":true,"requires":{"os":"linux"}}`
 
 func TestGivenAgentWhenCreatedThenItIsListedAndReadBackAsGiven(t *testing.T) {
 	srv := startTestServer(t)
@@ -23,7 +23,7 @@ func TestGivenAgentWhenCreatedThenItIsListedAndReadBackAsGiven(t *testing.T) {
 	}
 
 	want := Agent{
-		Name: "junior", Description: "Does what it is told.", SystemPrompt: "You are a junior engineer.", Models: []string{"claude-code:haiku", "haiku"},
+		Name: "junior", Description: "Does what it is told.", SystemPrompt: "You are a junior engineer.", Models: []string{"claude-code:haiku", "haiku"}, Effort: protocol.EffortMedium,
 		Tools: []string{"send_message"}, PauseLimits: &protocol.PauseLimits{Acknowledge: 30 * time.Second, Cleanup: 2 * time.Minute},
 		Priority: PriorityLow, Filler: true, Requires: Labels{"os": "linux"},
 	}
@@ -65,6 +65,7 @@ func TestGivenInvalidAgentWhenCreatedThenBadRequest(t *testing.T) {
 		"model with ';'":   `{"name":"a","models":["haiku;sonnet"]}`,
 		"model twice":      `{"name":"a","models":["haiku","haiku"]}`,
 		"empty model":      `{"name":"a","models":[""]}`,
+		"unknown effort":   `{"name":"a","effort":"xhigh"}`,
 	} {
 		t.Run(name, func(t *testing.T) {
 			if status, response := doRequest(t, http.MethodPost, srv.url+"/v1/agents", body); status != http.StatusBadRequest {

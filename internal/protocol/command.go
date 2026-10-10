@@ -57,14 +57,30 @@ type Command struct {
 // and pause tools are always available. A nil Tools, as in every start
 // issued before the field existed, allows every gateway tool; an empty
 // one allows none of them.
+//
+// Effort is one of Efforts, which the harness adapter maps to its own
+// levels; empty leaves the harness's default
+// (docs/adr/2026-10-10-agent-models-and-capacity.md).
 type StartTask struct {
 	Prompt       string      `json:"prompt"`
 	SystemPrompt string      `json:"system_prompt,omitempty"`
 	Workspace    *Workspace  `json:"workspace,omitempty"`
 	Model        string      `json:"model,omitempty"`
+	Effort       string      `json:"effort,omitempty"`
 	PauseLimits  PauseLimits `json:"pause_limits"`
 	Tools        []string    `json:"tools,omitzero"`
 }
+
+// The neutral effort scale an agent and a task's start choose from.
+const (
+	EffortLow    = "low"
+	EffortMedium = "medium"
+	EffortHigh   = "high"
+	EffortMax    = "max"
+)
+
+// Efforts are the efforts StartTask.Effort may name, lowest first.
+var Efforts = []string{EffortLow, EffortMedium, EffortHigh, EffortMax}
 
 // The gateway tools a task's agent may be allowed, by the names the
 // agent calls them.

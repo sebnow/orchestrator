@@ -18,7 +18,7 @@ func TestGivenAgentFormWhenSubmittedThenTheAgentIsCreatedAndItsPageShowsItForEdi
 
 	got := send(t, http.MethodPost, srv.url+"/agents", url.Values{
 		"name": {"senior"}, "description": {"Owns the design."}, "system_prompt": {pastedPrompt}, "models": {"fable\r\n claude-code:sonnet \r\n"},
-		"tools": {"spawn_task", "send_message"}, "priority": {"high"}, "requires": {"os=linux, gpu=nvidia"},
+		"effort": {"max"}, "tools": {"spawn_task", "send_message"}, "priority": {"high"}, "requires": {"os=linux, gpu=nvidia"},
 		"acknowledge": {"30s"}, "cleanup": {"2m"},
 	}, false)
 
@@ -27,7 +27,7 @@ func TestGivenAgentFormWhenSubmittedThenTheAgentIsCreatedAndItsPageShowsItForEdi
 	}
 	a, err := srv.store.agent(t.Context(), "senior")
 	want := Agent{
-		Name: "senior", Description: "Owns the design.", SystemPrompt: pastedPrompt, Models: []string{"fable", "claude-code:sonnet"},
+		Name: "senior", Description: "Owns the design.", SystemPrompt: pastedPrompt, Models: []string{"fable", "claude-code:sonnet"}, Effort: protocol.EffortMax,
 		Tools: []string{"spawn_task", "send_message"}, PauseLimits: &protocol.PauseLimits{Acknowledge: 30 * time.Second, Cleanup: 2 * time.Minute},
 		Priority: PriorityHigh, Requires: Labels{"os": "linux", "gpu": "nvidia"},
 	}
@@ -36,7 +36,7 @@ func TestGivenAgentFormWhenSubmittedThenTheAgentIsCreatedAndItsPageShowsItForEdi
 	}
 	page := getPage(t, srv.url+"/agents/senior")
 	requireContains(t, page, `<form method="post" action="/agents/senior">`, "\n"+pastedPrompt+"</textarea>",
-		"\nfable\nclaude-code:sonnet</textarea>", `value="spawn_task" checked=""`, `value="gpu=nvidia, os=linux"`, `<option value="high" selected="">`)
+		"\nfable\nclaude-code:sonnet</textarea>", `value="spawn_task" checked=""`, `value="gpu=nvidia, os=linux"`, `<option value="high" selected="">`, `<option value="max" selected="">max</option>`)
 	requireContains(t, getPage(t, srv.url+"/agents"), `<a href="/agents/senior">senior</a>`, "Owns the design.", "<td>fable, claude-code:sonnet</td>")
 }
 

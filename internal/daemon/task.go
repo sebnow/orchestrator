@@ -85,9 +85,11 @@ func (d *Daemon) deleteWorkspace(task protocol.TaskID) error {
 type TaskSpec struct {
 	ID protocol.TaskID
 	// Prompt is sent once the harness has started; empty sends nothing.
-	Prompt       string
-	Workdir      string
-	Model        string
+	Prompt  string
+	Workdir string
+	Model   string
+	// Effort is the start's effort, empty for the harness's default.
+	Effort       string
 	SystemPrompt string
 	Pause        PauseLimits
 	// Session, when set, is the harness session the process resumes.
@@ -237,6 +239,7 @@ func (d *Daemon) start(ctx context.Context, j *journal, spec TaskSpec) (*Task, e
 	proc, err := d.harness.Start(ctx, harness.Spec{
 		Workdir:      spec.Workdir,
 		Model:        spec.Model,
+		Effort:       spec.Effort,
 		SystemPrompt: spec.SystemPrompt,
 		Resume:       spec.Session,
 		RunAs:        d.runner.as,

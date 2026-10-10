@@ -126,9 +126,12 @@ func TestGivenFinishedTaskWhenTheOwnerPromptsThenANewProcessResumesItsSessionInT
 	srv := startServer(t)
 	d := runDaemon(t, srv.url, t.TempDir())
 	task := srv.createTask(t, testDaemon, protocol.StartTask{
-		Prompt: "The codeword is MARMALADE.", Model: "fake-model", SystemPrompt: "Be brief.", PauseLimits: testPauseLimits,
+		Prompt: "The codeword is MARMALADE.", Model: "fake-model", Effort: protocol.EffortHigh, SystemPrompt: "Be brief.", PauseLimits: testPauseLimits,
 	})
 	first := d.nextProcess(t)
+	if first.spec.Effort != protocol.EffortHigh {
+		t.Errorf("first effort = %q, want the start's", first.spec.Effort)
+	}
 	finishTurn(t, first, "session-1")
 	expectExit(t, first)
 	srv.waitForEvent(t, task, "harness_exited", isKind(protocol.KindHarnessExited))
@@ -138,7 +141,7 @@ func TestGivenFinishedTaskWhenTheOwnerPromptsThenANewProcessResumesItsSessionInT
 
 	second := d.nextProcess(t)
 	spec := second.spec
-	if spec.Resume != "session-1" || spec.Workdir != first.spec.Workdir || spec.Model != "fake-model" ||
+	if spec.Resume != "session-1" || spec.Workdir != first.spec.Workdir || spec.Model != "fake-model" || spec.Effort != protocol.EffortHigh ||
 		spec.SystemPrompt != first.spec.SystemPrompt || !strings.HasSuffix(spec.SystemPrompt, "\n\nBe brief.") {
 		t.Errorf("second spec = %+v, first workdir %s", spec, first.spec.Workdir)
 	}

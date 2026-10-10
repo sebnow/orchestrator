@@ -179,6 +179,11 @@ var migrations = [...]string{
 	UPDATE agents SET models = json_array(model) WHERE model <> '';
 	ALTER TABLE agents DROP COLUMN model;
 	ALTER TABLE tasks ADD COLUMN models TEXT;`,
+	// Version 19 keeps each agent's effort and each task's, empty for the
+	// harness's default
+	// (docs/adr/2026-10-10-agent-models-and-capacity.md).
+	`ALTER TABLE agents ADD COLUMN effort TEXT NOT NULL DEFAULT '' CHECK (effort IN ('', 'low', 'medium', 'high', 'max'));
+	ALTER TABLE tasks ADD COLUMN effort TEXT NOT NULL DEFAULT '';`,
 }
 
 // schemaVersion is the version this server migrates databases to. A

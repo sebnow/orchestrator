@@ -65,7 +65,7 @@ func (s *Store) readPredecessor(ctx context.Context, task protocol.TaskID) (pred
 }
 
 // continueTask starts a new task that continues task: in the same
-// project, as the same agent, with the same model, tools, pause limits,
+// project, as the same agent, with the same model, effort, tools, pause limits,
 // purpose, required labels, priority and filler flag, and, outside a
 // project, in the same workspace. Its prompt is task's final reply, as
 // its hand-back would carry it, and it names task as its predecessor
@@ -78,7 +78,7 @@ func (s *Server) continueTask(ctx context.Context, task protocol.TaskID) (queued
 		return queuedTurn{}, err
 	}
 	d := old.detail
-	start := protocol.StartTask{Prompt: old.reply, Model: d.Model, PauseLimits: d.Start.PauseLimits, Tools: d.Start.Tools}
+	start := protocol.StartTask{Prompt: old.reply, Model: d.Model, Effort: d.Start.Effort, PauseLimits: d.Start.PauseLimits, Tools: d.Start.Tools}
 	if d.Project == "" {
 		start.Workspace = d.Start.Workspace
 	}

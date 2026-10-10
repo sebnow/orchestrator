@@ -54,8 +54,8 @@ func requireRunning(ctx context.Context, tx *sql.Tx, daemon protocol.DaemonID, t
 // purpose, if any, at the top of its prompt
 // (docs/adr/2026-10-10-projects-and-lineage.md). Started as the agent
 // spawn names, it has the agent's priority and filler flag, the agent's
-// models, which placement chooses its model from, and pause limits, or
-// else parent's model and pause limits
+// models, which placement chooses its model from, effort and pause
+// limits, or else parent's model, effort and pause limits
 // (docs/adr/2026-10-09-agents-and-placement.md,
 // docs/adr/2026-10-10-agent-models-and-capacity.md), and those of the
 // agent's tools that parent may call; started as none, it has parent's
@@ -80,13 +80,13 @@ func (s *Store) spawnTask(ctx context.Context, daemon protocol.DaemonID, parent,
 	if err := requireTool(parent, parentTools, protocol.ToolSpawnTask); err != nil {
 		return queuedTurn{}, err
 	}
-	var model, priority, project string
+	var model, effort, priority, project string
 	var repo, ref sql.NullString
 	var acknowledge, cleanup int64
 	var filler bool
 	err = tx.QueryRowContext(ctx, `
-		SELECT model, workspace_repo, workspace_ref, pause_acknowledge_ns, pause_cleanup_ns, priority, filler, coalesce(project, '') FROM tasks WHERE id = ?`,
-		string(parent)).Scan(&model, &repo, &ref, &acknowledge, &cleanup, &priority, &filler, &project)
+		SELECT model, effort, workspace_repo, workspace_ref, pause_acknowledge_ns, pause_cleanup_ns, priority, filler, coalesce(project, '') FROM tasks WHERE id = ?`,
+		string(parent)).Scan(&model, &effort, &repo, &ref, &acknowledge, &cleanup, &priority, &filler, &project)
 	if err != nil {
 		return queuedTurn{}, fmt.Errorf("read task %q: %w", parent, err)
 	}
@@ -94,6 +94,7 @@ func (s *Store) spawnTask(ctx context.Context, daemon protocol.DaemonID, parent,
 	start := protocol.StartTask{
 		Prompt:      withPurpose(purpose, spawn.Prompt),
 		Model:       model,
+		Effort:      effort,
 		PauseLimits: protocol.PauseLimits{Acknowledge: time.Duration(acknowledge), Cleanup: time.Duration(cleanup)},
 		Tools:       parentTools,
 	}
@@ -110,6 +111,9 @@ func (s *Store) spawnTask(ctx context.Context, daemon protocol.DaemonID, parent,
 		}
 		if len(a.Models) > 0 {
 			start.Model, models = "", a.Models
+		}
+		if a.Effort != "" {
+			start.Effort = a.Effort
 		}
 		if a.PauseLimits != nil {
 			start.PauseLimits = *a.PauseLimits

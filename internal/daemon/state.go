@@ -78,6 +78,7 @@ type taskRecord struct {
 type taskSettings struct {
 	Prompt       string        `json:"prompt,omitempty"`
 	Model        string        `json:"model"`
+	Effort       string        `json:"effort,omitempty"`
 	SystemPrompt string        `json:"system_prompt,omitempty"`
 	Acknowledge  time.Duration `json:"pause_acknowledge"`
 	Cleanup      time.Duration `json:"pause_cleanup"`

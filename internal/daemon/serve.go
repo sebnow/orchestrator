@@ -509,7 +509,7 @@ func (s *service) startTask(command protocol.Command) *Task {
 	}
 	// The settings make the task resumable, so they are recorded once its
 	// workspace is ready.
-	settings := taskSettings{Prompt: start.Prompt, Model: start.Model, SystemPrompt: start.SystemPrompt, Acknowledge: limits.Acknowledge, Cleanup: limits.Cleanup, Tools: start.Tools}
+	settings := taskSettings{Prompt: start.Prompt, Model: start.Model, Effort: start.Effort, SystemPrompt: start.SystemPrompt, Acknowledge: limits.Acknowledge, Cleanup: limits.Cleanup, Tools: start.Tools}
 	if err := s.state.updateTask(task, func(rec *taskRecord) { rec.Settings = &settings }); err != nil {
 		return s.failStart(task, j, fmt.Errorf("%s: record task settings: %w", harnessCannotStart, err))
 	}
@@ -518,6 +518,7 @@ func (s *service) startTask(command protocol.Command) *Task {
 		Prompt:       start.Prompt,
 		Workdir:      workdir,
 		Model:        start.Model,
+		Effort:       start.Effort,
 		SystemPrompt: start.SystemPrompt,
 		Pause:        limits,
 		Tools:        start.Tools,
@@ -572,6 +573,7 @@ func (s *service) resume(task protocol.TaskID, followUp string) (*Task, error) {
 		Prompt:       prompt,
 		Workdir:      s.daemon.workspace(task),
 		Model:        rec.Settings.Model,
+		Effort:       rec.Settings.Effort,
 		SystemPrompt: rec.Settings.SystemPrompt,
 		Pause:        rec.Settings.limits(),
 		Session:      rec.Session,

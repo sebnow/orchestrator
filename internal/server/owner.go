@@ -225,14 +225,17 @@ func projectWorkspace(p Project, asked *protocol.Workspace) (*protocol.Workspace
 	return own, nil
 }
 
-// applyAgent fills in what start leaves out from agent a: its tools, and
-// its pause limits, or the default ones when a has none. It returns a's
+// applyAgent fills in what start leaves out from agent a: its effort, its
+// tools, and its pause limits, or the default ones when a has none. It returns a's
 // models when start names no model and a has some, for placement to
 // choose from, and nil otherwise.
 func applyAgent(start *protocol.StartTask, a Agent) []string {
 	var models []string
 	if start.Model == "" && len(a.Models) > 0 {
 		models = a.Models
+	}
+	if start.Effort == "" {
+		start.Effort = a.Effort
 	}
 	if start.Tools == nil {
 		start.Tools = a.Tools
@@ -264,7 +267,19 @@ func validateStart(start protocol.StartTask) error {
 	if start.PauseLimits.Acknowledge <= 0 || start.PauseLimits.Cleanup <= 0 {
 		return errors.New("pause_limits.acknowledge and pause_limits.cleanup must be positive")
 	}
+	if err := validateEffort(start.Effort); err != nil {
+		return err
+	}
 	return validateTools(start.Tools)
+}
+
+// validateEffort checks that effort is one of protocol.Efforts, or empty
+// for the harness's default.
+func validateEffort(effort string) error {
+	if effort != "" && !slices.Contains(protocol.Efforts, effort) {
+		return fmt.Errorf("effort %q is not one of %s", effort, strings.Join(protocol.Efforts, ", "))
+	}
+	return nil
 }
 
 // validateTools checks that tools names gateway tools an agent may be

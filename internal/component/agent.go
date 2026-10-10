@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/sebnow/orchestrator/internal/html"
+	"github.com/sebnow/orchestrator/internal/protocol"
 )
 
 // AgentsURL lists the agents and has the form that creates one.
@@ -20,11 +21,13 @@ func agentURL(name string) string { return AgentsURL + "/" + url.PathEscape(name
 // key=value pairs.
 type AgentInput struct {
 	Name, Description, SystemPrompt, Models string
-	Tools                                   []string
-	Acknowledge, Cleanup                    string
-	Priority                                string
-	Filler                                  string
-	Requires                                string
+	// Effort is one of protocol.Efforts, or empty for the harness's default.
+	Effort               string
+	Tools                []string
+	Acknowledge, Cleanup string
+	Priority             string
+	Filler               string
+	Requires             string
 }
 
 // AgentSummary is an agent as the agent list shows it.
@@ -75,6 +78,10 @@ func AgentForm(input AgentInput, editing bool, tools []string, problem string) h
 		}
 		boxes[idx] = html.El("label", attrs("class", "checkbox"), html.El("input", box), html.Text(" "+tool))
 	}
+	efforts := []Option{{Value: "", Label: "the harness's default"}}
+	for _, effort := range protocol.Efforts {
+		efforts = append(efforts, Option{Value: effort, Label: effort})
+	}
 	priorities := make([]Option, len(Priorities))
 	for idx, priority := range Priorities {
 		priorities[idx] = Option{Value: priority, Label: priority}
@@ -86,6 +93,7 @@ func AgentForm(input AgentInput, editing bool, tools []string, problem string) h
 		Field(FieldSpec{Kind: FieldTextarea, Name: "models", Label: "Models, one per line, most preferred first; harness:model for one harness only", Value: input.Models,
 			Placeholder: "none: the task's or the server's default"}),
 		html.El("fieldset", nil, html.El("legend", nil, html.Text("Tools it may call besides the permission and pause tools")), html.Fragment(boxes...)),
+		Field(FieldSpec{Kind: FieldSelect, Name: "effort", Label: "Effort", Value: input.Effort, Options: efforts}),
 		Field(FieldSpec{Kind: FieldSelect, Name: "priority", Label: "Priority", Value: input.Priority, Options: priorities}),
 		Field(FieldSpec{Kind: FieldCheckbox, Name: "filler", Label: "Filler: runs only on spare budget, and yields to other work", Value: input.Filler}),
 		Field(FieldSpec{Name: "requires", Label: "Requires labels (key=value, separated by commas)", Value: input.Requires, Placeholder: "none: any daemon"}),

@@ -535,9 +535,9 @@ func readTaskDetail(ctx context.Context, tx *sql.Tx, task protocol.TaskID) (task
 	var repo, ref, tools sql.NullString
 	var acknowledge, cleanup int64
 	row := tx.QueryRowContext(ctx, `
-		SELECT `+summaryColumns+`, prompt, system_prompt, workspace_repo, workspace_ref, pause_acknowledge_ns, pause_cleanup_ns, tools
+		SELECT `+summaryColumns+`, prompt, system_prompt, workspace_repo, workspace_ref, pause_acknowledge_ns, pause_cleanup_ns, tools, effort
 		FROM tasks WHERE id = ?`, string(task))
-	summary, err := scanSummary(row, &detail.Start.Prompt, &detail.Start.SystemPrompt, &repo, &ref, &acknowledge, &cleanup, &tools)
+	summary, err := scanSummary(row, &detail.Start.Prompt, &detail.Start.SystemPrompt, &repo, &ref, &acknowledge, &cleanup, &tools, &detail.Start.Effort)
 	if errors.Is(err, sql.ErrNoRows) {
 		return taskDetail{}, fmt.Errorf("%w: %q", errUnknownTask, task)
 	}

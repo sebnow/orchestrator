@@ -216,6 +216,13 @@ func arguments(spec harness.Spec, promptFile string) ([]string, error) {
 		// (docs/adr/2026-10-08-inbox-delivery.md, Consequences).
 		"--disallowedTools", strings.Join(crossSessionTools, ","),
 	}
+	if spec.Effort != "" {
+		effort, ok := efforts[spec.Effort]
+		if !ok {
+			return nil, fmt.Errorf("effort %q is not one of %s", spec.Effort, strings.Join(protocol.Efforts, ", "))
+		}
+		args = append(args, "--effort", effort)
+	}
 	if promptFile != "" {
 		args = append(args, "--append-system-prompt-file", promptFile)
 	}
@@ -231,6 +238,16 @@ func arguments(spec harness.Spec, promptFile string) ([]string, error) {
 		}
 	}
 	return args, nil
+}
+
+// efforts maps the neutral effort scale to the levels of --effort, which
+// Claude Code 2.1.289 lists as low, medium, high, xhigh and max; xhigh
+// has no neutral level.
+var efforts = map[string]string{
+	protocol.EffortLow:    "low",
+	protocol.EffortMedium: "medium",
+	protocol.EffortHigh:   "high",
+	protocol.EffortMax:    "max",
 }
 
 func gatewayTool(name string) string {

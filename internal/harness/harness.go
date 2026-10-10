@@ -30,6 +30,9 @@ type Harness interface {
 type Spec struct {
 	Workdir string
 	Model   string
+	// Effort is one of protocol.Efforts, which the harness maps to its own
+	// levels; empty leaves the harness's default.
+	Effort string
 	// SystemPrompt is added to the harness's own; empty adds nothing.
 	SystemPrompt string
 	// Resume names the harness session to continue, as reported in
