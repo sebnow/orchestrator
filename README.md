@@ -41,8 +41,9 @@ The daemon runs the tasks with Claude Code, so `claude` must be
 installed and logged in for the user who runs it: the user who starts
 the daemon, or the harness user with `-harness-user` (see [Running the
 harness as another user](#running-the-harness-as-another-user)). The daemon
-clones a task's repository, and pushes the task's branch to it, with
-the `git` on the daemon's `PATH`, so
+mirrors a task's repository, clones the task's workspace from the
+mirror, and pushes the task's branch to the repository, with the `git`
+on the daemon's `PATH`, so
 `git` must be installed on every daemon's machine. A missing `git`
 shows only when a task with a repository starts, and fails it. Build both
 from the repository root:
@@ -151,9 +152,11 @@ The daemon starts each command as `sudo -n -u NAME -D DIR VAR=value...
 terminal. As the harness user it runs:
 
 - `claude`, in the task's workspace;
-- `git`, to clone, to set up the task's branch, its pre-push hook and
-  the clone's local configuration, to read the clone's status and
-  history and the remote's branches, and to push;
+- `git`, to clone the workspace from the daemon's mirror, to set up
+  the task's branch, its pre-push hook and the clone's local
+  configuration, to read the clone's status and history, and, as `git
+  upload-pack`, to hand the task's branch to the daemon's fetch into
+  the mirror;
 - `rm -rf`, to delete a workspace.
 
 The daemon does not run git in a workspace as itself, because git runs
@@ -161,8 +164,44 @@ commands that a repository's configuration and hooks name (`git help
 git`, section SECURITY), and the agent can write every workspace. The
 harness user creates and owns the workspaces.
 
+The daemon runs every git command against a task's repository as its
+own user, in its mirror of the repository and with its own key (see
+[Tasks](#tasks)), so delivery needs no credential from the harness
+user, and the harness user cannot read the daemon's key. If the daemon
+has an ssh agent, the harness user can still use it through the relay
+described below. With a harness user the files are laid out as
+follows:
+
+- `<state-dir>` has mode 0711: the harness user can pass through it to
+  the mirrors by name, but cannot list it. The daemon's state
+  (`state.json`), journals (`journal/`), private key (`ssh_ed25519`)
+  and lock are readable by the daemon's user only; its public key,
+  `ssh_ed25519.pub`, by every user.
+- `<state-dir>/mirrors/<SHA-256 of the repository URL>.git` is the
+  bare mirror of a repository, owned by the daemon's user, readable by
+  every user and writable by the daemon's user only.
+- `<state-dir>/workspace-repos/<task id>` records the repository a
+  task's workspace was cloned for. The daemon pushes the task's branch
+  to the repository recorded there rather than to one named in the
+  workspace's configuration, which the agent can change.
+- `<workspace-dir>/<task id>` is the task's workspace, a clone owned
+  by the harness user with mode 0700, whose `origin` is the mirror.
+
+The harness user can therefore read every mirror on the daemon, every
+task's workspace and the daemon's public key, but not the daemon's
+ssh key, state or journals. git refuses a repository that another
+user owns unless `safe.directory` names it, and does not pass `-c`
+settings on to the `upload-pack` it runs for a local repository, so
+the workspace's `remote.origin.uploadpack` is `git -c
+safe.directory=<mirror> upload-pack`. The agent's own `git fetch` from
+`origin` works the same way; a push to `origin` fails, since the
+harness user cannot write the mirror. The daemon fetches the task's
+branch from the workspace with `git upload-pack` run as the harness
+user through sudo, which the sudoers rule for `git` below allows.
+
 `-workspace-dir` is required with `-harness-user`, because the harness
-user cannot enter the state directory, where workspaces go by default.
+user cannot write in the state directory, where workspaces go by
+default.
 The directory must exist and be owned by the harness user. When it
 starts, the daemon lists this directory and deletes the workspaces of
 tasks it does not know, so the daemon's user needs permission to read
@@ -232,6 +271,10 @@ daemon passes the rest as follows:
   git rather than letting it read the harness user's git
   configuration.
 
+With a harness user, delivery does not use the daemon's ssh agent: the
+daemon fetches and pushes from its mirror as its own user, with its
+own key. The relay below gives the agent the daemon's ssh agent for its
+own use, such as reaching another repository over ssh.
 The daemon's ssh agent socket is open only to the daemon's user. When
 the daemon has `SSH_AUTH_SOCK`, it listens on a socket of its own,
 `/tmp/orchestrator-agent-*/agent-*.sock`, for as long as it runs, and
@@ -240,9 +283,11 @@ relays each connection to its agent byte for byte. The socket has mode
 user can connect without a group in common with the daemon's user. Any
 local user who learns the socket's path can use the daemon's ssh keys;
 the directory's mode keeps others from listing it to learn the name.
-Without `SSH_AUTH_SOCK` the harness gets no ssh agent. ssh runs as the
-harness user, so `known_hosts` must list the repository's host in that
-user's `~/.ssh` or in the system's.
+Without `SSH_AUTH_SOCK` the harness gets no ssh agent. The daemon's
+own ssh runs as the daemon's user and, with a harness user, offers the
+remote only the daemon's key, not the keys in its ssh agent;
+`known_hosts` must list the repository's host in the daemon user's
+`~/.ssh` or in the system's `/etc/ssh/ssh_known_hosts`.
 
 The harness user logs in to Claude Code once on each machine, and tasks
 spend that account's quota; the daemon does not manage the login. On
@@ -264,7 +309,14 @@ user `orch-agent`. A container check runs steps 1 to 3, the
 in place of `claude`, and asserts each. It also checks that the daemon
 sends sudo SIGTERM when a stopped harness outlasts the 30 s timeout,
 and that a restarted daemon terminates the harness its previous run
-left. With Docker running, from the repository root:
+left. It checks the private key's mode and that the harness user
+cannot read it, that the daemon's page shows the public key, and that
+the workspace's `origin` is the mirror. From the logs of sshd, sudo and
+an ssh wrapper, it checks that the push left the mirror as the daemon's
+user offering only the daemon's key, and that the fetch into the
+mirror ran `upload-pack` as the harness user. The test remote accepts
+only the daemon's key, so a successful push shows the daemon used it.
+With Docker running, from the repository root:
 
     test/harness-user/run.sh
 
@@ -298,7 +350,7 @@ of steps 1 and 3 stay manual.
    system volume is read-only; use a directory such as
    `/Users/Shared/orchestrator-workspaces` there.
 4. Log `orch-agent` in to Claude Code: `sudo -u orch-agent -i`, then
-   `claude` and `/login`. In the same shell, add the repository host's
+   `claude` and `/login`. As `orchestrator`, add each repository host's
    key to `~/.ssh/known_hosts`, such as with `ssh-keyscan HOST >>
    ~/.ssh/known_hosts`, after comparing its fingerprint with the one
    the host publishes.
@@ -310,13 +362,18 @@ of steps 1 and 3 stay manual.
    `-harness-user orch-agent -workspace-dir
    /srv/orchestrator/workspaces -claude /usr/local/bin/claude` and the
    usual flags. The log has a line "running tasks as the harness user"
-   with the user, the git and rm paths, and `ssh_agent=true`.
+   with the user, the git and rm paths, and `ssh_agent=true`. The
+   daemon's page shows its push key; register it at the forge (see
+   [Tasks](#tasks)).
 7. Start a task with a repository and a prompt that commits a file.
-   The task page shows the branch pushed.
+   The task page shows the branch pushed. In the workspace, as
+   `orch-agent`, `git config remote.origin.url` names the daemon's
+   mirror under `<state-dir>/mirrors/`.
 8. `ps -o user,pid,ppid,command -ax | grep claude` shows `claude` run
    by `orch-agent`, its parent a `sudo` process.
-9. In `sudo -u orch-agent -i`, `cat` the daemon's key and `ls` its
-   state directory fail with "Permission denied". Ask the agent to run
+9. In `sudo -u orch-agent -i`, each of these fails with "Permission
+   denied": `cat` on the daemon's TLS key (`-key`), `cat
+   <state-dir>/ssh_ed25519`, and `ls <state-dir>`. Ask the agent to run
    `ssh-add -l`: it lists the daemon's keys.
 10. With a task running, `sudo -u orch-agent kill -TERM <claude pid>`
     ends `claude`, and the task page shows the harness's exit.
@@ -496,18 +553,28 @@ Daemon flags:
 Without a repository, a task starts in an empty directory. With one, it
 starts in a clone on the branch `orchestrator/<task id>`, created at
 the ref, or checked out from the repository when it has that branch
-already. The daemon accepts a repository given as an `https://` or
+already. The ref may name a branch, a tag, or a commit that one of
+them holds. The daemon accepts a repository given as an `https://` or
 `ssh://` URL with a host, or as an ssh address such as
 `git@github.com:owner/repo.git`. A local path, `file://` or `git://`
 fails the task, as does a ref that starts with `-`.
 
 The daemon delivers a task's work by pushing its branch to the
 repository; nothing of the work goes to the server
-([work delivery](docs/adr/2026-10-08-work-delivery.md)). At the end of
-every turn, when the branch holds commits that the repository's copy of
-it lacks, the daemon pushes it with a plain `git push`, never forced.
-After a push, and after any turn that leaves files uncommitted, pushed
-or not, the task page shows the branch, its commit, how many commits
+([work delivery](docs/adr/2026-10-08-work-delivery.md), [daemon push
+identity](docs/adr/2026-10-10-daemon-push-identity.md)). The daemon
+keeps a bare mirror of each repository its tasks use, under
+`<state-dir>/mirrors/`, and runs every git command against the
+repository there, as its own user. When a task starts, the daemon
+fetches the repository's branches and tags into the mirror, and the
+task's workspace is cloned from the mirror, which is the workspace's
+`origin`. At the end of every turn, when the branch holds commits that
+the repository's copy of it lacks, the daemon fetches the branch from
+the workspace into the mirror and pushes it from there with a plain
+`git push`, never forced. A push the repository refuses, such as after
+the agent rewrote the branch's history, is reported as the push's
+error. After a push, and after any turn that leaves files uncommitted,
+pushed or not, the task page shows the branch, its commit, how many commits
 the branch holds beyond the ref, how many files the agent left
 uncommitted, and any push error. The dashboard's task list shows each
 task's branch and marks a failed push. The daemon adds to the task's
@@ -518,25 +585,45 @@ the repository's default branch. Work the agent did not commit is not
 delivered. A child task gets a branch of its own, starting at its
 parent's ref.
 
+Each daemon has an ed25519 key of its own, its push key, which it
+generates when it starts and finds no `ssh_ed25519` in its
+`-state-dir`: `ssh_ed25519` and `ssh_ed25519.pub`, the private key
+readable by its user only. It reports the public key to the server as
+the fact `ssh_public_key`, and the daemon's page in the GUI shows it as
+an `authorized_keys` line, `ssh-ed25519 <key> orchestrator@<daemon
+id>`. Registering the key at the forge is the owner's job: as a deploy
+key with write access on a repository the daemon's tasks use, or on a
+machine user with access to them. GitHub accepts a deploy key on one
+repository only, so a daemon whose tasks use several GitHub
+repositories needs a machine user there. Delete both files to have the daemon generate a new
+key at its next start; a private key without its public key stops the
+daemon, so that a registered key is not replaced by accident.
+
 The daemon's `git` runs with prompts off and ignores the user's and the
 system's git configuration, credential helpers and URL rewrites
 included (`GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1
-GIT_TERMINAL_PROMPT=0`), for cloning and for pushing, and runs ssh in
-batch mode. ssh authenticates with the daemon user's ssh setup; the
-expected form is an ssh agent, with `SSH_AUTH_SOCK` in the daemon's
-environment, so the daemon never needs a key file it can read.
-`known_hosts` must already list the host, since batch mode fails the
-clone or the push on an unknown host key rather than waiting. Pushing
-needs those credentials on every daemon's machine, with write access to
-the repository; a repository over https that needs credentials fails
-to clone, as no credential helper applies. The harness and the agent it
-runs inherit the daemon's environment, the ssh agent included, so the
-agent's own `git` can authenticate over ssh the same way, or, with
-`-harness-user`, get the daemon's ssh agent through a socket the
-daemon relays (see [Running the harness as another
-user](#running-the-harness-as-another-user)); the agent is
-told not to push, and a `pre-push` hook in the clone refuses any ref
-but the task branch, so the daemon pushes for it. The agent's own `git
+GIT_TERMINAL_PROMPT=0`), and runs ssh in batch mode with the daemon's
+key, `ssh -i <state-dir>/ssh_ed25519 -o BatchMode=yes`. Without
+`-harness-user`, ssh also offers the keys of the daemon's ssh agent,
+such as the owner's, when `SSH_AUTH_SOCK` is set; with it, ssh adds
+`-o IdentitiesOnly=yes` and offers the daemon's key alone. ssh
+otherwise reads the daemon user's `~/.ssh`, and `known_hosts` there
+must already list the host, since batch mode fails the fetch or the
+push on an unknown host key rather than waiting. A repository over
+https that needs credentials fails to fetch, as no credential helper
+applies.
+
+What credentials the agent can reach depends on `-harness-user`.
+Without it, the harness and the agent it runs inherit the daemon's
+environment, the ssh agent included, and the agent can read the
+daemon's key as it can the rest of the daemon's files. With it, the
+agent gets the daemon's ssh agent through a socket the daemon relays
+(see [Running the harness as another
+user](#running-the-harness-as-another-user)), and cannot read the
+daemon's key or write the mirror. Either way the agent is told not to
+push, its `origin` is the mirror, and a `pre-push` hook in the clone
+refuses any ref but the task branch; without `-harness-user` the agent
+can get around these. The agent's own `git
 commit` uses the clone's local configuration instead of the daemon
 user's: identity from `-git-identity` (`orchestrator
 <orchestrator@localhost>` by default) and signing off, so the daemon
@@ -567,7 +654,10 @@ starting on its `-state-dir` also deletes every working directory under
 a shutdown or restart paused keeps its working directory. Before it
 deletes a clone, the daemon pushes the task's branch if it holds
 commits the repository lacks; if that push fails, the daemon keeps the
-clone, logs the failure, and tries again the next time it starts.
+clone, logs the failure, and tries again the next time it starts. When
+`<state-dir>/workspace-repos/<task id>` is missing for a clone, as for
+one an older daemon made, the daemon does not push it and keeps it;
+recover its commits and delete it by hand.
 
 An agent can start child tasks and message other tasks with two tools
 the daemon gives it, `spawn_task(purpose, prompt, agent?, model?,
@@ -785,10 +875,11 @@ Each time it opens its command stream the daemon reports facts about
 its machine with `PUT /v1/daemons/{daemon}/facts`: `os` and `arch` as
 Go names them, such as `darwin` and `arm64`; `cpus`; `memory` in bytes,
 on Linux and macOS; `harness` and `harness_version`, such as
-`claude-code` and `2.1.289`; and `gpu`, `nvidia` when `nvidia-smi` is
-on its `PATH` or `apple` on darwin/arm64, and absent otherwise. The
-owner sets labels on the daemon's page; where a label and a fact share
-a key, the label wins. Keys are letters, digits, `.`, `_` and `-`;
+`claude-code` and `2.1.289`; `gpu`, `nvidia` when `nvidia-smi` is on
+its `PATH` or `apple` on darwin/arm64, and absent otherwise; and
+`ssh_public_key`, the base64 of its push key's public key, the `<key>`
+of the line shown in [Tasks](#tasks). The owner sets labels on the daemon's page; where a
+label and a fact share a key, the label wins. Keys are letters, digits, `.`, `_` and `-`;
 values are printable characters other than space, `,` and `=`.
 
 A task requires the labels of its agent, or those given when it is
@@ -814,8 +905,10 @@ Claude Code session stay on the lost machine, so the task starts again
 in a fresh clone and a new session, with its first prompt and a note
 that its earlier work is gone, carrying the owner's queued prompts or,
 with none queued, quoting the owner's latest prompt to it.
-For a task with a repository, the fresh clone checks out the task's
-branch as the lost daemon last pushed it, and the note says that only
+For a task with a repository, the new daemon fetches the task's branch,
+as the lost daemon last pushed it, into its mirror and checks it out in
+the fresh clone, which needs the new daemon's push key registered at
+the forge too; the note says that only
 the work not pushed is gone
 ([work delivery](docs/adr/2026-10-08-work-delivery.md)).
 A task in the middle of a turn, or with a prompt or resume waiting,
