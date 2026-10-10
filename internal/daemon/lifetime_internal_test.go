@@ -91,21 +91,35 @@ func TestGivenTurnThatEndsWithNothingOutstandingWhenItEndsThenTheHarnessExitsAnd
 	}
 }
 
-func TestGivenFollowUpWhileATurnRunsWhenTheFirstTurnEndsThenTheProcessStaysForTheFollowUpsTurn(t *testing.T) {
+func TestGivenFollowUpWhileATurnRunsWhenTheFirstTurnEndsThenTheDaemonSendsItAndTheProcessStaysForItsTurn(t *testing.T) {
 	srv := startServer(t)
 	d := runDaemon(t, srv.url, t.TempDir())
 	task := srv.createTask(t, testDaemon, protocol.StartTask{Prompt: "Do the work.", PauseLimits: testPauseLimits})
 	proc := d.nextProcess(t)
 	first := proc.nextInput(t)
 	srv.command(t, task, protocol.CommandPrompt, protocol.Prompt{Text: "Also this."})
-	second := proc.nextInput(t)
+	srv.waitForEvent(t, task, "prompt_held", isKind(protocol.KindPromptHeld))
+	proc.noInput(t)
 
 	proc.emit(harness.Output{Line: []byte(`{"type":"result"}`), TurnEnded: true, Answering: []string{first.id}})
-	proc.noInput(t)
+	second := proc.nextInput(t)
+	if second.kind != "prompt" || second.text != "Also this." {
+		t.Fatalf("input after the first turn = %+v, want the held prompt", second)
+	}
 	proc.emit(harness.Output{Line: []byte(`{"type":"result"}`), TurnEnded: true, Answering: []string{second.id}})
 
 	expectExit(t, proc)
-	srv.waitForEvent(t, task, "harness_exited", isKind(protocol.KindHarnessExited))
+	events := srv.waitForEvent(t, task, "harness_exited", isKind(protocol.KindHarnessExited))
+	assertContiguous(t, events)
+	var kinds []protocol.Kind
+	for _, event := range events {
+		if event.Kind == protocol.KindPromptHeld || event.Kind == protocol.KindPromptReleased {
+			kinds = append(kinds, event.Kind)
+		}
+	}
+	if !slices.Equal(kinds, []protocol.Kind{protocol.KindPromptHeld, protocol.KindPromptReleased}) || !strings.Contains(describe(events), `"outcome":"sent"`) {
+		t.Errorf("events: %s, want the prompt held and then sent", describe(events))
+	}
 }
 
 func TestGivenFinishedTaskWhenTheOwnerPromptsThenANewProcessResumesItsSessionInTheSameWorkspaceAndSeqsContinue(t *testing.T) {

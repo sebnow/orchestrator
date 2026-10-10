@@ -273,6 +273,9 @@ const (
 	RegionChildren Region = "task-children"
 	// RegionTree shows the tree of tasks rooted at a task.
 	RegionTree Region = "task-tree"
+	// RegionQueued lists a task's prompts that have not reached its
+	// harness yet.
+	RegionQueued Region = "task-queued"
 )
 
 // RegionOf is region with children as its content.

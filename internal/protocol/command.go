@@ -26,6 +26,8 @@ const (
 	CommandStop CommandKind = "stop"
 	// CommandAnswerPermission: AnswerPermission.
 	CommandAnswerPermission CommandKind = "answer_permission"
+	// CommandWithdraw: Withdraw.
+	CommandWithdraw CommandKind = "withdraw"
 	// CommandDiscard tells the daemon that the owner dismissed the task,
 	// which has no process and takes no more commands: the daemon deletes
 	// what it keeps of the task, its record, journal and workspace. No
@@ -122,9 +124,24 @@ func (l *PauseLimits) UnmarshalJSON(data []byte) error {
 // (docs/adr/2026-10-08-inbox-delivery.md), and names the task the oldest
 // of them came from or, for the server's notice that a child ended, that
 // child. The server words Text, which names every sender.
+//
+// A prompt to a task whose turn runs waits for the turn to end: the
+// daemon holds it, reporting PromptHeld, and sends it as the next turn's
+// prompt, reporting PromptReleased. Steer, which only the owner sets,
+// sends it now instead: the daemon interrupts the running turn and sends
+// Text as the next prompt in the same session. To a task with no turn
+// running, either starts the next turn.
 type Prompt struct {
-	Text string  `json:"text"`
-	From *TaskID `json:"from,omitempty"`
+	Text  string  `json:"text"`
+	From  *TaskID `json:"from,omitempty"`
+	Steer bool    `json:"steer,omitempty"`
+}
+
+// Withdraw asks the daemon to drop the prompt command Prompt, which it
+// holds until the running turn ends, before sending it to the harness.
+// A prompt the daemon no longer holds is not withdrawn.
+type Withdraw struct {
+	Prompt uint64 `json:"prompt"`
 }
 
 // AnswerPermission answers the PermissionRequested event that carried

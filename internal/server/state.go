@@ -298,12 +298,20 @@ func (p *progress) newSession() {
 
 // seeCommand folds an issued command into p. A pause the command puts
 // the task under is the owner's; the scheduler marks its own. A stop to a
-// task with a process leaves the stop pending until the process exits.
+// task with a process leaves the stop pending until the process exits. A
+// prompt that steers a task awaiting permission interrupts the turn that
+// asked, so the task runs on with nothing to answer.
 func (p *progress) seeCommand(command protocol.Command) {
 	if command.Kind == protocol.CommandStop && !p.State.Idle() {
 		p.StopPending = true
 	}
 	p.State = p.State.afterCommand(command.Kind)
+	if command.Kind == protocol.CommandPrompt && p.State == TaskAwaitingPermission {
+		var prompt protocol.Prompt
+		if json.Unmarshal(command.Payload, &prompt) == nil && prompt.Steer {
+			p.State = TaskRunning
+		}
+	}
 	if command.Kind == protocol.CommandPause && (p.State == TaskPausing || p.State == TaskPaused) {
 		p.PausedBy = pauseByOwner
 	}
@@ -395,11 +403,13 @@ type taskSummary struct {
 // that a follow-up continues its session; a stopped or failed task
 // without one is started afresh instead. Failure says why a failed task
 // failed, as failureOf words its latest exit; it is empty otherwise.
+// Queued are the owner's prompts that have not reached the harness yet.
 type taskDetail struct {
 	taskSummary
 	Start      protocol.StartTask `json:"start"`
 	HasSession bool               `json:"has_session"`
 	Failure    string             `json:"failure,omitempty"`
+	Queued     []queuedPrompt     `json:"queued"`
 }
 
 const summaryColumns = `id, daemon_id, placement, parent_id, coalesce(agent, ''), coalesce(project, ''), purpose, requires, state, model, priority, filler, created_at, last_activity_at, cost_usd, dismissed_at`
@@ -535,6 +545,9 @@ func readTaskDetail(ctx context.Context, tx *sql.Tx, task protocol.TaskID) (task
 		}
 	}
 	if detail.HasSession, err = hasSession(ctx, tx, task); err != nil {
+		return taskDetail{}, err
+	}
+	if detail.Queued, err = queuedPrompts(ctx, tx, task); err != nil {
 		return taskDetail{}, err
 	}
 	if detail.State == TaskFailed {

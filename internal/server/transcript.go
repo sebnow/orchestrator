@@ -141,6 +141,10 @@ func eventBodies(event protocol.Event) []transcript.Body {
 		body, ok = decodeBody(event.Payload, func(p protocol.QuotaObserved) transcript.Body { return transcript.QuotaObserved(p) })
 	case protocol.KindBranchPushed:
 		body, ok = decodeBody(event.Payload, func(p protocol.BranchPushed) transcript.Body { return transcript.BranchPushed(p) })
+	case protocol.KindPromptHeld:
+		body, ok = decodeBody(event.Payload, func(p protocol.PromptHeld) transcript.Body { return transcript.PromptHeld(p) })
+	case protocol.KindPromptReleased:
+		body, ok = decodeBody(event.Payload, func(p protocol.PromptReleased) transcript.Body { return transcript.PromptReleased(p) })
 	}
 	if !ok {
 		return []transcript.Body{unknownRecord(string(event.Kind), event.Payload)}
@@ -200,7 +204,7 @@ func commandBodies(task protocol.TaskID, parent *protocol.TaskID, command protoc
 			break
 		}
 		if prompt.From == nil {
-			body = transcript.OwnerPrompt{Text: prompt.Text}
+			body = transcript.OwnerPrompt{Text: prompt.Text, Steer: prompt.Steer}
 			break
 		}
 		if len(delivered) == 0 {
@@ -222,6 +226,9 @@ func commandBodies(task protocol.TaskID, parent *protocol.TaskID, command protoc
 		body = transcript.StopRequested{}
 	case protocol.CommandDiscard:
 		body = transcript.TaskDiscarded{Daemon: command.DaemonID}
+	case protocol.CommandWithdraw:
+		// The daemon's prompt_released says whether it was withdrawn.
+		return nil
 	case protocol.CommandAnswerPermission:
 		answeredBy := transcript.AnsweredByOwner
 		if byPolicy {

@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -400,6 +401,49 @@ func TestGivenTaskPageWhenItsFormsArePostedThenHTMXUpdatesThePageInPlace(t *test
 	if got := len(requests.matching(http.MethodGet, "/tasks/"+string(task))); got != 1 {
 		t.Errorf("task page loaded %d times, want once", got)
 	}
+}
+
+func TestGivenRunningTaskPageWhenAPromptIsSentAfterTheTurnOrNowThenItIsListedAsQueuedWithdrawableAndNowSteers(t *testing.T) {
+	srv, requests := startBrowserServer(t)
+	task := startTaskViaForm(t, srv, "laptop", "Count to twenty slowly")
+	commands := openCommandStream(t, srv, "laptop", "")
+	receiveCommandOf(t, commands, protocol.CommandStartTask)
+	events := &taskEvents{task: task}
+	events.add(protocol.KindHarnessStarted, `{"pid":7,"model":"haiku","workdir":"/w"}`)
+	events.ingest(t, srv, "laptop")
+	page := openPage(t)
+	page.Navigate(srv.url + "/tasks/" + string(task))
+	markLoaded(page)
+	page.WaitTrue(hasElement("#task-header .badge.state-running") + " && " + hasElement(`#prompt-submit button[value="now"]`))
+
+	page.Type(`#prompt textarea[name="text"]`, "Then count back down")
+	clickSettled(page, `#prompt-submit button[name="steer"][value=""]`)
+	prompt := receiveCommandOf(t, commands, protocol.CommandPrompt)
+	if string(prompt.Payload) != `{"text":"Then count back down"}` {
+		t.Errorf("prompt = %s, want it sent after the turn", prompt.Payload)
+	}
+	ref := strconv.FormatUint(prompt.ID, 10)
+	events.add(protocol.KindPromptHeld, `{"prompt":`+ref+`}`)
+	events.ingest(t, srv, "laptop")
+	page.WaitTrue(hasText("#task-queued", "held by the daemon until the turn ends") + " && " + hasText("#task-queued", "Then count back down"))
+
+	clickSettled(page, `#task-queued button`)
+	if withdraw := receiveCommandOf(t, commands, protocol.CommandWithdraw); string(withdraw.Payload) != `{"prompt":`+ref+`}` {
+		t.Errorf("withdraw = %s", withdraw.Payload)
+	}
+	events.add(protocol.KindPromptReleased, `{"prompt":`+ref+`,"outcome":"withdrawn"}`)
+	events.ingest(t, srv, "laptop")
+	page.WaitTrue(hasText("#task-queued", "No prompt waits.") + " && " + hasText("#transcript", "Owner withdrew a held prompt"))
+
+	page.Type(`#prompt textarea[name="text"]`, "Stop at ten")
+	clickSettled(page, `#prompt-submit button[value="now"]`)
+	if steer := receiveCommandOf(t, commands, protocol.CommandPrompt); string(steer.Payload) != `{"text":"Stop at ten","steer":true}` {
+		t.Errorf("steering prompt = %s", steer.Payload)
+	}
+	page.WaitTrue(hasText("#transcript", "Owner steered the task"))
+
+	requireNotReloaded(t, page)
+	requireHTMXPosts(t, requests, "/tasks/"+string(task)+"/commands", 3)
 }
 
 func TestGivenFailedTaskOnTheDashboardWhenDismissedThenItLeavesTheAttentionListUntilDismissedTasksAreShown(t *testing.T) {

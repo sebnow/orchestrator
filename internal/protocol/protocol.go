@@ -78,7 +78,38 @@ const (
 	KindQuotaObserved Kind = "quota_observed"
 	// KindBranchPushed: BranchPushed.
 	KindBranchPushed Kind = "branch_pushed"
+	// KindPromptHeld: PromptHeld.
+	KindPromptHeld Kind = "prompt_held"
+	// KindPromptReleased: PromptReleased.
+	KindPromptReleased Kind = "prompt_released"
 )
+
+// PromptHeld reports that the daemon holds the prompt command Prompt
+// until the running turn ends, rather than send it to the harness, which
+// would queue it where it cannot be withdrawn.
+type PromptHeld struct {
+	Prompt uint64 `json:"prompt"`
+}
+
+// What became of a held prompt.
+const (
+	// ReleasedSent: the daemon sent it to the harness as the next turn's
+	// prompt.
+	ReleasedSent = "sent"
+	// ReleasedWithdrawn: the owner withdrew it.
+	ReleasedWithdrawn = "withdrawn"
+	// ReleasedDropped: the turn ended with the task pausing, or its
+	// process exited, before it was sent; it never will be.
+	ReleasedDropped = "dropped"
+)
+
+// PromptReleased reports that the daemon no longer holds the prompt
+// command Prompt, and Outcome says why: ReleasedSent, ReleasedWithdrawn
+// or ReleasedDropped.
+type PromptReleased struct {
+	Prompt  uint64 `json:"prompt"`
+	Outcome string `json:"outcome"`
+}
 
 // Harness identifies the harness that produced a task's events.
 type Harness struct {

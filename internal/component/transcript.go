@@ -240,6 +240,8 @@ func transcriptEntry(entry transcript.Entry, nested html.Node) html.Node {
 		switch {
 		case b.Resume:
 			label = "Owner resumed the task"
+		case b.Steer:
+			label, body = "Owner steered the task: the turn is interrupted and this sent as the next prompt", preformatted(b.Text)
 		case b.SpawnedBy != nil:
 			from, label = "task", "Spawned by parent task "
 			subject, body = link(taskURL(string(*b.SpawnedBy)), string(*b.SpawnedBy)), preformatted(b.Text)
@@ -359,6 +361,17 @@ func transcriptEntry(entry transcript.Entry, nested html.Node) html.Node {
 	case transcript.TaskRetried:
 		from, label = "owner", "Owner retried the task, which had no session to continue; it started afresh on daemon "+string(b.On)
 		body = preformatted(b.Prompt)
+	case transcript.PromptHeld:
+		label = "The daemon holds the owner's prompt until the turn ends"
+	case transcript.PromptReleased:
+		switch b.Outcome {
+		case protocol.ReleasedSent:
+			label = "The daemon sent the owner's held prompt as the next turn's"
+		case protocol.ReleasedWithdrawn:
+			from, label = "owner", "Owner withdrew a held prompt before it was sent"
+		default:
+			label = "The daemon dropped a held prompt, unsent, as the turn ended without a next one; send it again if it still applies"
+		}
 	case transcript.TaskDiscarded:
 		from, label = "owner", "Owner dismissed the task; daemon "+string(b.Daemon)+" deletes its workspace"
 	case transcript.Unknown:

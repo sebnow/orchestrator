@@ -65,9 +65,10 @@ func TestGivenInterruptedTurnWhenTheOwnersNextPromptsTurnFailsThenTheTaskFails(t
 	d := runDaemon(t, srv.url, t.TempDir())
 	task, proc, first := interruptedTurn(t, srv, d)
 	srv.command(t, task, protocol.CommandPrompt, protocol.Prompt{Text: "Try something else."})
-	second := proc.nextInput(t)
+	srv.waitForEvent(t, task, "prompt_held", isKind(protocol.KindPromptHeld))
 
 	proc.emit(errorResult(first.id))
+	second := proc.nextInput(t)
 	proc.emit(errorResult(second.id))
 	expectExit(t, proc)
 	proc.end(protocol.HarnessExited{ExitCode: 1})

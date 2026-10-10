@@ -419,10 +419,12 @@ func PermissionPrompt(taskID string, pending []transcript.PermissionRequested, p
 
 // FollowUp is what a task's follow-up form offers as the task stands.
 // Closed, when set, says why the task takes no prompt now. Notes say what
-// sending one will do.
+// sending one will do. Steer offers, besides sending the prompt after the
+// running turn, sending it now, which interrupts the turn.
 type FollowUp struct {
 	Closed string
 	Notes  []string
+	Steer  bool
 }
 
 // PromptForm sends the task a follow-up prompt, as offer allows.
@@ -447,7 +449,54 @@ func PromptSubmit(offer FollowUp) html.Node {
 			html.El("button", attrs("type", "submit", "class", string(VariantPrimary), "disabled", ""), html.Text("Send")),
 			html.El("span", attrs("class", "reason"), html.Text(" "+offer.Closed)))
 	}
+	if offer.Steer {
+		return html.Fragment(html.Fragment(notes...),
+			html.El("p", attrs("class", "notice"), html.Text("A turn is running. After this turn, the daemon holds the prompt, "+
+				"which can be withdrawn until the turn ends, and then sends it; now, it interrupts the turn and sends the prompt "+
+				"as the next one in the same session.")),
+			html.El("div", attrs("class", "controls"),
+				Button("Send after this turn", VariantPrimary, "steer", ""),
+				Button("Send now", VariantDanger, "steer", SteerNow)))
+	}
 	return html.Fragment(html.Fragment(notes...), Button("Send", VariantPrimary, "", ""))
+}
+
+// SteerNow is the value of the follow-up form's steer field that sends
+// the prompt now, interrupting the running turn.
+const SteerNow = "now"
+
+// Queued is a task's prompt that has not reached its harness yet: a
+// turn waiting for the scheduler, Turn, or a prompt the daemon holds
+// until the running turn ends, Prompt.
+type Queued struct {
+	Turn, Prompt uint64
+	Text         string
+	Since        time.Time
+}
+
+// QueuedPrompts lists queued, each with a button that withdraws it.
+// problem, when set, says why the last withdrawal was refused.
+func QueuedPrompts(taskID string, queued []Queued, problem string) html.Node {
+	refused := problemNote(problem)
+	if len(queued) == 0 {
+
+		return html.Fragment(refused, html.El("p", attrs("class", "empty"), html.Text("No prompt waits.")))
+	}
+	items := make([]html.Node, len(queued))
+	for idx, q := range queued {
+		where, field, id := "waits for the scheduler", "turn", q.Turn
+		if q.Prompt != 0 {
+			where, field, id = "held by the daemon until the turn ends", "prompt", q.Prompt
+		}
+		items[idx] = html.El("li", nil,
+			timestamp(q.Since), html.Text(" "), html.El("span", attrs("class", "reason"), html.Text(where)),
+			preformatted(q.Text),
+			Form(commandsURL(taskID), "",
+				Field(FieldSpec{Kind: FieldHidden, Name: "kind", Value: string(protocol.CommandWithdraw)}),
+				Field(FieldSpec{Kind: FieldHidden, Name: field, Value: strconv.FormatUint(id, 10)}),
+				Button("Withdraw", VariantPlain, "", "")))
+	}
+	return html.Fragment(refused, html.El("ul", attrs("class", "queued"), items...))
 }
 
 // NewTask is what the owner entered to start a task. An empty Agent is

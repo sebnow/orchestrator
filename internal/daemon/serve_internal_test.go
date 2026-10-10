@@ -223,9 +223,7 @@ func ownerCreatesPromptsAndPausesATask(t *testing.T, srv *serverFixture, d *daem
 	srv.waitForEvent(t, task, "the harness output", isKind(protocol.KindHarnessOutput))
 
 	srv.command(t, task, protocol.CommandPrompt, protocol.Prompt{Text: "Also this."})
-	if in := proc.nextInput(t); in.kind != "prompt" || in.text != "Also this." {
-		t.Errorf("follow-up input = %+v", in)
-	}
+	srv.waitForEvent(t, task, "prompt_held", isKind(protocol.KindPromptHeld))
 	srv.command(t, task, protocol.CommandPause, nil)
 	if in := proc.nextInput(t); in.kind != "prompt" || in.text != pausePrompt {
 		t.Errorf("pause input = %+v", in)

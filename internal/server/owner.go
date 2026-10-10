@@ -297,6 +297,11 @@ func (s *Server) postCommand(w http.ResponseWriter, r *http.Request) {
 	case protocol.CommandPrompt, protocol.CommandResume:
 		status = http.StatusAccepted
 		result, err = s.store.queueCommand(r.Context(), task, turnKind(request.Kind), payload)
+	case protocol.CommandWithdraw:
+		var withdraw protocol.Withdraw
+		json.Unmarshal(payload, &withdraw)
+		status = http.StatusCreated
+		result, err = s.store.withdrawPrompt(r.Context(), task, withdraw.Prompt)
 	default:
 		var command protocol.Command
 		command, err = s.store.issueCommand(r.Context(), task, request.Kind, payload)
@@ -308,7 +313,7 @@ func (s *Server) postCommand(w http.ResponseWriter, r *http.Request) {
 	switch {
 	case errors.Is(err, errUnknownTask):
 		http.Error(w, err.Error(), http.StatusNotFound)
-	case errors.Is(err, errTaskEnded), errors.Is(err, errNotStarted), errors.Is(err, errDismissed):
+	case errors.Is(err, errTaskEnded), errors.Is(err, errNotStarted), errors.Is(err, errDismissed), errors.Is(err, errNotQueued):
 		http.Error(w, err.Error(), http.StatusConflict)
 	case err != nil:
 		s.internalError(w, err)
@@ -341,6 +346,15 @@ func commandPayload(kind protocol.CommandKind, raw json.RawMessage) (json.RawMes
 			return nil, errors.New("prompt from is set only by the server, for a message it delivers")
 		}
 		payload = prompt
+	case protocol.CommandWithdraw:
+		var withdraw protocol.Withdraw
+		if err := decodeStrict(bytes.NewReader(raw), &withdraw); err != nil {
+			return nil, fmt.Errorf("decode withdraw: %w", err)
+		}
+		if withdraw.Prompt == 0 {
+			return nil, errors.New("withdraw prompt is required")
+		}
+		payload = withdraw
 	case protocol.CommandAnswerPermission:
 		var answer protocol.AnswerPermission
 		if err := decodeStrict(bytes.NewReader(raw), &answer); err != nil {
@@ -420,6 +434,33 @@ func (s *Server) getTask(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, detail)
+}
+
+// deleteTurn withdraws the owner's prompt that waits for the scheduler as
+// the turn the path names, and answers 204. A turn that no longer waits
+// gets 409.
+func (s *Server) deleteTurn(w http.ResponseWriter, r *http.Request) {
+	task, err := protocol.ParseTaskID(r.PathValue("task"))
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	turn, err := strconv.ParseUint(r.PathValue("turn"), 10, 63)
+	if err != nil {
+		http.Error(w, "turn is not a turn id", http.StatusBadRequest)
+		return
+	}
+	err = s.store.withdrawTurn(r.Context(), task, turn)
+	switch {
+	case errors.Is(err, errUnknownTask):
+		http.Error(w, err.Error(), http.StatusNotFound)
+	case errors.Is(err, errNotQueued):
+		http.Error(w, err.Error(), http.StatusConflict)
+	case err != nil:
+		s.internalError(w, err)
+	default:
+		w.WriteHeader(http.StatusNoContent)
+	}
 }
 
 // postDismiss dismisses a stopped or failed task from the dashboard's

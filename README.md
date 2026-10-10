@@ -656,6 +656,23 @@ session, telling the agent that the owner interrupted its last turn
 A follow-up prompt sent after the interrupt runs as the next turn, and
 the task ends as that turn does.
 
+While a turn runs, the task page's follow-up form sends a prompt in one
+of two ways. "Send after this turn" has the daemon hold the prompt
+until the turn ends and then send it as the next turn's prompt, in the
+same `claude` process; until then the task page lists it under Queued
+prompts, where Withdraw drops it. The daemon holds it rather than write
+it to `claude`, which would queue it where it cannot be withdrawn. A
+turn that ends with the task pausing, or a process that exits, drops
+the prompts held, and the transcript says so. "Send now" steers the
+task: the daemon interrupts the running turn and sends the prompt as
+the next one in the same session, and the transcript shows the owner's
+steering rather than an interrupt that pauses the task. Prompts waiting
+for the scheduler are listed and withdrawn the same way. Scripts send a
+`prompt` command with `"steer": true` to steer, withdraw a held prompt
+with a `withdraw` command naming it as `{"prompt": <command id>}`, and
+withdraw a waiting one with `DELETE /v1/tasks/{task}/turns/{turn}`; the
+task's `queued` field lists both.
+
 The daemon deletes a task's working directory, with everything in it,
 when the task ends for good on that daemon: when the owner dismisses
 it, and when its first start fails, since a follow-up then starts it

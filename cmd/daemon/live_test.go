@@ -1497,3 +1497,87 @@ func TestLiveGivenAllowAllWhenTheAgentAsksForARemoteSubagentThenTheServerDeniesI
 		}
 	}
 }
+
+// Cost: `claude --version` and one claude session of two turns: a count
+// that sleeps a second between numbers, cut short by the owner's
+// steering, and the turn that answers the steering prompt.
+func TestLiveGivenTurnCountingSlowlyWhenTheOwnerSendsAPromptNowThenTheTurnIsInterruptedAndTheNextTurnAnswersItInTheSameSession(t *testing.T) {
+	ctx, cancel := context.WithTimeout(t.Context(), 6*time.Minute)
+	defer cancel()
+	sys := newLiveSystem(t, "-permissions", "allow-all")
+	sys.answeredByPolicy = true
+	logs := &syncBuffer{}
+	t.Cleanup(func() {
+		if t.Failed() {
+			t.Logf("daemon log:\n%s", logs)
+		}
+	})
+	sys.runDaemon(t, logs)
+	task := sys.startTaskViaGUI(t, ctx, "Count to 20 slowly: for each number from 1 to 20, make one Bash call that runs "+
+		"`sleep 1; echo N` with N the number, one call per number. When you have reached 20, reply with the word COUNTED.")
+
+	var before []protocol.Event
+	for {
+		before = sys.events(t, task)
+		if bashCalls(before) >= 3 {
+			break
+		}
+		if state := sys.state(t, task); state != "queued" && state != "pending" && state != "running" {
+			t.Fatalf("the task is %s before its third count", state)
+		}
+		select {
+		case <-ctx.Done():
+			t.Fatalf("waiting for the third count: %v", ctx.Err())
+		case <-time.After(200 * time.Millisecond):
+		}
+	}
+	t.Logf("steering after %d Bash calls", bashCalls(before))
+	sys.command(t, task, url.Values{"kind": {"prompt"}, "steer": {"now"},
+		"text": {"Stop counting now. Reply with exactly the word STEERED and nothing else."}})
+
+	events := sys.waitForState(t, ctx, task, "finished", 1, nil)
+
+	sessions, results := sessionsAndResults(t, events)
+	requireOneSession(t, sessions)
+	if countKind(events, protocol.KindHarnessStarted) != 1 {
+		t.Errorf("harness processes = %d, want the one the steering kept", countKind(events, protocol.KindHarnessStarted))
+	}
+	var exit protocol.HarnessExited
+	interrupted := false
+	for _, event := range events[len(before):] {
+		switch msg, err := claude.Parse(event.Payload); {
+		case event.Kind == protocol.KindHarnessExited:
+			json.Unmarshal(event.Payload, &exit)
+		case event.Kind == protocol.KindHarnessOutput && err == nil && msg.Type == "control_response":
+			t.Logf("seq %d %s", event.Seq, event.Payload)
+			interrupted = true
+		}
+	}
+	if !interrupted {
+		t.Error("no control_response: the harness did not answer an interrupt")
+	}
+	if exit.ExitCode != 0 || exit.Error != "" {
+		t.Errorf("harness_exited = %+v, want the harness's own clean exit, not a turn cut short", exit)
+	}
+	if len(results) != 2 || strings.Contains(results[0], "COUNTED") || !strings.Contains(results[1], "STEERED") {
+		t.Errorf("results = %q, want the interrupted count and then STEERED", results)
+	}
+	if bashCalls(events) >= 20 {
+		t.Errorf("Bash calls = %d, want the count cut short", bashCalls(events))
+	}
+	page := getPage(t, sys.server+"/tasks/"+string(task))
+	if !strings.Contains(page, "Owner steered the task") || strings.Contains(page, "Owner interrupted the turn") {
+		t.Error("the transcript does not show the owner's steering, or shows it as an interrupt")
+	}
+}
+
+// bashCalls counts the Bash calls among events.
+func bashCalls(events []protocol.Event) int {
+	count := 0
+	for _, call := range toolCalls(events) {
+		if call.Name == "Bash" {
+			count++
+		}
+	}
+	return count
+}

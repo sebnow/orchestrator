@@ -310,8 +310,10 @@ func (s *Server) attentionReason(ctx context.Context, summary taskSummary) (stri
 // pendingPermissions returns the permission requests in entries that no
 // answer in entries names, in the order they were made. Answers are
 // matched wherever they fall, because a request and its answer are
-// stamped by different clocks.
-func pendingPermissions(entries []transcript.Entry) []transcript.PermissionRequested {
+// stamped by different clocks. A request before the owner's steering
+// prompt is not pending: steering interrupted the turn that made it.
+func pendingPermissions(
+	entries []transcript.Entry) []transcript.PermissionRequested {
 	answered := make(map[string]bool)
 	for _, entry := range entries {
 		if answer, ok := entry.Body.(transcript.PermissionAnswered); ok {
@@ -320,8 +322,17 @@ func pendingPermissions(entries []transcript.Entry) []transcript.PermissionReque
 	}
 	var pending []transcript.PermissionRequested
 	for _, entry := range entries {
-		if request, ok := entry.Body.(transcript.PermissionRequested); ok && !answered[request.RequestID] {
-			pending = append(pending, request)
+		switch body := entry.Body.(type) {
+		case transcript.PermissionRequested:
+			if !answered[body.RequestID] {
+				pending = append(pending, body)
+			}
+		case transcript.OwnerPrompt:
+			// Steering interrupts the turn, and with it every request the
+			// turn made.
+			if body.Steer {
+				pending = nil
+			}
 		}
 	}
 	return pending

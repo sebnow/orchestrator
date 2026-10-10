@@ -221,7 +221,19 @@ func (s *service) applyCommand(task protocol.TaskID, t *Task, command protocol.C
 		if err != nil {
 			return t, err
 		}
-		return s.prompt(task, t, prompt.Text)
+		if prompt.Steer {
+			return s.steer(task, t, prompt.Text)
+		}
+		return s.prompt(task, t, command.ID, prompt.Text)
+	case protocol.CommandWithdraw:
+		withdraw, err := decodePayload[protocol.Withdraw](command)
+		if err != nil {
+			return t, err
+		}
+		if t == nil {
+			return nil, fmt.Errorf("%w: %d", ErrNotHeld, withdraw.Prompt)
+		}
+		return t, t.Withdraw(withdraw.Prompt)
 	case protocol.CommandResume:
 		if t != nil {
 			if err := s.waitForPauseToSettle(t); err != nil {
@@ -277,15 +289,34 @@ func (s *service) applyCommand(task protocol.TaskID, t *Task, command protocol.C
 	}
 }
 
-// prompt sends text to t while its turn runs. Once t's turn is over, or
-// when the task has no process, it waits for t to exit and resumes the
+// prompt holds text, which command ref carried, until t's running turn
+// ends, when t sends it as the next turn's prompt. Once t's turn is over,
+// or when the task has no process, it waits for t to exit and resumes the
 // task in a new process with text.
-func (s *service) prompt(task protocol.TaskID, t *Task, text string) (*Task, error) {
+func (s *service) prompt(task protocol.TaskID, t *Task, ref uint64, text string) (*Task, error) {
 	if t != nil {
 		if err := s.waitForPauseToSettle(t); err != nil {
 			return t, err
 		}
-		err := t.Prompt(text)
+		err := t.Hold(ref, text)
+		if !errors.Is(err, ErrTaskEnded) {
+			return t, err
+		}
+		s.awaitExit(task, t)
+	}
+	return s.resume(task, text)
+}
+
+// steer interrupts t's running turn and sends text as the next prompt in
+// the same session. Once t's turn is over, or when the task has no
+// process, there is nothing to interrupt, and it resumes the task with
+// text as prompt does.
+func (s *service) steer(task protocol.TaskID, t *Task, text string) (*Task, error) {
+	if t != nil {
+		if err := s.waitForPauseToSettle(t); err != nil {
+			return t, err
+		}
+		err := t.Steer(text)
 		if !errors.Is(err, ErrTaskEnded) {
 			return t, err
 		}

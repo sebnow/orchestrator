@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net/http"
 	"slices"
+	"strconv"
 	"strings"
 
 	"github.com/sebnow/orchestrator/internal/component"
@@ -221,8 +222,21 @@ func (v taskView) followUp() component.FollowUp {
 	case v.detail.State.Ended() && !v.detail.HasSession:
 		offer.Notes = append(offer.Notes, "The task's harness never started, so it has no session to continue. "+
 			"A prompt starts it afresh, on whichever daemon fits, with its first prompt followed by yours; Retry starts it with its first prompt alone.")
+	case v.detail.State == TaskRunning || v.detail.State == TaskAwaitingPermission:
+		offer.Steer = true
 	}
 	return offer
+}
+
+// queuedList lists the task's prompts that have not reached its harness
+// yet, each of which can be withdrawn. problem, when set, says why the
+// last withdrawal was refused.
+func (v taskView) queuedList(problem string) html.Node {
+	queued := make([]component.Queued, len(v.detail.Queued))
+	for idx, q := range v.detail.Queued {
+		queued[idx] = component.Queued(q)
+	}
+	return component.QueuedPrompts(v.id(), queued, problem)
 }
 
 func (v taskView) promptForm(text, problem string) html.Node {
@@ -239,12 +253,14 @@ type refusal struct {
 
 func (v taskView) page(refused refusal) html.Node {
 	_, at := cursor{}.after(v.entries)
-	var promptText, promptProblem, permissionProblem string
+	var promptText, promptProblem, permissionProblem, withdrawProblem string
 	switch refused.kind {
 	case protocol.CommandPrompt:
 		promptText, promptProblem = refused.text, refused.problem
 	case protocol.CommandAnswerPermission:
 		permissionProblem = refused.problem
+	case protocol.CommandWithdraw:
+		withdrawProblem = refused.problem
 	}
 	return component.Page("Task "+v.id(),
 		component.RegionOf(component.RegionTaskHeader, v.header()),
@@ -255,6 +271,7 @@ func (v taskView) page(refused refusal) html.Node {
 			component.RegionOf(component.RegionUnknown, v.unknownToggle()),
 			component.Transcript(v.visible(v.entries)),
 			component.LiveUpdates(v.id(), at.String(), v.showUnknown)),
+		component.Section("Queued prompts", component.RegionOf(component.RegionQueued, v.queuedList(withdrawProblem))),
 		component.Section("Follow up", component.RegionOf(component.RegionPrompt, v.promptForm(promptText, promptProblem))),
 	)
 }
@@ -282,6 +299,7 @@ func (s *Server) postCommandForm(w http.ResponseWriter, r *http.Request) {
 	}
 	refused := refusal{kind: protocol.CommandKind(r.PostForm.Get("kind"))}
 	var payload any
+	var withdrawTurn uint64
 	switch refused.kind {
 	case protocol.CommandPause, protocol.CommandResume, protocol.CommandInterrupt, protocol.CommandStop:
 	case protocol.CommandPrompt:
@@ -289,7 +307,19 @@ func (s *Server) postCommandForm(w http.ResponseWriter, r *http.Request) {
 		if strings.TrimSpace(refused.text) == "" {
 			refused.problem = "Write a prompt first."
 		}
-		payload = protocol.Prompt{Text: refused.text}
+		payload = protocol.Prompt{Text: refused.text, Steer: r.PostForm.Get("steer") == component.SteerNow}
+	case protocol.CommandWithdraw:
+		turn, turnErr := strconv.ParseUint(r.PostForm.Get("turn"), 10, 63)
+		prompt, promptErr := strconv.ParseUint(r.PostForm.Get("prompt"), 10, 63)
+		switch {
+		case turnErr == nil && turn > 0:
+			withdrawTurn = turn
+		case promptErr == nil && prompt > 0:
+			payload = protocol.Withdraw{Prompt: prompt}
+		default:
+			http.Error(w, "withdraw needs a turn or a prompt", http.StatusBadRequest)
+			return
+		}
 	case protocol.CommandAnswerPermission:
 		decision := r.PostForm.Get("decision")
 		if decision != "allow" && decision != "deny" {
@@ -305,7 +335,7 @@ func (s *Server) postCommandForm(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var checked json.RawMessage
-	if refused.problem == "" {
+	if refused.problem == "" && withdrawTurn == 0 {
 		raw, err := json.Marshal(payload)
 		if err != nil {
 			s.internalError(w, err)
@@ -316,16 +346,25 @@ func (s *Server) postCommandForm(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if refused.problem == "" {
-		if refused.kind == protocol.CommandPrompt || refused.kind == protocol.CommandResume {
+		switch {
+		case refused.kind == protocol.CommandPrompt || refused.kind == protocol.CommandResume:
 			_, err = s.store.queueCommand(r.Context(), task, turnKind(refused.kind), checked)
-		} else {
+		case withdrawTurn != 0:
+			err = s.store.withdrawTurn(r.Context(), task, withdrawTurn)
+		case refused.kind == protocol.CommandWithdraw:
+			var withdraw protocol.Withdraw
+			json.Unmarshal(checked, &withdraw)
+			_, err = s.store.withdrawPrompt(r.Context(), task, withdraw.Prompt)
+		default:
 			_, err = s.store.issueCommand(r.Context(), task, refused.kind, checked)
 		}
 		if errors.Is(err, errUnknownTask) {
 			http.Error(w, err.Error(), http.StatusNotFound)
 			return
 		}
-		if errors.Is(err, errDismissed) {
+		if errors.Is(err, errNotQueued) {
+			refused.problem = "That prompt no longer waits: the harness has it, or it was withdrawn or dropped."
+		} else if errors.Is(err, errDismissed) {
 			refused.problem = "The task was dismissed; it takes no more commands."
 		} else if errors.Is(err, errTaskEnded) {
 			refused.problem = "The task has no process; send a follow-up prompt, Resume or Retry instead."
@@ -351,8 +390,11 @@ func (s *Server) postCommandForm(w http.ResponseWriter, r *http.Request) {
 	}
 	if refused.problem != "" {
 		form := component.OutOfBand(component.RegionPermission, view.permission(refused.problem))
-		if refused.kind == protocol.CommandPrompt {
+		switch refused.kind {
+		case protocol.CommandPrompt:
 			form = component.OutOfBand(component.RegionPrompt, view.promptForm(refused.text, refused.problem))
+		case protocol.CommandWithdraw:
+			form = component.OutOfBand(component.RegionQueued, view.queuedList(refused.problem))
 		}
 		s.writeHTML(w, http.StatusUnprocessableEntity, form)
 		return

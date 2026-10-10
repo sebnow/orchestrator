@@ -62,6 +62,8 @@ const (
 	KindMessageUndeliverable Kind = "message_undeliverable"
 	KindTaskMoved            Kind = "task_moved"
 	KindTaskRetried          Kind = "task_retried"
+	KindPromptHeld           Kind = "prompt_held"
+	KindPromptReleased       Kind = "prompt_released"
 	KindTaskDiscarded        Kind = "task_discarded"
 	KindBranchPushed         Kind = "branch_pushed"
 	KindUnknown              Kind = "unknown"
@@ -78,10 +80,29 @@ type Body interface {
 // chooses its words. SpawnedBy, when set, names the task whose agent
 // spawned this one; the first prompt is then that agent's, not the
 // owner's.
+//
+// Steer is set when the owner sent Text to steer the running turn: the
+// daemon interrupted the turn and sent Text as the next prompt, so the
+// interrupted turn's end is not a turn cut short.
 type OwnerPrompt struct {
 	Text      string
 	Resume    bool
 	SpawnedBy *protocol.TaskID
+	Steer     bool
+}
+
+// PromptHeld is the daemon holding the owner's prompt, sent by the
+// command Prompt, until the running turn ends.
+type PromptHeld struct {
+	Prompt uint64
+}
+
+// PromptReleased is the daemon no longer holding the prompt the command
+// Prompt sent: Outcome is protocol.ReleasedSent, ReleasedWithdrawn or
+// ReleasedDropped.
+type PromptReleased struct {
+	Prompt  uint64
+	Outcome string
 }
 
 // PauseRequested is the owner asking the agent to pause.
@@ -355,6 +376,8 @@ func (ChildEnded) Kind() Kind           { return KindChildEnded }
 func (MessageUndeliverable) Kind() Kind { return KindMessageUndeliverable }
 func (TaskMoved) Kind() Kind            { return KindTaskMoved }
 func (TaskRetried) Kind() Kind          { return KindTaskRetried }
+func (PromptHeld) Kind() Kind           { return KindPromptHeld }
+func (PromptReleased) Kind() Kind       { return KindPromptReleased }
 func (TaskDiscarded) Kind() Kind        { return KindTaskDiscarded }
 func (BranchPushed) Kind() Kind         { return KindBranchPushed }
 func (Unknown) Kind() Kind              { return KindUnknown }
@@ -382,7 +405,10 @@ func (ChildEnded) body()           {}
 func (MessageUndeliverable) body() {}
 func (TaskMoved) body()            {}
 func (TaskRetried) body()          {}
-func (TaskDiscarded) body()        {}
+func (PromptHeld) body()           {}
+func (PromptReleased) body()       {}
+
+func (TaskDiscarded) body() {}
 
 func (BranchPushed) body() {}
 func (Unknown) body()      {}

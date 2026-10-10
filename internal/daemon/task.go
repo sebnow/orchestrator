@@ -151,6 +151,9 @@ type Task struct {
 	mu          sync.Mutex
 	changed     chan struct{}
 	outstanding map[string]bool
+	// held are the prompts the daemon holds until the running turn ends,
+	// oldest first; the first is sent then.
+	held        []heldPrompt
 	permissions map[string]*pendingPermission
 	turnsEnded  int
 	closing     bool
@@ -168,6 +171,23 @@ type pendingPermission struct {
 	request protocol.PermissionRequested
 	answer  chan harness.Decision
 }
+
+// heldPrompt is a prompt held until the running turn ends: the id of the
+// command that carried it, and its text.
+type heldPrompt struct {
+	ref  uint64
+	text string
+}
+
+// outgoing is a held prompt on its way to the harness under id.
+type outgoing struct {
+	heldPrompt
+	id string
+}
+
+// ErrNotHeld reports a withdrawal of a prompt the task does not hold:
+// sent already, dropped, or never held.
+var ErrNotHeld = errors.New("prompt is not held")
 
 // StartTask journals the task's start, starts its harness, and sends the
 // task's prompt. The harness is killed if ctx is cancelled.
@@ -328,11 +348,14 @@ func (t *Task) run(unregister func()) {
 		}
 		// The settlement is journaled before the next line is read, so it
 		// precedes the harness's exit.
-		settled, turnOver := t.handleOutput(out)
+		settled, turnOver, next := t.handleOutput(out)
 		if settled != nil {
 			if _, err := t.record(protocol.KindPauseSettled, *settled); err != nil {
 				t.proc.Kill()
 			}
+		}
+		if next != nil {
+			turnOver = t.sendHeld(*next)
 		}
 		if turnOver {
 			// A failed close means the harness is gone; its exit ends the
@@ -343,6 +366,12 @@ func (t *Task) run(unregister func()) {
 	if readErr != nil {
 		t.proc.Kill()
 	}
+	t.mu.Lock()
+	for _, p := range t.held {
+		t.record(protocol.KindPromptReleased, protocol.PromptReleased{Prompt: p.ref, Outcome: protocol.ReleasedDropped})
+	}
+	t.held = nil
+	t.mu.Unlock()
 	exit := t.proc.Wait()
 	if readErr != nil && exit.Error == "" {
 		exit.Error = "read harness output: " + readErr.Error()
@@ -395,7 +424,12 @@ func (t *Task) reportCutShort(own protocol.HarnessExited) (protocol.HarnessExite
 // the daemon sent waits for another (docs/adr/2026-10-08-task-lifetime.md).
 // From then on the task takes no more commands, so nothing can be written
 // to the harness after the daemon decides to close its input.
-func (t *Task) handleOutput(out harness.Output) (settled *protocol.PauseSettled, turnOver bool) {
+//
+// A turn that ends with nothing the daemon sent waiting and a prompt held
+// does not end the process: it returns the oldest held prompt as next,
+// outstanding already, for sendHeld to send. A turn that settles a pause
+// drops every held prompt instead, since the task is to stop.
+func (t *Task) handleOutput(out harness.Output) (settled *protocol.PauseSettled, turnOver bool, next *outgoing) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	if out.SessionID != "" {
@@ -406,7 +440,7 @@ func (t *Task) handleOutput(out harness.Output) (settled *protocol.PauseSettled,
 		t.notifyLocked()
 	}
 	if !out.TurnEnded {
-		return nil, false
+		return nil, false, nil
 	}
 	t.turnsEnded++
 	for _, id := range out.Answering {
@@ -419,12 +453,55 @@ func (t *Task) handleOutput(out harness.Output) (settled *protocol.PauseSettled,
 		t.pause.state = Paused
 		t.pause.stopTimer()
 	}
-	if len(t.outstanding) == 0 && !t.closing {
+	if t.pause.state == Paused {
+		for _, p := range t.held {
+			t.record(protocol.KindPromptReleased, protocol.PromptReleased{Prompt: p.ref, Outcome: protocol.ReleasedDropped})
+		}
+		t.held = nil
+	}
+	switch {
+	case len(t.outstanding) > 0 || t.closing:
+	case len(t.held) > 0:
+		next = &outgoing{heldPrompt: t.held[0], id: newID()}
+		t.held = t.held[1:]
+		t.outstanding[next.id] = true
+		t.cutShort = nil
+	default:
 		t.closing = true
 		turnOver = true
 	}
 	t.notifyLocked()
-	return settled, turnOver
+	return settled, turnOver, next
+}
+
+// sendHeld sends p, a held prompt handleOutput took for the next turn, to
+// the harness, and reports whether the process's turn is over after all:
+// p could not be sent and nothing else waits. A prompt the process can no
+// longer take, because Stop closed its input meanwhile, is dropped.
+func (t *Task) sendHeld(p outgoing) (turnOver bool) {
+	t.commands.Lock()
+	defer t.commands.Unlock()
+	t.mu.Lock()
+	ended := t.ended()
+	t.mu.Unlock()
+	var err error
+	if !ended {
+		err = t.proc.Prompt(p.id, p.text)
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if ended || err != nil {
+		delete(t.outstanding, p.id)
+		t.record(protocol.KindPromptReleased, protocol.PromptReleased{Prompt: p.ref, Outcome: protocol.ReleasedDropped})
+		if len(t.outstanding) == 0 && !t.closing {
+			t.closing = true
+			turnOver = true
+		}
+		t.notifyLocked()
+		return turnOver
+	}
+	t.record(protocol.KindPromptReleased, protocol.PromptReleased{Prompt: p.ref, Outcome: protocol.ReleasedSent})
+	return false
 }
 
 // ended reports whether the process takes no more commands: its turn is
@@ -517,6 +594,95 @@ func (t *Task) Prompt(text string) error {
 	t.notifyLocked()
 	t.mu.Unlock()
 
+	if err := t.proc.Prompt(id, text); err != nil {
+		t.mu.Lock()
+		delete(t.outstanding, id)
+		t.notifyLocked()
+		t.mu.Unlock()
+		return fmt.Errorf("send prompt: %w", err)
+	}
+	return nil
+}
+
+// Hold holds text, the prompt command ref carried, until the running turn
+// ends, when it is sent as the next turn's prompt, and reports
+// PromptHeld. Unlike a prompt sent at once, which the harness queues
+// where it cannot be withdrawn, a held prompt can be withdrawn until then.
+// While a pause is in progress it returns ErrBusy. Once the process's
+// turn is over it returns ErrTaskEnded: the prompt belongs to the task's
+// next process.
+func (t *Task) Hold(ref uint64, text string) error {
+	t.commands.Lock()
+	defer t.commands.Unlock()
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if t.ended() {
+		return ErrTaskEnded
+	}
+	if t.pause.unsettled() {
+		return fmt.Errorf("%w: a pause is in progress", ErrBusy)
+	}
+	if _, err := t.record(protocol.KindPromptHeld, protocol.PromptHeld{Prompt: ref}); err != nil {
+		return fmt.Errorf("record the held prompt: %w", err)
+	}
+	t.held = append(t.held, heldPrompt{ref: ref, text: text})
+	t.notifyLocked()
+	return nil
+}
+
+// Withdraw drops the held prompt that command ref carried, and reports
+// PromptReleased. A prompt no longer held gets ErrNotHeld.
+func (t *Task) Withdraw(ref uint64) error {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	idx := slices.IndexFunc(t.held, func(p heldPrompt) bool { return p.ref == ref })
+	if idx < 0 {
+		return fmt.Errorf("%w: %d", ErrNotHeld, ref)
+	}
+	t.held = slices.Delete(t.held, idx, idx+1)
+	t.record(protocol.KindPromptReleased, protocol.PromptReleased{Prompt: ref, Outcome: protocol.ReleasedWithdrawn})
+	t.notifyLocked()
+	return nil
+}
+
+// Steer interrupts the running turn and sends text as the next prompt in
+// the same session. The interrupt is the owner's steering, not a turn cut
+// short: the turn it starts ends as the harness ends it. Prompts held
+// stay held, to follow the steering prompt. While a pause is in progress
+// it returns ErrBusy. Once the process's turn is over it returns
+// ErrTaskEnded: the prompt belongs to the task's next process.
+func (t *Task) Steer(text string) error {
+	t.commands.Lock()
+	defer t.commands.Unlock()
+	id := newID()
+	t.mu.Lock()
+	if t.ended() {
+		t.mu.Unlock()
+		return ErrTaskEnded
+	}
+	if t.pause.unsettled() {
+		t.mu.Unlock()
+		return fmt.Errorf("%w: a pause is in progress", ErrBusy)
+	}
+	t.pause = pause{note: t.pause.note}
+	t.cutShort = nil
+	// The interrupt ends the turn the prompts outstanding started, whether
+	// or not its result says it answered them. The steering prompt is
+	// outstanding before the interrupt, so that the interrupted turn's
+	// end does not end the process.
+	clear(t.outstanding)
+	t.outstanding[id] = true
+
+	t.notifyLocked()
+	t.mu.Unlock()
+
+	if err := t.proc.Interrupt(); err != nil {
+		t.mu.Lock()
+		delete(t.outstanding, id)
+		t.notifyLocked()
+		t.mu.Unlock()
+		return fmt.Errorf("interrupt: %w", err)
+	}
 	if err := t.proc.Prompt(id, text); err != nil {
 		t.mu.Lock()
 		delete(t.outstanding, id)
