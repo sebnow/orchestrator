@@ -101,12 +101,28 @@ func restore(args []string, stdout, stderr io.Writer) int {
 	} else if err != nil && !errors.Is(err, fs.ErrNotExist) {
 		return fail(err)
 	}
-	if err := os.MkdirAll(filepath.Dir(*dbPath), 0o700); err != nil {
-		return fail(err)
-	}
-	temp, err := os.CreateTemp(filepath.Dir(*dbPath), "."+filepath.Base(*dbPath)+".restore-*.tmp")
+	version, err := replaceDatabase(context.Background(), *dbPath, *from, client)
 	if err != nil {
 		return fail(err)
+	}
+	fmt.Fprintf(stdout, "Restored %s from %s, at schema version %d. Start the server to use it.\n", *dbPath, *from, version)
+	return 0
+}
+
+// replaceDatabase puts the backup from, a file or, when there is no such
+// file and client is set, a key in the bucket, at dbPath once it passes
+// SQLite's integrity check and has a schema version this server can
+// open, and returns that version. It downloads or copies the backup next
+// to dbPath, gunzipping it when it is gzipped, deletes the write-ahead
+// log, shared memory and journal of a database it replaces, and marks
+// the database restored before it puts it in place.
+func replaceDatabase(ctx context.Context, dbPath, from string, client *s3.Client) (int, error) {
+	if err := os.MkdirAll(filepath.Dir(dbPath), 0o700); err != nil {
+		return 0, err
+	}
+	temp, err := os.CreateTemp(filepath.Dir(dbPath), "."+filepath.Base(dbPath)+".restore-*.tmp")
+	if err != nil {
+		return 0, err
 	}
 	tempPath := temp.Name()
 	defer func() {
@@ -114,36 +130,34 @@ func restore(args []string, stdout, stderr io.Writer) int {
 			os.Remove(tempPath + suffix)
 		}
 	}()
-	ctx := context.Background()
-	if err := fetchBackup(ctx, temp, *from, client); err != nil {
+	if err := fetchBackup(ctx, temp, from, client); err != nil {
 		temp.Close()
-		return fail(err)
+		return 0, err
 	}
 	if err := temp.Close(); err != nil {
-		return fail(err)
+		return 0, err
 	}
 	version, err := server.VerifyBackup(ctx, tempPath)
 	if err != nil {
-		return fail(err)
+		return 0, err
 	}
 	// The replaced database's write-ahead log and shared memory belong to
 	// it; SQLite would apply them to the backup.
 	for _, suffix := range []string{"-wal", "-shm", "-journal"} {
-		if err := os.Remove(*dbPath + suffix); err != nil && !errors.Is(err, fs.ErrNotExist) {
-			return fail(err)
+		if err := os.Remove(dbPath + suffix); err != nil && !errors.Is(err, fs.ErrNotExist) {
+			return 0, err
 		}
 	}
 	// The restored database starts an epoch of its own when the server
 	// opens it, so that it issues no command under the backup's
 	// (docs/adr/2026-10-10-server-loss.md).
-	if err := server.MarkRestored(*dbPath, *from); err != nil {
-		return fail(err)
+	if err := server.MarkRestored(dbPath, from); err != nil {
+		return 0, err
 	}
-	if err := os.Rename(tempPath, *dbPath); err != nil {
-		return fail(err)
+	if err := os.Rename(tempPath, dbPath); err != nil {
+		return 0, err
 	}
-	fmt.Fprintf(stdout, "Restored %s from %s, at schema version %d. Start the server to use it.\n", *dbPath, *from, version)
-	return 0
+	return version, nil
 }
 
 // fetchBackup writes the backup from into dest: the file from, or when
