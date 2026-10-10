@@ -514,8 +514,12 @@ check "stop: the stub ended on SIGTERM, not on the end of its input" \
 	test -e "$MARKS/$stub_pid.term" -a ! -e "$MARKS/$stub_pid.eof"
 check "stop: the daemon killed it after the shutdown timeout (>= 29 s)" test "$elapsed" -ge 29
 check "stop: the stub and its sudo are gone" wait_until 5 sh -c "! kill -0 $stub_pid 2>/dev/null && ! kill -0 $sudo_pid 2>/dev/null"
-check "stop: the daemon deleted the stopped task's workspace through rm as orch-agent" \
-	wait_until 30 test ! -e "$WS/$D"
+check "stop: the stopped task's workspace is kept for a follow-up" \
+	sh -c "test -e '$WS/$D' && ! grep -qF 'COMMAND=/usr/bin/rm -rf -- $WS/$D' '$SUDO_LOG'"
+
+curl -sf -o /dev/null -X POST "$API/v1/tasks/$D/dismiss"
+check "dismiss: the daemon deleted the dismissed task's workspace through rm as orch-agent" \
+	wait_until 10 sh -c "! test -e '$WS/$D' && grep -F 'COMMAND=/usr/bin/rm -rf -- $WS/$D' '$SUDO_LOG' | grep -q 'USER=orch-agent'"
 
 # --- A restarted daemon terminates the harness its previous run left.
 hold_task E
