@@ -16,6 +16,14 @@
 #
 # Every run leaves files named by its pid in /tmp/stub-claude: .term on
 # SIGTERM, .eof when stdin closed.
+#
+# `auth status --json` and `auth login` play Claude Code 2.1.289's
+# (internal/harness/claude/login.go) for a login kept as the file
+# ~/.claude/stub-login, which the stub starts without: status prints the
+# logged-out shape and exits 1 until a login with the code
+# "stub-code#stub-state" writes the file. Login prints STUB_LOGIN_URL as
+# an OSC 8 hyperlink, prompts without a line ending, and fails as Claude
+# Code does for any other code. At the end of its input it waits.
 set -u
 
 marks=/tmp/stub-claude
@@ -26,6 +34,42 @@ if [ "${1:-}" = "--version" ]; then
 fi
 
 trap 'date +%s >"$marks/$$.term"; exit 143' TERM
+
+STUB_LOGIN_URL='https://claude.com/cai/oauth/authorize?code=true&redirect_uri=https%3A%2F%2Fplatform.claude.com%2Foauth%2Fcode%2Fcallback&code_challenge=stub-challenge&code_challenge_method=S256&state=stub-state'
+
+if [ "${1:-}" = auth ]; then
+	login_file=$HOME/.claude/stub-login
+	case "${2:-}" in
+	status)
+		if [ -e "$login_file" ]; then
+			jq -n --arg dir "$HOME/.claude" \
+				'{loggedIn:true,authMethod:"claude.ai",apiProvider:"firstParty",configDirectory:$dir,email:"stub@example.com",orgId:"stub-org",orgName:"Stub",subscriptionType:"max"}'
+			exit 0
+		fi
+		jq -n --arg dir "$HOME/.claude" '{loggedIn:false,authMethod:"none",apiProvider:"firstParty",configDirectory:$dir}'
+		exit 1
+		;;
+	login)
+		printf 'Opening browser to sign in\u2026\n'
+		printf "If the browser didn't open, visit: \033]8;;%s\a%s\033]8;;\a\n" "$STUB_LOGIN_URL" "$STUB_LOGIN_URL"
+		printf 'Paste code here if prompted > '
+		if ! IFS= read -r code; then
+			sleep infinity &
+			wait $!
+		fi
+		if [ "$code" = "stub-code#stub-state" ]; then
+			mkdir -p "$HOME/.claude"
+			touch "$login_file"
+			echo "Login successful."
+			exit 0
+		fi
+		echo "Login failed: Request failed with status code 400" >&2
+		exit 1
+		;;
+	esac
+	echo "claude stub: unknown auth command: $*" >&2
+	exit 2
+fi
 
 session=""
 resumed=false

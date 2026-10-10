@@ -3,14 +3,15 @@
 # Dockerfile builds, with the server and daemon binaries mounted at
 # /opt/orchestrator/bin, and works through the steps of the checklist in
 # README.md, "Running the harness as another user", that need no Claude
-# Code login, with the claude stub at /usr/local/bin/claude. Each check
+# Code login, with the claude stub at /usr/local/bin/claude, and logs
+# the stub in from the server (README.md, "Logging a daemon in"). Each check
 # prints "ok" or "not ok"; lines starting with "#" are evidence. It exits
 # 1 when a check failed. Logs go to /out when it is mounted.
 #
 # With --real-claude, in the image's target real, /usr/local/bin/claude
 # is Claude Code itself, standard input carries the login, and after the
-# shared steps 1 to 3 and 6 the checks of real-claude.sh run instead of
-# the stub's.
+# shared steps 1 to 3 and 6 and the login status facts, the checks of
+# real-claude.sh run instead of the stub's.
 set -u
 
 REAL=false
@@ -377,10 +378,56 @@ echo "# as orch-agent: cat $DAEMON_KEY"
 evidence <<<"$out"
 check "daemon key: orch-agent cannot read the daemon's ssh key" grep -q 'Permission denied' <<<"$out"
 
+# daemon_jq FILTER succeeds when the daemon's view in the owner API
+# satisfies the jq FILTER.
+daemon_jq() {
+	curl -sf "$API/v1/daemons/ct-1" | jq -e "$1" >/dev/null 2>&1
+}
+
+# daemon_sudo_ran ARGS succeeds when sudo's log shows the daemon's user
+# running claude with ARGS as orch-agent.
+daemon_sudo_ran() {
+	grep -F "COMMAND=$CLAUDE $1" "$SUDO_LOG" | grep -q ' orchestrator : .*USER=orch-agent'
+}
+
 if [ "$REAL" = true ]; then
+	# --- Login status (docs/adr/2026-10-10-harness-login.md): the
+	# credentials file logs claude in; no login is made here.
+	check "login: the daemon reports login=yes for the copied login" wait_until 20 daemon_jq '.facts.login == "yes"'
+	echo "# login facts: $(curl -sf "$API/v1/daemons/ct-1" | jq -c '.facts | {login, login_method, account: (if .account then "present, \(.account | length) characters" else null end)}')"
+	check "login: the daemon reports a login method" daemon_jq '.facts.login_method | type == "string" and length > 0'
+	check "login: the daemon read the status as orch-agent through sudo" daemon_sudo_ran "auth status --json"
 	real_checks
 	finish
 fi
+
+# --- Login (docs/adr/2026-10-10-harness-login.md): the stub starts
+# logged out, and is logged in from the server with a code.
+STUB_LOGIN_URL=$(sed -n "s/^STUB_LOGIN_URL='\(.*\)'$/\1/p" $CLAUDE)
+check "login: the daemon reports login=no for the logged-out stub" wait_until 20 daemon_jq '.facts.login == "no" and .facts.login_method == "none"'
+check "login: the dashboard flags the daemon as needing a login" sh -c "curl -sf $API/ | grep -q 'login needed'"
+W=$(create_task "report and commit, once logged in") || die "create task W"
+echo "# task W: $W"
+check "login: a task for the logged-out daemon waits, saying why" \
+	wait_until 10 sh -c "curl -sf $API/v1/tasks/$W | jq -e '.queue.reason == \"daemon ct-1 is not logged in\"' >/dev/null"
+status=$(curl -s -o /dev/null -w '%{http_code}' -X POST "$API/v1/daemons/ct-1/login")
+check "login: the server takes the owner's login (202)" test "$status" = 202
+check "login: the daemon reports the URL" wait_until 30 daemon_jq '.login.phase == "started"'
+url=$(curl -sf "$API/v1/daemons/ct-1" | jq -r .login.url)
+echo "# login URL: $url"
+check "login: the URL is the stub's, without the hyperlink's escapes" test "$url" = "$STUB_LOGIN_URL"
+check "login: the daemon ran claude auth login as orch-agent through sudo" daemon_sudo_ran "auth login"
+status=$(curl -s -o /dev/null -w '%{http_code}' -X POST "$API/v1/daemons/ct-1/login/code" \
+	-H 'Content-Type: application/json' -d '{"code":"stub-code#stub-state"}')
+check "login: the server takes the code (202)" test "$status" = 202
+check "login: login_finished ok" wait_until 30 daemon_jq '.login.phase == "finished" and .login.ok'
+echo "# login: $(curl -sf "$API/v1/daemons/ct-1" | jq -c '.login | {phase, ok, error}')"
+echo "# login facts: $(curl -sf "$API/v1/daemons/ct-1" | jq -c '.facts | {login, login_method, account}')"
+check "login: the facts say logged in, by claude.ai, as stub@example.com/stub-org" \
+	daemon_jq '.facts.login == "yes" and .facts.login_method == "claude.ai" and .facts.account == "stub@example.com/stub-org"'
+check "login: the login is orch-agent's, in its home" test "$(stat -c %U /home/orch-agent/.claude/stub-login 2>&1)" = orch-agent
+check "login: the daemon read the status as orch-agent through sudo" daemon_sudo_ran "auth status --json"
+check "login: the waiting task runs once the daemon is logged in" wait_for "$W" 'any(.[]; .kind == "harness_exited")' 60
 
 # --- Checklist step 7: a task with a repository whose turn commits a file.
 A=$(create_task "report and commit") || die "create task A"
