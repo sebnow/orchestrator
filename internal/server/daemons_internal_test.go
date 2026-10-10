@@ -118,3 +118,13 @@ func TestGivenDaemonThatReportedNoSSHKeyWhenItsPageIsShownThenItSaysSo(t *testin
 
 	requireContains(t, getPage(t, srv.url+"/daemons/laptop"), "The daemon has not reported a key.")
 }
+
+func TestGivenDaemonsLoginFactsWhenTheDashboardIsShownThenADaemonThatIsNotLoggedInIsFlagged(t *testing.T) {
+	srv := startTestServer(t)
+	doRequest(t, http.MethodPut, srv.url+"/v1/daemons/laptop/facts", `{"login":"yes","login_method":"claude.ai","account":"owner@example.com/org-1"}`)
+	doRequest(t, http.MethodPut, srv.url+"/v1/daemons/vps/facts", `{"login":"no","login_method":"none"}`)
+
+	requireContains(t, getPage(t, srv.url+"/"),
+		`<td>yes, as <code>owner@example.com/org-1</code></td>`,
+		`<td><a href="/daemons/vps#login" class="badge login-needed">login needed</a></td>`)
+}

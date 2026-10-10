@@ -47,4 +47,43 @@ const (
 	// when a harness starts or exits. An owner's label of the same key
 	// caps it.
 	FactSlots = "slots"
+	// FactLogin is "yes" when the harness reports itself logged in and
+	// "no" when it does not; FactLoginMethod is how it is logged in, as
+	// the harness names it, such as Claude Code's "claude.ai" or "none"
+	// (docs/adr/2026-10-10-harness-login.md). The daemon reports them
+	// when it connects, after each login, and every ten minutes. The
+	// server places no turn on a daemon whose login is "no". A harness
+	// that cannot report its login leaves both out.
+	FactLogin       = "login"
+	FactLoginMethod = "login_method"
+	// FactAccount names the account the harness is logged in to, as the
+	// harness adapter derives it from what the harness reports; for
+	// Claude Code, the email address and the organisation id, joined by
+	// '/'. Quota readings are kept per harness and account. It is left
+	// out when the harness reports none, or one that is not a valid
+	// label value.
+	FactAccount = "account"
 )
+
+// Login values of FactLogin.
+const (
+	LoginYes = "yes"
+	LoginNo  = "no"
+)
+
+const maxLabelValue = 255
+
+// ValidLabelValue reports whether value can be a fact or a label's
+// value: 1 to 255 printable ASCII characters other than space, ',' and
+// '=', which separate labels when they are written as text.
+func ValidLabelValue(value string) bool {
+	if value == "" || len(value) > maxLabelValue {
+		return false
+	}
+	for _, r := range value {
+		if r <= ' ' || r > '~' || r == ',' || r == '=' {
+			return false
+		}
+	}
+	return true
+}

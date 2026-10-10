@@ -131,3 +131,50 @@ func TestGivenSpawnWhenItGivesRequiresThenTheyReplaceTheAgentsAndOtherwiseTheChi
 		t.Errorf("spawn with a malformed label: err = %v, want a refusal", err)
 	}
 }
+
+func TestGivenDaemonThatIsNotLoggedInWhenTurnsArePlacedThenItTakesNoneAndTheyWaitSayingSo(t *testing.T) {
+	s := schedule{
+		slots:  map[protocol.DaemonID]int{"laptop": 2, "vps": 2},
+		labels: map[protocol.DaemonID]Labels{"laptop": {"login": "yes"}, "vps": {"login": "no", "gpu": "nvidia"}},
+	}
+	s.turns = []pendingTurn{
+		start(1, "bound", "vps", PriorityNormal),
+		requiring(placed(start(2, "gpu", "laptop", PriorityNormal), placementAny), Labels{"gpu": "nvidia"}),
+		placed(start(3, "anywhere", "vps", PriorityNormal), placementParent),
+		later(4, "follow-up", turnPrompt, TaskFinished, "vps"),
+	}
+
+	d := decide(s, testPolicy, schedNow)
+
+	requireStrings(t, "admitted", admitted(d), []string{"anywhere@laptop"})
+	for _, turn := range []uint64{1, 2, 4} {
+		if got := d.reasons[turn]; got != "daemon vps is not logged in" {
+			t.Errorf("turn %d waits because %q, want the login named", turn, got)
+		}
+	}
+}
+
+func TestGivenDaemonWithoutALoginFactWhenTurnsArePlacedThenItTakesThem(t *testing.T) {
+	s := schedule{slots: map[protocol.DaemonID]int{"laptop": 1}, labels: map[protocol.DaemonID]Labels{"laptop": {"os": "linux"}}}
+	s.turns = []pendingTurn{start(1, "task", "laptop", PriorityNormal)}
+
+	requireStrings(t, "admitted", admitted(decide(s, testPolicy, schedNow)), []string{"task@laptop"})
+}
+
+func TestGivenDaemonThatLogsInWhenItsFactsSaySoThenTheWaitingTaskStarts(t *testing.T) {
+	srv := startTestServer(t)
+	doRequest(t, http.MethodPut, srv.url+"/v1/daemons/vps/facts", `{"os":"linux","login":"no","login_method":"none"}`)
+	connect(t, srv, "vps")
+	task := queueTaskViaForm(t, srv, "vps", "Work.", nil)
+
+	srv.pass(t)
+
+	if q := readTask(t, srv.store, task).Queue; q == nil || q.Reason != "daemon vps is not logged in" {
+		t.Fatalf("queue = %+v, want it waiting for the login", q)
+	}
+	doRequest(t, http.MethodPut, srv.url+"/v1/daemons/vps/facts", `{"os":"linux","login":"yes","login_method":"claude.ai","account":"owner@example.com/org-1"}`)
+	srv.pass(t)
+	if state := readTask(t, srv.store, task).State; state == TaskQueued {
+		t.Error("the task is still queued once the daemon logged in")
+	}
+}

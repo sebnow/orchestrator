@@ -141,3 +141,22 @@ type Decision struct {
 	Allow   bool
 	Message string
 }
+
+// Login is a Harness whose login the daemon reads and reports
+// (docs/adr/2026-10-10-harness-login.md). The harness keeps its login in
+// its own configuration, that of the user it runs as.
+type Login interface {
+	// LoginStatus reads whether the harness, run as user, is logged in.
+	LoginStatus(ctx context.Context, user runas.User) (LoginStatus, error)
+}
+
+// LoginStatus is what a harness reports of its login.
+type LoginStatus struct {
+	LoggedIn bool
+	// Method is how the harness is logged in, as it names it; empty when
+	// it does not say.
+	Method string
+	// Account names the account the harness is logged in to, stable
+	// across logins to the same account; empty when it reports none.
+	Account string
+}

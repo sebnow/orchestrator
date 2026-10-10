@@ -223,6 +223,7 @@ func (s *Server) dashboardLists(ctx context.Context, showDismissed bool) (html.N
 			ID: string(daemon.ID), LastSeen: daemon.LastSeen, Quota: daemon.Quota, QuotaAt: daemon.QuotaAt,
 			Connected: slices.Contains(connected, daemon.ID), Slots: s.sched.policy.capacity(daemon.Facts, daemon.Labels), InUse: daemon.InUse,
 			Labels: Merge(daemon.Facts, daemon.Labels),
+			Login:  daemon.Facts[protocol.FactLogin], Account: daemon.Facts[protocol.FactAccount],
 		}
 		if daemon.LostAt != nil {
 			row.LostSince = *daemon.LostAt

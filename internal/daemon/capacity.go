@@ -4,7 +4,6 @@ import (
 	"bufio"
 	"context"
 	"io"
-	"maps"
 	"math"
 	"os"
 	"os/exec"
@@ -159,19 +158,17 @@ func vmStatAvailable(vmstat string) (uint64, bool) {
 // changed. A report that fails is logged; the next connection reports
 // the facts again.
 func (s *service) refreshSlots(ctx context.Context) {
-	facts := s.currentFacts()
-	delete(facts, protocol.FactSlots)
-	if slots, ok := s.cfg.slots(ctx, s.harnesses.Load()); ok {
-		facts[protocol.FactSlots] = strconv.Itoa(slots)
-	}
-	s.factsMu.Lock()
-	changed := !maps.Equal(facts, s.facts)
-	s.facts = facts
-	s.factsMu.Unlock()
+	slots, ok := s.cfg.slots(ctx, s.harnesses.Load())
+	changed := s.updateFacts(func(facts protocol.Facts) {
+		delete(facts, protocol.FactSlots)
+		if ok {
+			facts[protocol.FactSlots] = strconv.Itoa(slots)
+		}
+	})
 	if !changed {
 		return
 	}
-	s.log.Info("capacity changed", "slots", facts[protocol.FactSlots], "harnesses", s.harnesses.Load())
+	s.log.Info("capacity changed", "slots", s.currentFacts()[protocol.FactSlots], "harnesses", s.harnesses.Load())
 	if err := s.reportFacts(ctx); err != nil {
 		s.log.Warn("report facts", "error", err)
 	}

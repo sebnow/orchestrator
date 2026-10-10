@@ -643,10 +643,33 @@ type Daemon struct {
 	QuotaAt   time.Time
 	// Labels are its facts and the owner's labels, merged.
 	Labels map[string]string
+	// Login and Account are its login and account facts, empty when it
+	// reports none.
+	Login, Account string
 }
 
 // DaemonColumns head a Table of DaemonRows.
-var DaemonColumns = []string{"Daemon", "Harness", "Last seen", "Connected", "Slots", "Labels", "Quota"}
+var DaemonColumns = []string{"Daemon", "Harness", "Last seen", "Connected", "Login", "Slots", "Labels", "Quota"}
+
+// LoginNeeded flags a daemon whose harness reports that it is not
+// logged in; the link leads to its page, where the owner logs it in.
+func LoginNeeded(id string) html.Node {
+	return html.El("a", attrs("href", daemonURL(id)+"#login", "class", "badge login-needed"), html.Text("login needed"))
+}
+
+// loginCell says whether daemon is logged in, and to which account.
+func loginCell(daemon Daemon) html.Node {
+	switch daemon.Login {
+	case protocol.LoginNo:
+		return LoginNeeded(daemon.ID)
+	case protocol.LoginYes:
+		if daemon.Account == "" {
+			return html.Text("yes")
+		}
+		return html.Fragment(html.Text("yes, as "), html.El("code", nil, html.Text(daemon.Account)))
+	}
+	return html.El("span", attrs("class", "empty"), html.Text("not reported"))
+}
 
 // DaemonRow is a daemon in the daemon list.
 func DaemonRow(daemon Daemon) html.Node {
@@ -659,6 +682,7 @@ func DaemonRow(daemon Daemon) html.Node {
 		cell(html.Text(daemon.Harness)),
 		cell(timestamp(daemon.LastSeen)),
 		cell(connection(daemon)),
+		cell(loginCell(daemon)),
 		cell(html.Text(fmt.Sprintf("%d of %d in use", daemon.InUse, daemon.Slots))),
 		cell(LabelList(daemon.Labels), html.Text(" "), link(daemonURL(daemon.ID), "edit")),
 		cell(quota),

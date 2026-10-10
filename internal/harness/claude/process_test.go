@@ -33,6 +33,10 @@ func fakeClaude() {
 		fmt.Println("2.1.289 (Claude Code)")
 		os.Exit(0)
 	}
+	if len(os.Args) > 2 && os.Args[1] == "auth" {
+		fakeAuth(os.Args[2:])
+		return
+	}
 	if path := os.Getenv("FAKE_CLAUDE_REPLAY"); path != "" {
 		replayFile(path)
 		return

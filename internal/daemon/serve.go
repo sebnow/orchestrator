@@ -70,6 +70,9 @@ type Config struct {
 	// processes, or reports false when it cannot; nil applies the slots
 	// rule to this machine. Tests set it.
 	measureSlots func(ctx context.Context, running int64) (int, bool)
+	// loginInterval is how often the daemon reads its harness's login
+	// between connections; zero means loginRefresh. Tests set it.
+	loginInterval time.Duration
 }
 
 // slots computes the slots fact with running harness processes.
@@ -131,6 +134,18 @@ func (s *service) currentFacts() protocol.Facts {
 	s.factsMu.Lock()
 	defer s.factsMu.Unlock()
 	return maps.Clone(s.facts)
+}
+
+// updateFacts applies change to the daemon's facts and reports whether
+// it changed them.
+func (s *service) updateFacts(change func(protocol.Facts)) bool {
+	s.factsMu.Lock()
+	defer s.factsMu.Unlock()
+	facts := maps.Clone(s.facts)
+	change(facts)
+	changed := !maps.Equal(facts, s.facts)
+	s.facts = facts
+	return changed
 }
 
 // worker applies one task's commands in order, on its own goroutine, so
@@ -305,11 +320,17 @@ func Serve(ctx context.Context, cfg Config) error {
 		defer close(watched)
 		s.watchCapacity(ctx)
 	}()
+	watchedLogin := make(chan struct{})
+	go func() {
+		defer close(watchedLogin)
+		s.watchLogin(ctx)
+	}()
 	cfg.Log.Info("serving", "server", cfg.Server.String(), "daemon", cfg.ID, "state_dir", stateDir, "facts", s.facts)
 
 	<-ctx.Done()
 	<-received
 	<-watched
+	<-watchedLogin
 	cfg.Log.Info("shutting down: stopping tasks")
 	stop()
 	s.workers.Wait()

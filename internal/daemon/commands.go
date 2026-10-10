@@ -69,12 +69,14 @@ func (s *service) receive(ctx context.Context) {
 	}
 }
 
-// streamCommands reports the daemon's facts, then opens the command
-// stream, sending the id of the last command applied as Last-Event-ID,
-// and applies each command the stream carries. It resets b once the
+// streamCommands reads the harness's login and reports the daemon's
+// facts, then opens the command stream, sending the id of the last
+// command applied as Last-Event-ID, and applies each command the stream
+// carries. It resets b once the
 // server has accepted the stream. Facts the server does not take are
 // logged and do not hold up the stream: placement only lacks them.
 func (s *service) streamCommands(ctx context.Context, b *backoff) error {
+	s.readLogin(ctx)
 	if err := s.reportFacts(ctx); err != nil {
 		s.log.Warn("report facts", "error", err)
 	}

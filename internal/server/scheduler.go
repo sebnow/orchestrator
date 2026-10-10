@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"maps"
 	"slices"
 	"strconv"
 	"strings"
@@ -290,7 +291,7 @@ func decide(s schedule, policy SchedulePolicy, now time.Time) decisions {
 			d.admit = append(d.admit, admission{turn: turn, daemon: turn.Daemon})
 			continue
 		}
-		daemon, model, reason, wait := place(turn, s, free)
+		daemon, model, reason, wait := place(turn, s, free, s.unavailable)
 		if daemon != "" {
 			free[daemon]--
 			d.admit = append(d.admit, admission{turn: turn, daemon: daemon, model: model})
@@ -336,6 +337,16 @@ func percent(fraction float64) string {
 	return fmt.Sprintf("%.0f%%", fraction*100)
 }
 
+// unavailable says why daemon takes no turn now, or returns "" when it
+// does: a daemon whose harness reports that it is not logged in takes
+// none (docs/adr/2026-10-10-harness-login.md).
+func (s schedule) unavailable(_ pendingTurn, daemon protocol.DaemonID) string {
+	if s.labels[daemon][protocol.FactLogin] == protocol.LoginNo {
+		return "daemon " + string(daemon) + " is not logged in"
+	}
+	return ""
+}
+
 // place picks the daemon with a free slot that turn goes to, and, for a
 // start that chooses its model, the model. When there is none it
 // returns why, and, if the turn waits only for a slot, what it waits on.
@@ -343,8 +354,9 @@ func percent(fraction float64) string {
 // requires, and to none the task ran on before. One that chooses its
 // model takes the first of its models that such a daemon provides, and
 // goes only to a daemon that provides it
-// (docs/adr/2026-10-10-agent-models-and-capacity.md).
-func place(turn pendingTurn, s schedule, free map[protocol.DaemonID]int) (protocol.DaemonID, string, string, *slotWait) {
+// (docs/adr/2026-10-10-agent-models-and-capacity.md). No turn goes to a
+// daemon for which unavailable says why not.
+func place(turn pendingTurn, s schedule, free map[protocol.DaemonID]int, unavailable func(pendingTurn, protocol.DaemonID) string) (protocol.DaemonID, string, string, *slotWait) {
 	_, connected := s.slots[turn.Daemon]
 	choosing := turn.Kind == turnStart && len(turn.Models) > 0
 	if turn.Kind != turnStart || turn.Placement == placementBound {
@@ -359,6 +371,9 @@ func place(turn pendingTurn, s schedule, free map[protocol.DaemonID]int) (protoc
 			if model = s.choose(turn.Models, []protocol.DaemonID{turn.Daemon}); model == "" {
 				return "", "", "daemon " + string(turn.Daemon) + " does not have model " + alternatives(turn.Models), nil
 			}
+		}
+		if reason := unavailable(turn, turn.Daemon); reason != "" {
+			return "", "", reason, nil
 		}
 		if free[turn.Daemon] > 0 {
 			return turn.Daemon, model, "", nil
@@ -389,6 +404,18 @@ func place(turn pendingTurn, s schedule, free map[protocol.DaemonID]int) (protoc
 			}
 		}
 	}
+	// held are the daemons that could take the turn but for why
+	// unavailable gives.
+	held := make(map[protocol.DaemonID]string)
+	for _, daemon := range eligible {
+		if slices.Contains(exclude, daemon) {
+			continue
+		}
+		if reason := unavailable(turn, daemon); reason != "" {
+			exclude = append(exclude, daemon)
+			held[daemon] = reason
+		}
+	}
 	parent := connected && turn.Placement == placementParent && !slices.Contains(exclude, turn.Daemon)
 	if parent && free[turn.Daemon] > 0 {
 		return turn.Daemon, model, "", nil
@@ -412,6 +439,15 @@ func place(turn pendingTurn, s schedule, free map[protocol.DaemonID]int) (protoc
 	}
 	if len(candidates) == 0 {
 		return "", "", "the task ran on every connected daemon before it was moved; it waits for another daemon", nil
+	}
+	if usable == 0 && len(held) > 0 {
+		var reasons []string
+		for _, daemon := range slices.Sorted(maps.Keys(held)) {
+			if !slices.Contains(reasons, held[daemon]) {
+				reasons = append(reasons, held[daemon])
+			}
+		}
+		return "", "", strings.Join(reasons, "; "), nil
 	}
 	if usable == 0 {
 		return "", "", "no daemon has " + unmet(turn.Requires, candidates, s.labels).String(), nil

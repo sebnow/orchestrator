@@ -7,6 +7,8 @@ import (
 	"maps"
 	"slices"
 	"strings"
+
+	"github.com/sebnow/orchestrator/internal/protocol"
 )
 
 // Labels are key=value pairs: a daemon's owner-set labels and reported
@@ -14,10 +16,7 @@ import (
 // (docs/adr/2026-10-09-agents-and-placement.md).
 type Labels map[string]string
 
-const (
-	maxLabelKey   = 63
-	maxLabelValue = 255
-)
+const maxLabelKey = 63
 
 var errInvalidLabels = errors.New("invalid labels")
 
@@ -35,21 +34,6 @@ func validLabelKey(key string) bool {
 	return true
 }
 
-// validLabelValue reports whether value is 1 to 255 printable ASCII
-// characters other than space, ',' and '=', which separate labels when
-// they are written as text.
-func validLabelValue(value string) bool {
-	if value == "" || len(value) > maxLabelValue {
-		return false
-	}
-	for _, r := range value {
-		if r <= ' ' || r > '~' || r == ',' || r == '=' {
-			return false
-		}
-	}
-	return true
-}
-
 // Validate reports the first key or value, in key order, that does not
 // follow the rules for labels.
 func (l Labels) Validate() error {
@@ -57,8 +41,8 @@ func (l Labels) Validate() error {
 		if !validLabelKey(key) {
 			return fmt.Errorf("%w: key %q must be 1 to %d letters, digits, '.', '_' or '-'", errInvalidLabels, key, maxLabelKey)
 		}
-		if !validLabelValue(l[key]) {
-			return fmt.Errorf("%w: value %q of %s must be 1 to %d printable characters other than space, ',' and '='", errInvalidLabels, l[key], key, maxLabelValue)
+		if !protocol.ValidLabelValue(l[key]) {
+			return fmt.Errorf("%w: value %q of %s must be 1 to 255 printable characters other than space, ',' and '='", errInvalidLabels, l[key], key)
 		}
 	}
 	return nil

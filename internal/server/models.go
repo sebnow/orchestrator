@@ -23,7 +23,7 @@ const modelSeparator = ";"
 // daemon advertises: 1 to 255 printable ASCII characters other than
 // space, ',', '=' and ';', as a label's value holds them.
 func validModel(model string) bool {
-	return validLabelValue(model) && !strings.Contains(model, modelSeparator)
+	return protocol.ValidLabelValue(model) && !strings.Contains(model, modelSeparator)
 }
 
 // validateModels checks that models are models an agent can name, each
@@ -31,7 +31,7 @@ func validModel(model string) bool {
 func validateModels(models []string) error {
 	for idx, model := range models {
 		if !validModel(model) {
-			return fmt.Errorf("models: %q must be 1 to %d printable characters other than space, ',', '=' and ';'", model, maxLabelValue)
+			return fmt.Errorf("models: %q must be 1 to 255 printable characters other than space, ',', '=' and ';'", model)
 		}
 		if slices.Contains(models[:idx], model) {
 			return fmt.Errorf("models: %q is given twice", model)
