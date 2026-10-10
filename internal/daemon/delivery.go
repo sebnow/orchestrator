@@ -51,18 +51,19 @@ func deliveryPrompt(task protocol.TaskID) string {
 
 // prepareBranch puts the clone in dir, checked out at ref, on task's
 // branch, and marks it as a workspace whose work is delivered. When the
-// remote already has the branch, as for a task moved off a lost daemon
-// (docs/adr/2026-10-08-daemon-loss.md), the branch is checked out from
-// the remote, so the work pushed from there continues; otherwise it is
-// created at ref. The clone gets a pre-push hook that refuses every ref
-// but the branch.
+// remote already has the branch, onRemote, as for a task moved off a
+// lost daemon (docs/adr/2026-10-08-daemon-loss.md), the branch is
+// checked out from the remote's, which the clone has from the mirror,
+// so the work pushed from there continues; otherwise it is created at
+// ref. The clone gets a pre-push hook that refuses every ref but the
+// branch.
 //
 // gitName and gitEmail, or the default identity "orchestrator"
 // <orchestrator@localhost> when either is empty, become the clone's
 // local user.name and user.email; commit.gpgsign and tag.gpgsign are set
 // to false, so the daemon user's own signing settings do not apply to
 // the agent's commits.
-func (r runner) prepareBranch(ctx context.Context, dir string, task protocol.TaskID, ref, gitName, gitEmail string) error {
+func (r runner) prepareBranch(ctx context.Context, dir string, task protocol.TaskID, ref string, onRemote bool, gitName, gitEmail string) error {
 	branch := taskBranch(task)
 	if gitName == "" || gitEmail == "" {
 		gitName, gitEmail = "orchestrator", "orchestrator@localhost"
@@ -92,27 +93,11 @@ func (r runner) prepareBranch(ctx context.Context, dir string, task protocol.Tas
 			return err
 		}
 	}
-	remote, err := r.gitOutput(ctx, dir, "ls-remote", "--heads", "origin", "refs/heads/"+branch)
-	if err != nil {
-		return err
+	checkout := []string{"checkout", "--quiet", "-b", branch}
+	if onRemote {
+		checkout = append(checkout, "refs/remotes/origin/"+branch)
 	}
-	if remote == "" {
-		_, err = r.gitOutput(ctx, dir, "checkout", "--quiet", "-b", branch)
-		return err
-	}
-	fetch := []string{"fetch", "--quiet"}
-	// The branch's commits beyond ref are counted against ref, which a
-	// shallow clone cannot do.
-	if shallow, err := r.gitOutput(ctx, dir, "rev-parse", "--is-shallow-repository"); err != nil {
-		return err
-	} else if shallow == "true" {
-		fetch = append(fetch, "--unshallow")
-	}
-	tracking := "refs/remotes/origin/" + branch
-	if _, err := r.gitOutput(ctx, dir, append(fetch, "origin", "+refs/heads/"+branch+":"+tracking)...); err != nil {
-		return err
-	}
-	_, err = r.gitOutput(ctx, dir, "checkout", "--quiet", "-b", branch, tracking)
+	_, err = r.gitOutput(ctx, dir, checkout...)
 	return err
 }
 
@@ -156,6 +141,11 @@ exit 0
 // dir is not a workspace whose work is delivered, or when there is
 // nothing to push and nothing uncommitted. A push that fails, or that
 // deliver refuses, is reported with Error set.
+//
+// The push goes through the mirror of the repository the daemon
+// recorded for the workspace, never one the workspace's configuration
+// names, which the agent can change
+// (docs/adr/2026-10-10-daemon-push-identity.md).
 func (r runner) deliver(ctx context.Context, dir string, task protocol.TaskID) *protocol.BranchPushed {
 	if !r.isClone(ctx, dir) {
 		return nil
@@ -191,7 +181,26 @@ func (r runner) deliver(ctx context.Context, dir string, task protocol.TaskID) *
 	if report.Ahead == 0 {
 		return uncommittedOnly(report)
 	}
-	remoteHead, remoteCommit, err := r.remoteBranches(ctx, dir, branch)
+	var repo string
+	if r.mirrors != nil {
+		if repo, err = r.mirrors.recorded(task); err != nil {
+			report.Error = "read the workspace's repository: " + err.Error()
+			return report
+		}
+	}
+	if repo == "" {
+		report.Error = "the daemon has no record of the workspace's repository, so it cannot push " + branch
+		return report
+	}
+	mirror := r.mirrors.path(repo)
+	defer r.mirrors.lock(mirror)()
+	// A mirror deleted since the workspace was cloned is made again: the
+	// branch comes from the workspace with all its history.
+	if err := r.mirrors.create(ctx, mirror, repo); err != nil {
+		report.Error = fmt.Sprintf("mirror of %s: %v", repo, err)
+		return report
+	}
+	remoteHead, remoteCommit, err := r.remoteBranches(ctx, mirror, branch)
 	if err != nil {
 		report.Error = err.Error()
 		return report
@@ -199,7 +208,7 @@ func (r runner) deliver(ctx context.Context, dir string, task protocol.TaskID) *
 	if remoteCommit == commit {
 		return uncommittedOnly(report)
 	}
-	if err := r.pushBranch(ctx, dir, branch, startRef, remoteHead); err != nil {
+	if err := r.pushBranch(ctx, mirror, dir, branch, startRef, remoteHead); err != nil {
 		report.Error = err.Error()
 	}
 	return report
@@ -214,11 +223,19 @@ func uncommittedOnly(report *protocol.BranchPushed) *protocol.BranchPushed {
 	return report
 }
 
-// pushBranch pushes branch from the clone in dir to origin, without
-// force. It refuses a branch that is the task's start ref, startRef, or
-// the remote's default branch, remoteHead, so that the daemon never
-// pushes either.
-func (r runner) pushBranch(ctx context.Context, dir, branch, startRef, remoteHead string) error {
+// pushBranch fetches branch from the workspace dir into the mirror, then
+// pushes it from the mirror to the remote, without force. It refuses a
+// branch that is the task's start ref, startRef, or the remote's default
+// branch, remoteHead, so that the daemon never pushes either. The caller
+// holds the mirror's lock.
+//
+// The fetch replaces the mirror's copy of branch whatever it held: the
+// mirror only stages the push, and the push without force is what
+// refuses a branch whose history the agent rewrote. Its upload-pack
+// runs in the workspace as the user who owns it, the harness user when
+// there is one, since git runs what a repository's configuration names
+// (git help git, SECURITY).
+func (r runner) pushBranch(ctx context.Context, mirror, dir, branch, startRef, remoteHead string) error {
 	full := "refs/heads/" + branch
 	if branch == startRef || full == startRef {
 		return fmt.Errorf("refused to push %s: it is the ref the task started from", branch)
@@ -226,15 +243,32 @@ func (r runner) pushBranch(ctx context.Context, dir, branch, startRef, remoteHea
 	if full == remoteHead {
 		return fmt.Errorf("refused to push %s: it is the remote's default branch", branch)
 	}
-	_, err := r.gitOutput(ctx, dir, "push", "--quiet", "origin", full+":"+full)
+	if !filepath.IsAbs(dir) {
+		return fmt.Errorf("workspace %s is not an absolute path", dir)
+	}
+	fetch := []string{"fetch", "--quiet", "--no-write-fetch-head"}
+	if r.as.Other() {
+		argv := r.as.SudoArgv("", r.git(), []string{"upload-pack"}, gitEnv)
+		quoted := make([]string, len(argv))
+		for i, arg := range argv {
+			quoted[i] = shellQuote(arg)
+		}
+		fetch = append(fetch, "--upload-pack="+strings.Join(quoted, " "))
+	}
+	// The workspace is a local repository; the daemon's ssh agent has no
+	// business there, nor, through sudo, with the harness user.
+	if _, err := r.mirrors.git(ctx, mirror, []string{"SSH_AUTH_SOCK="}, append(fetch, dir, "+"+full+":"+full)...); err != nil {
+		return err
+	}
+	_, err := r.mirrors.git(ctx, mirror, nil, "push", "--quiet", "origin", full+":"+full)
 	return err
 }
 
-// remoteBranches returns the ref the remote's HEAD names, such as
-// refs/heads/main, and the commit its branch holds; either is empty when
-// the remote has none.
-func (r runner) remoteBranches(ctx context.Context, dir, branch string) (head, commit string, err error) {
-	out, err := r.gitOutput(ctx, dir, "ls-remote", "--symref", "origin", "HEAD", "refs/heads/"+branch)
+// remoteBranches returns the ref the remote of mirror names as its HEAD,
+// such as refs/heads/main, and the commit its branch holds; either is
+// empty when the remote has none.
+func (r runner) remoteBranches(ctx context.Context, mirror, branch string) (head, commit string, err error) {
+	out, err := r.mirrors.git(ctx, mirror, nil, "ls-remote", "--symref", "origin", "HEAD", "refs/heads/"+branch)
 	if err != nil {
 		return "", "", err
 	}

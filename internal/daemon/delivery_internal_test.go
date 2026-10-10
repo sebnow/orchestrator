@@ -72,6 +72,9 @@ func TestGivenRemoteWithoutTheTaskBranchWhenPreparingThenTheBranchStartsAtTheRef
 	if head := git(t, dir, "rev-parse", "HEAD"); head != repo.second {
 		t.Errorf("HEAD = %s, want main's %s", head, repo.second)
 	}
+	if origin := git(t, dir, "config", "remote.origin.url"); origin != selfRunner(dir).mirrors.path(repo.url) {
+		t.Errorf("origin = %s, want the daemon's mirror", origin)
+	}
 	if pushed := deliver(t.Context(), dir, deliveryTask); pushed != nil {
 		t.Errorf("delivered %+v with no commits", *pushed)
 	}
@@ -123,6 +126,9 @@ func TestGivenCommitsOnTheTaskBranchWhenDeliveringThenTheBranchIsPushedOnceAndRe
 	}
 	if got := remoteRef(t, repo, "refs/heads/orchestrator/task-1"); got != commit {
 		t.Errorf("remote branch = %s, want %s", got, commit)
+	}
+	if got := git(t, selfRunner(dir).mirrors.path(repo.url), "rev-parse", "refs/heads/orchestrator/task-1"); got != commit {
+		t.Errorf("mirror branch = %s, want the push to have gone through it at %s", got, commit)
 	}
 	if got := remoteRef(t, repo, "refs/heads/main"); got != repo.second {
 		t.Errorf("remote main = %s, want it untouched at %s", got, repo.second)
@@ -182,11 +188,13 @@ func TestGivenTheWorkspaceHookWhenAnythingButTheTaskBranchIsPushedThenItIsRefuse
 		t.Errorf("remote main = %s, want it untouched at %s", got, repo.second)
 	}
 
+	// origin is the daemon's mirror, which the hook guards as it did the
+	// remote.
 	if out, err := tryGit(dir, "push", "origin", "orchestrator/task-1"); err != nil {
 		t.Fatalf("push of the task branch: %v: %s", err, out)
 	}
-	if got := remoteRef(t, repo, "refs/heads/orchestrator/task-1"); got != commit {
-		t.Errorf("remote branch = %s, want %s", got, commit)
+	if got := git(t, selfRunner(dir).mirrors.path(repo.url), "rev-parse", "refs/heads/orchestrator/task-1"); got != commit {
+		t.Errorf("mirror branch = %s, want %s", got, commit)
 	}
 	if out, err := tryGit(dir, "push", "origin", ":refs/heads/orchestrator/task-1"); err == nil || !strings.Contains(out, "may not be deleted") {
 		t.Errorf("delete: err %v, output %q; want the hook's refusal", err, out)
@@ -353,5 +361,102 @@ func TestGivenAGitIdentityWhenPreparingThenTheCloneCommitsAsItWithoutSigning(t *
 	}
 	if out, err := tryGit(dir, "config", "--local", "commit.gpgsign"); err != nil || out != "false" {
 		t.Errorf("commit.gpgsign = %q, err %v; want false", out, err)
+	}
+}
+
+// The agent can change its workspace's configuration; the daemon pushes
+// to the repository it recorded, not to the origin the workspace names.
+func TestGivenTheAgentPointedOriginElsewhereWhenDeliveringThenTheBranchGoesToTheTasksRepositoryAlone(t *testing.T) {
+	repo := makeTestRepo(t)
+	other := makeTestRepo(t)
+	dir := cloneForTask(t, repo, "main")
+	commit := commitFile(t, dir, "work.txt", "done")
+	git(t, dir, "config", "remote.origin.url", other.bare)
+
+	pushed := deliver(t.Context(), dir, deliveryTask)
+
+	if pushed == nil || pushed.Error != "" || pushed.Commit != commit {
+		t.Fatalf("delivered %+v, want %s pushed", pushed, commit)
+	}
+	if got := remoteRef(t, repo, "refs/heads/orchestrator/task-1"); got != commit {
+		t.Errorf("task's remote branch = %s, want %s", got, commit)
+	}
+	if got := remoteRef(t, other, "refs/heads/orchestrator/task-1"); got != "" {
+		t.Errorf("the other repository got the branch at %s", got)
+	}
+}
+
+func TestGivenTheAgentRewroteThePushedHistoryWhenDeliveringThenThePushIsRefusedAndReportedWithoutForce(t *testing.T) {
+	repo := makeTestRepo(t)
+	dir := cloneForTask(t, repo, "main")
+	first := commitFile(t, dir, "work.txt", "done")
+	if pushed := deliver(t.Context(), dir, deliveryTask); pushed == nil || pushed.Error != "" {
+		t.Fatalf("first delivery: %+v", pushed)
+	}
+	git(t, dir, "commit", "--quiet", "--amend", "-m", "reworded")
+
+	pushed := deliver(t.Context(), dir, deliveryTask)
+
+	if pushed == nil || !strings.Contains(pushed.Error, "git push") || pushed.Ahead != 1 {
+		t.Fatalf("delivered %+v, want the push's refusal", pushed)
+	}
+	if got := remoteRef(t, repo, "refs/heads/orchestrator/task-1"); got != first {
+		t.Errorf("remote branch = %s, want it left at %s", got, first)
+	}
+}
+
+func TestGivenNoRecordOfTheWorkspacesRepositoryWhenDeliveringCommitsThenItIsReportedAndNothingPushed(t *testing.T) {
+	repo := makeTestRepo(t)
+	dir := cloneForTask(t, repo, "main")
+	commitFile(t, dir, "work.txt", "done")
+	if err := selfRunner(dir).mirrors.forget(deliveryTask); err != nil {
+		t.Fatal(err)
+	}
+
+	pushed := deliver(t.Context(), dir, deliveryTask)
+
+	if pushed == nil || !strings.Contains(pushed.Error, "no record of the workspace's repository") {
+		t.Fatalf("delivered %+v, want the missing record reported", pushed)
+	}
+	if got := remoteRef(t, repo, "refs/heads/orchestrator/task-1"); got != "" {
+		t.Errorf("remote branch = %s, want none pushed", got)
+	}
+}
+
+func TestGivenTheMirrorWasDeletedWhenDeliveringThenItIsMadeAgainAndTheBranchPushed(t *testing.T) {
+	repo := makeTestRepo(t)
+	dir := cloneForTask(t, repo, "main")
+	commit := commitFile(t, dir, "work.txt", "done")
+	if err := os.RemoveAll(selfRunner(dir).mirrors.path(repo.url)); err != nil {
+		t.Fatal(err)
+	}
+
+	pushed := deliver(t.Context(), dir, deliveryTask)
+
+	if pushed == nil || pushed.Error != "" || pushed.Commit != commit {
+		t.Fatalf("delivered %+v, want %s pushed", pushed, commit)
+	}
+	if got := remoteRef(t, repo, "refs/heads/orchestrator/task-1"); got != commit {
+		t.Errorf("remote branch = %s, want %s", got, commit)
+	}
+}
+
+func TestGivenADeletedWorkspaceThenItsRepositoryIsNoLongerRecorded(t *testing.T) {
+	repo := makeTestRepo(t)
+	stateDir := t.TempDir()
+	dir := workspacePath(stateDir, deliveryTask)
+	if err := prepareWorkspace(t.Context(), dir, deliveryTask, &protocol.Workspace{Repo: repo.url, Ref: "main"}, "", ""); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := selfRunner(dir).mirrors.recorded(deliveryTask); got != repo.url {
+		t.Fatalf("recorded = %q, want %s", got, repo.url)
+	}
+
+	if err := deleteWorkspace(stateDir, deliveryTask); err != nil {
+		t.Fatal(err)
+	}
+
+	if got, err := selfRunner(dir).mirrors.recorded(deliveryTask); err != nil || got != "" {
+		t.Errorf("recorded after deletion = %q, %v; want none", got, err)
 	}
 }

@@ -154,9 +154,10 @@ func lookPath(t *testing.T, name string) string {
 func harnessRunner(t *testing.T, sudo fakeSudo) runner {
 	t.Helper()
 	return runner{
-		as:     runas.User{Name: "orch-agent", Sudo: sudo.path},
-		gitCmd: lookPath(t, "git"),
-		rmCmd:  lookPath(t, "rm"),
+		as:      runas.User{Name: "orch-agent", Sudo: sudo.path},
+		gitCmd:  lookPath(t, "git"),
+		rmCmd:   lookPath(t, "rm"),
+		mirrors: newMirrors(t.TempDir(), "", true),
 	}
 }
 
@@ -204,6 +205,9 @@ func TestGivenHarnessUserWhenATaskWithARepositoryRunsAndEndsThenEveryWorkspaceCo
 	if err := r.prepareWorkspace(t.Context(), dir, deliveryTask, &protocol.Workspace{Repo: repo.url, Ref: "main"}, "", ""); err != nil {
 		t.Fatal(err)
 	}
+	if origin, err := tryGit(dir, "config", "remote.origin.url"); err != nil || origin != r.mirrors.path(repo.url) {
+		t.Errorf("origin = %q, %v; want the mirror %s", origin, err, r.mirrors.path(repo.url))
+	}
 	commitAsAgent(t, dir, "work.txt")
 	if out, err := tryGit(dir, "push", "origin", "HEAD:refs/heads/other"); err == nil || !strings.Contains(out, "pre-push: this workspace may push only") {
 		t.Errorf("push of another branch = %v: %s; want the hook from the template to refuse it", err, out)
@@ -229,10 +233,24 @@ func TestGivenHarnessUserWhenATaskWithARepositoryRunsAndEndsThenEveryWorkspaceCo
 		}
 		commands = append(commands, filepath.Base(command[0])+" "+command[1])
 	}
-	for _, want := range []string{"git clone", "git config", "git ls-remote", "git status", "git rev-list", "git rev-parse", "git push", "rm -rf"} {
+	for _, want := range []string{"git clone", "git config", "git checkout", "git status", "git rev-list", "git rev-parse", "git upload-pack", "rm -rf"} {
 		if !slices.Contains(commands, want) {
 			t.Errorf("commands through sudo = %q; want %q among them", commands, want)
 		}
+	}
+	// Only the daemon's own user reaches the remote, from the mirror.
+	for _, own := range []string{"git fetch", "git ls-remote", "git push"} {
+		if slices.Contains(commands, own) {
+			t.Errorf("commands through sudo = %q; want %q run as the daemon's user", commands, own)
+		}
+	}
+	mirror := r.mirrors.path(repo.url)
+	if got := git(t, mirror, "rev-parse", "refs/heads/"+taskBranch(deliveryTask)); got != pushed.Commit {
+		t.Errorf("mirror branch = %s, want the pushed %s", got, pushed.Commit)
+	}
+	upload := slices.IndexFunc(calls, func(c sudoCall) bool { return len(c.command()) > 1 && c.command()[1] == "upload-pack" })
+	if want := []string{r.gitCmd, "upload-pack", dir}; upload < 0 || !slices.Equal(calls[upload].command(), want) {
+		t.Errorf("upload-pack through sudo = %q, want %q", calls[upload].command(), want)
 	}
 	clone := calls[0].command()
 	template := clone[slices.Index(clone, "--template")+1]

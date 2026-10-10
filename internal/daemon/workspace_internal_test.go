@@ -131,13 +131,13 @@ func TestGivenRefsThatGitCanCloneWhenPreparingThenTheWorkspaceIsCheckedOutAtThem
 	}
 }
 
-func TestGivenRefThatIsNotInTheRepositoryWhenPreparingThenGitsErrorIsReturnedAndNoDirectoryIsLeft(t *testing.T) {
+func TestGivenRefThatIsNotInTheRepositoryWhenPreparingThenItIsRefusedAndNoDirectoryIsLeft(t *testing.T) {
 	repo := makeTestRepo(t)
 	dir := filepath.Join(t.TempDir(), "task-1")
 
 	err := prepareWorkspace(t.Context(), dir, "task-1", &protocol.Workspace{Repo: repo.url, Ref: "no-such-ref"}, "", "")
 
-	if err == nil || !strings.Contains(err.Error(), "git checkout") || !strings.Contains(err.Error(), "no-such-ref") {
+	if err == nil || !strings.Contains(err.Error(), `ref "no-such-ref" is not a branch, tag or commit of `+repo.url) {
 		t.Errorf("err = %v", err)
 	}
 	if _, statErr := os.Stat(dir); !errors.Is(statErr, fs.ErrNotExist) {
@@ -145,13 +145,19 @@ func TestGivenRefThatIsNotInTheRepositoryWhenPreparingThenGitsErrorIsReturnedAnd
 	}
 }
 
-func TestGivenRepositoryThatDoesNotExistWhenPreparingThenGitsCloneErrorIsReturned(t *testing.T) {
+func TestGivenRepositoryThatDoesNotExistWhenPreparingThenGitsFetchErrorIsReturnedAndNoDirectoryIsLeft(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "task-1")
 
 	err := prepareWorkspace(t.Context(), dir, "task-1", &protocol.Workspace{Repo: httpsAlias(t, filepath.Join(t.TempDir(), "missing.git")), Ref: "main"}, "", "")
 
-	if err == nil || !strings.Contains(err.Error(), "git clone") || !strings.Contains(err.Error(), "missing.git") {
+	if err == nil || !strings.Contains(err.Error(), "git fetch") || !strings.Contains(err.Error(), "missing.git") {
 		t.Errorf("err = %v", err)
+	}
+	if _, statErr := os.Stat(dir); !errors.Is(statErr, fs.ErrNotExist) {
+		t.Errorf("workspace left behind: %v", statErr)
+	}
+	if repo, _ := selfRunner(dir).mirrors.recorded("task-1"); repo != "" {
+		t.Errorf("recorded repository %q for a workspace that was not made", repo)
 	}
 }
 

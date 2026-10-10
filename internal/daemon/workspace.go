@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/url"
 	"os"
@@ -15,16 +16,18 @@ import (
 // prepareWorkspace makes dir the directory task works in: an empty
 // directory when ws is nil, otherwise a clone of ws.Repo on task's
 // branch, which starts at ws.Ref or, when the remote has it already, is
-// the remote's (docs/adr/2026-10-08-work-delivery.md). A ref that names
-// a branch or tag is cloned shallow; any other ref, such as a commit,
-// needs a full clone and a checkout.
+// the remote's (docs/adr/2026-10-08-work-delivery.md). The daemon
+// brings its mirror of ws.Repo up to date as its own user, and the
+// workspace is cloned from the mirror, which is its origin
+// (docs/adr/2026-10-10-daemon-push-identity.md). ws.Ref may name a
+// branch, a tag or a commit they hold.
 //
 // The repository must be an https:// or ssh URL. git runs with prompts
 // turned off and ignores the user's and the system's git configuration,
 // whose credential helpers and URL rewrites would otherwise apply; ssh
-// still reads the ~/.ssh of the user git runs as. A failed clone leaves
-// no directory behind. As the harness user, the directory dir is in
-// must exist already.
+// still reads the ~/.ssh of the daemon's user. A failed preparation
+// leaves no directory behind. As the harness user, the directory dir is
+// in must exist already.
 //
 // gitName and gitEmail become the clone's local user.name and user.email,
 // for the agent's own commits; either empty uses the default identity
@@ -40,30 +43,51 @@ func (r runner) prepareWorkspace(ctx context.Context, dir string, task protocol.
 	if strings.HasPrefix(ws.Ref, "-") {
 		return fmt.Errorf("ref %q is not a ref", ws.Ref)
 	}
+	if r.mirrors == nil {
+		return errors.New("the daemon keeps no mirrors to clone from")
+	}
+	mirror, err := r.mirrors.update(ctx, ws.Repo)
+	if err != nil {
+		return err
+	}
+	start, err := r.mirrors.git(ctx, mirror, nil, "rev-parse", "--verify", "--quiet", ws.Ref+"^{commit}")
+	if err != nil {
+		return fmt.Errorf("ref %q is not a branch, tag or commit of %s", ws.Ref, ws.Repo)
+	}
+	branch := taskBranch(task)
+	_, err = r.mirrors.git(ctx, mirror, nil, "rev-parse", "--verify", "--quiet", "refs/heads/"+branch)
+	onRemote := err == nil
 	if !r.as.Other() {
 		if err := os.MkdirAll(filepath.Dir(dir), 0o700); err != nil {
 			return err
 		}
 	}
-	template, cleanup, err := r.cloneTemplate(taskBranch(task))
+	template, cleanup, err := r.cloneTemplate(branch)
 	if err != nil {
 		return err
 	}
 	defer cleanup()
-	clone := append([]string{"clone", "--quiet"}, template...)
-	err = r.runGit(ctx, "", slices.Concat(clone, []string{"--depth", "1", "--branch", ws.Ref, "--", ws.Repo, dir})...)
-	if err != nil {
-		r.remove(dir)
-		err = r.runGit(ctx, "", slices.Concat(clone, []string{"--", ws.Repo, dir})...)
-		if err == nil {
-			err = r.runGit(ctx, dir, "checkout", "--quiet", "--detach", ws.Ref)
-		}
+	if err := r.mirrors.record(task, ws.Repo); err != nil {
+		return fmt.Errorf("record the workspace's repository: %w", err)
+	}
+	// The harness user's git refuses a repository another user owns
+	// unless safe.directory names it, and git passes no -c setting on to
+	// the upload-pack it runs for a local repository, so the upload-pack
+	// command carries it. The workspace keeps it, so that the agent's own
+	// fetch from the mirror works too.
+	uploadPack := shellQuote(r.git()) + " -c " + shellQuote("safe.directory="+mirror) + " upload-pack"
+	clone := slices.Concat([]string{"clone", "--quiet", "--no-local", "--no-checkout"}, template,
+		[]string{"--config", "remote.origin.uploadpack=" + uploadPack, "--upload-pack", uploadPack, "--", mirror, dir})
+	err = r.runGit(ctx, "", clone...)
+	if err == nil {
+		err = r.runGit(ctx, dir, "checkout", "--quiet", "--detach", start)
 	}
 	if err == nil {
-		err = r.prepareBranch(ctx, dir, task, ws.Ref, gitName, gitEmail)
+		err = r.prepareBranch(ctx, dir, task, ws.Ref, onRemote, gitName, gitEmail)
 	}
 	if err != nil {
 		r.remove(dir)
+		r.mirrors.forget(task)
 		return err
 	}
 	return nil
@@ -111,6 +135,11 @@ func (r runner) deleteWorkspace(dir string, task protocol.TaskID) error {
 	}
 	if err := r.remove(dir); err != nil {
 		return fmt.Errorf("delete the workspace of task %s: %w", task, err)
+	}
+	if r.mirrors != nil {
+		if err := r.mirrors.forget(task); err != nil {
+			return fmt.Errorf("forget the repository of task %s's workspace: %w", task, err)
+		}
 	}
 	return nil
 }

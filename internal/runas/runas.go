@@ -66,15 +66,8 @@ func (u User) Command(ctx context.Context, dir, path string, args, env, vars []s
 		cmd.Env = slices.Concat(env, vars)
 		return cmd
 	}
-	if dir == "" {
-		dir = "/"
-	}
-	sudo := u.Sudo
-	if sudo == "" {
-		sudo = "sudo"
-	}
-	argv := slices.Concat([]string{"-n", "-u", u.Name, "-D", dir}, vars, []string{"--", path}, args)
-	cmd := exec.CommandContext(ctx, sudo, argv...)
+	argv := u.SudoArgv(dir, path, args, vars)
+	cmd := exec.CommandContext(ctx, argv[0], argv[1:]...)
 	cmd.Env = []string{}
 	for _, kv := range env {
 		if strings.HasPrefix(kv, "PATH=") {
@@ -88,4 +81,19 @@ func (u User) Command(ctx context.Context, dir, path string, args, env, vars []s
 	cmd.Cancel = func() error { return cmd.Process.Signal(syscall.SIGTERM) }
 	cmd.WaitDelay = waitDelay
 	return cmd
+}
+
+// SudoArgv returns the command line that runs path with args as u, the
+// other user, in dir: sudo and its arguments, as Command runs them, for
+// a command that another program starts, such as the upload-pack that
+// git fetch runs.
+func (u User) SudoArgv(dir, path string, args, vars []string) []string {
+	if dir == "" {
+		dir = "/"
+	}
+	sudo := u.Sudo
+	if sudo == "" {
+		sudo = "sudo"
+	}
+	return slices.Concat([]string{sudo, "-n", "-u", u.Name, "-D", dir}, vars, []string{"--", path}, args)
 }
