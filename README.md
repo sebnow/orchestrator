@@ -138,13 +138,19 @@ The steps below set up the VPS. Then follow one of [First
 install](#first-install), [Recreated VPS](#recreated-vps) or [Moving
 from a laptop](#moving-from-a-laptop).
 
-1. Cross-compile the server for the VPS's architecture, `amd64` or
-   `arm64`, and the daemon for both, from the repository root. The
-   SQLite driver is pure Go, so no C toolchain is needed:
+1. Cross-compile the server and the daemon for `amd64` and `arm64`
+   with [scripts/build-release.sh](scripts/build-release.sh), from the
+   repository root. The SQLite driver is pure Go, so no C toolchain is
+   needed:
 
-       GOOS=linux GOARCH=<arch> CGO_ENABLED=0 go build -o <bin>/orchestrator-server ./cmd/server
-       GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -o <bin>/daemon-linux-amd64 ./cmd/daemon
-       GOOS=linux GOARCH=arm64 CGO_ENABLED=0 go build -o <bin>/daemon-linux-arm64 ./cmd/daemon
+       scripts/build-release.sh [OUTDIR]
+
+   OUTDIR defaults to `dist`. The script writes
+   `server-<version>-linux-amd64`, `server-<version>-linux-arm64`,
+   `daemon-<version>-linux-amd64` and `daemon-<version>-linux-arm64`,
+   and prints `<version>` to stdout: the tag at `HEAD`, or
+   `dev-<short hash>` if `HEAD` has none, with `-dirty` appended if the
+   working tree holds uncommitted changes.
 
    The server serves the two daemon binaries, from
    `-daemon-binaries-dir`, to the VPSes it provisions (see [Provisioning
