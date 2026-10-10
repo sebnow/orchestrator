@@ -5,3 +5,6 @@
 # nix build
 result
 result-*
+
+# scripts/build-release.sh
+/dist
