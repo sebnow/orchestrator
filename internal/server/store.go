@@ -270,6 +270,28 @@ var migrations = [...]string{
 		uploaded_to TEXT NOT NULL,
 		error TEXT NOT NULL
 	) STRICT;`,
+	// Version 27 lets host_keys be the daemon's command as well, which
+	// the server sends each daemon with the forges' ssh host keys. The
+	// table is rebuilt as version 22 rebuilt it, to change its CHECK.
+	`CREATE TABLE commands_new (
+		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		daemon_id TEXT NOT NULL REFERENCES daemons (id),
+		task_id TEXT REFERENCES tasks (id),
+		kind TEXT NOT NULL,
+		time TEXT NOT NULL,
+		payload TEXT,
+		by_policy INTEGER NOT NULL DEFAULT 0 CHECK (by_policy IN (0, 1)),
+		CHECK ((task_id IS NULL) = (kind IN ('login', 'login_code', 'host_keys')))
+	) STRICT;
+	INSERT INTO commands_new (id, daemon_id, task_id, kind, time, payload, by_policy)
+		SELECT id, daemon_id, task_id, kind, time, payload, by_policy FROM commands;
+	INSERT INTO sqlite_sequence (name, seq) SELECT 'commands_new', 0
+		WHERE NOT EXISTS (SELECT 1 FROM sqlite_sequence WHERE name = 'commands_new');
+	UPDATE sqlite_sequence SET seq = max(seq, coalesce((SELECT seq FROM sqlite_sequence WHERE name = 'commands'), 0))
+		WHERE name = 'commands_new';
+	DROP TABLE commands;
+	ALTER TABLE commands_new RENAME TO commands;
+	CREATE INDEX commands_by_daemon ON commands (daemon_id, id);`,
 }
 
 // schemaVersion is the version this server migrates databases to. A
@@ -285,7 +307,7 @@ const schemaVersion = 1 + len(migrations)
 // Table Schema Changes"). PRAGMA foreign_keys cannot change inside a
 // transaction, so these run on their own connection; see
 // migrateWithoutForeignKeys.
-var noForeignKeys = map[int]bool{22: true}
+var noForeignKeys = map[int]bool{22: true, 27: true}
 
 var (
 	errUnknownDaemon = errors.New("unknown daemon")

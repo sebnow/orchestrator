@@ -61,6 +61,12 @@ type Server struct {
 	// logins holds each daemon's latest login; loginsMu guards it.
 	loginsMu sync.Mutex
 	logins   map[protocol.DaemonID]loginView
+
+	// hostKeysMu orders changes to the host keys and the host_keys
+	// commands issued for them, so that the latest command each daemon
+	// gets carries the current keys.
+	hostKeysMu sync.Mutex
+	github     hostKeysClient
 }
 
 // commandStream is the one open SSE stream of a daemon.
@@ -104,6 +110,11 @@ type Options struct {
 	// Backups is where and how often the database is backed up
 	// (docs/adr/2026-10-10-sqlite-backups.md); nil turns backups off.
 	Backups *BackupPolicy
+	// GitHubMeta is the URL of GitHub's meta API, GitHubMetaURL, which
+	// FetchGitHubHostKeys fetches GitHub's ssh host keys from; empty
+	// fetches none. GitHubClient fetches them; nil uses a new client.
+	GitHubMeta   string
+	GitHubClient *http.Client
 }
 
 // New returns a server over store. The server hears of store's changes
@@ -121,6 +132,10 @@ func New(store *Store, log *slog.Logger, options Options) *Server {
 		ended:        make(chan struct{}),
 		watchers:     watchers{byTask: make(map[protocol.TaskID]map[chan struct{}]struct{}), byDaemon: make(map[protocol.DaemonID]map[chan struct{}]struct{})},
 		logins:       make(map[protocol.DaemonID]loginView),
+		github:       hostKeysClient{metaURL: options.GitHubMeta, client: options.GitHubClient},
+	}
+	if s.github.client == nil {
+		s.github.client = &http.Client{}
 	}
 	policy := options.Schedule
 	if policy == (SchedulePolicy{}) {
@@ -169,6 +184,8 @@ func New(store *Store, log *slog.Logger, options Options) *Server {
 	owner.HandleFunc("POST /v1/provision", s.postProvision)
 	owner.HandleFunc("GET /v1/vpses", s.getVPSes)
 	owner.HandleFunc("POST /v1/backup", s.postBackup)
+	owner.HandleFunc("GET /v1/host-keys", s.getHostKeys)
+	owner.HandleFunc("PUT /v1/host-keys", s.putHostKeys)
 	owner.HandleFunc("GET /v1/agents", s.getAgents)
 	owner.HandleFunc("POST /v1/agents", s.postAgent)
 	owner.HandleFunc("GET /v1/agents/{agent}", s.getAgent)
@@ -321,9 +338,18 @@ func (s *Server) streamCommands(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// The stream is registered before the log is first read, so a command
+	// The daemon gets the host keys before the stream is registered, so
+	// that they precede any task placed on it once it is connected. The
+	// stream is registered before the log is first read, so a command
 	// issued in between is signalled rather than missed.
+	s.hostKeysMu.Lock()
+	if err := s.sendHostKeysAtConnect(r.Context(), daemon); err != nil {
+		s.hostKeysMu.Unlock()
+		s.internalError(w, err)
+		return
+	}
 	stream := s.openStream(daemon)
+	s.hostKeysMu.Unlock()
 	defer s.closeStream(daemon, stream)
 
 	w.Header().Set("Content-Type", "text/event-stream")

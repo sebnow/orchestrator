@@ -115,6 +115,7 @@ func serve(args []string, stderr io.Writer) int {
 	backupKeep := flags.Int("backup-keep", 14, "how many backups are kept, locally and in the bucket each; older ones are deleted after each backup")
 	bucket := addBucketFlags(flags)
 	backupPrefix := flags.String("backup-s3-prefix", "orchestrator/", "the directory in the bucket that backups are uploaded to")
+	githubMeta := flags.String("github-meta-url", server.GitHubMetaURL, "GitHub's meta API, from which the server fetches github.com's ssh host keys at start and every 24 hours, to send its daemons with the owner's; empty fetches none")
 	permissions := flags.String("permissions", "allow-all", "who answers the agents' permission requests: allow-all, the server, allowing every one at once; or ask, the owner")
 	if err := flags.Parse(args); err != nil {
 		return exitCode(err)
@@ -229,6 +230,7 @@ func serve(args []string, stderr io.Writer) int {
 		Provisioning: provisioning,
 		Backups: &server.BackupPolicy{Dir: *backupDir, Every: *backupEvery, Keep: *backupKeep,
 			Bucket: backupBucket, Prefix: *backupPrefix},
+		GitHubMeta: *githubMeta,
 	})
 	httpServer := &http.Server{
 		Handler:   srv,
@@ -249,12 +251,18 @@ func serve(args []string, stderr io.Writer) int {
 		defer close(backedUp)
 		srv.RunBackups(scheduleCtx)
 	}()
-	// The scheduler and the backups use the store, so they stop before
-	// the store closes.
+	fetched := make(chan struct{})
+	go func() {
+		defer close(fetched)
+		srv.FetchGitHubHostKeys(scheduleCtx)
+	}()
+	// The scheduler, the backups and the host key fetch use the store, so
+	// they stop before the store closes.
 	defer func() {
 		stopScheduling()
 		<-scheduled
 		<-backedUp
+		<-fetched
 	}()
 	listener, err := net.Listen("tcp", *listen)
 	if err != nil {

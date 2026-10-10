@@ -3,6 +3,7 @@ package daemon
 import (
 	"io/fs"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -167,5 +168,51 @@ func TestGivenAKeyWhenMakingMirrorsThenSSHUsesItAndOffersItAloneOnlyWhenAsked(t 
 		if ssh != 1 {
 			t.Errorf("env = %q, want GIT_SSH_COMMAND once", env)
 		}
+	}
+}
+
+func TestGivenKnownHostsFilesWhenMakingMirrorsThenSSHChecksHostKeysStrictlyAgainstThemAlone(t *testing.T) {
+	env := newMirrors("/state", "/state/ssh_ed25519", true, "/state/known_hosts", `/Users/o w"ner/.ssh/known_hosts`).env
+
+	want := `GIT_SSH_COMMAND=ssh -i '/state/ssh_ed25519' -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes ` +
+		`-o 'UserKnownHostsFile=/state/known_hosts "/Users/o w\"ner/.ssh/known_hosts"'`
+	if !slices.Contains(env, want) {
+		t.Errorf("env = %q, want %q", env, want)
+	}
+}
+
+// TestGivenKnownHostsFilesWhenSSHReadsTheCommandThenItTakesEachFileWhole
+// runs the command git would run through sh, with -G, which prints the
+// configuration ssh would connect with and connects to nothing.
+func TestGivenKnownHostsFilesWhenSSHReadsTheCommandThenItTakesEachFileWhole(t *testing.T) {
+	if _, err := exec.LookPath("ssh"); err != nil {
+		t.Skip("no ssh on PATH")
+	}
+	dir := filepath.Join(t.TempDir(), "state dir")
+	var command string
+	for _, kv := range newMirrors(dir, "", false, filepath.Join(dir, "known_hosts"), "/home/owner/.ssh/known_hosts").env {
+		if value, ok := strings.CutPrefix(kv, "GIT_SSH_COMMAND="); ok {
+			command = value
+		}
+	}
+
+	out, err := exec.CommandContext(t.Context(), "sh", "-c", command+" -F /dev/null -G git.example.com").Output()
+	if err != nil {
+		t.Fatalf("%s -G: %v", command, err)
+	}
+
+	config := map[string]string{}
+	for line := range strings.Lines(string(out)) {
+		name, value, _ := strings.Cut(strings.TrimSpace(line), " ")
+		config[name] = value
+	}
+	if got, want := config["userknownhostsfile"], filepath.Join(dir, "known_hosts")+" /home/owner/.ssh/known_hosts"; got != want {
+		t.Errorf("userknownhostsfile %q, want %q", got, want)
+	}
+	if got := config["stricthostkeychecking"]; got != "true" {
+		t.Errorf("stricthostkeychecking %q, want true", got)
+	}
+	if got := config["batchmode"]; got != "yes" {
+		t.Errorf("batchmode %q, want yes", got)
 	}
 }

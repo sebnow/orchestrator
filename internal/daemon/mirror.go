@@ -57,8 +57,11 @@ type mirrors struct {
 // newMirrors returns the mirrors under stateDir. git reaches a remote
 // over ssh with key, the daemon's private key file, unless key is empty;
 // with identitiesOnly ssh offers that key alone, and otherwise also the
-// keys of the daemon's ssh agent.
-func newMirrors(stateDir, key string, identitiesOnly bool) *mirrors {
+// keys of the daemon's ssh agent. ssh checks the remote's host key
+// against knownHosts, the files the server's host keys are written to
+// and any other the daemon's user keeps, and nowhere else but the
+// system's known_hosts; it refuses a host it does not find there.
+func newMirrors(stateDir, key string, identitiesOnly bool, knownHosts ...string) *mirrors {
 	ssh := "ssh"
 	if key != "" {
 		ssh += " -i " + shellQuote(key)
@@ -66,6 +69,13 @@ func newMirrors(stateDir, key string, identitiesOnly bool) *mirrors {
 	ssh += " -o BatchMode=yes"
 	if identitiesOnly {
 		ssh += " -o IdentitiesOnly=yes"
+	}
+	if len(knownHosts) > 0 {
+		files := make([]string, len(knownHosts))
+		for idx, file := range knownHosts {
+			files[idx] = sshQuote(file)
+		}
+		ssh += " -o StrictHostKeyChecking=yes -o " + shellQuote("UserKnownHostsFile="+strings.Join(files, " "))
 	}
 	env := slices.DeleteFunc(slices.Clone(gitEnv), func(kv string) bool { return strings.HasPrefix(kv, "GIT_SSH_COMMAND=") })
 	return &mirrors{
@@ -200,6 +210,16 @@ func (m *mirrors) forget(task protocol.TaskID) error {
 		return nil
 	}
 	return err
+}
+
+// sshQuote quotes s, when it holds a space, a tab or a double quote, as
+// one argument of an ssh option that takes several, such as
+// UserKnownHostsFile.
+func sshQuote(s string) string {
+	if !strings.ContainsAny(s, " \t\"\\") {
+		return s
+	}
+	return `"` + strings.NewReplacer(`\`, `\\`, `"`, `\"`).Replace(s) + `"`
 }
 
 // shellQuote quotes s as one word for sh.

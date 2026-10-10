@@ -40,6 +40,8 @@ func (s *Server) routeGUI(mux *http.ServeMux) {
 	mux.HandleFunc("POST /daemons/{daemon}/destroy", s.postDestroyForm)
 	mux.HandleFunc("POST /vpses", s.postProvisionForm)
 	mux.HandleFunc("POST /backups", s.postBackupForm)
+	mux.HandleFunc("GET "+component.SettingsURL, s.getSettingsPage)
+	mux.HandleFunc("POST "+component.SettingsURL+"/host-keys", s.postHostKeysForm)
 }
 
 // fromHTMX reports whether htmx made the request, in which case the

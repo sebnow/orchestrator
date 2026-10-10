@@ -41,6 +41,10 @@ const (
 	CommandLogin CommandKind = "login"
 	// CommandLoginCode: LoginCode, the daemon's, as CommandLogin.
 	CommandLoginCode CommandKind = "login_code"
+	// CommandHostKeys: HostKeys, the daemon's, as CommandLogin. The
+	// server sends one when the daemon connects and whenever the keys
+	// change; each replaces the daemon's earlier ones.
+	CommandHostKeys CommandKind = "host_keys"
 )
 
 // Command is one entry in a daemon's command log. ID increases with every
@@ -207,7 +211,15 @@ type AnswerPermission struct {
 // IsDaemons reports whether commands of kind are to the daemon itself
 // rather than to one of its tasks.
 func (kind CommandKind) IsDaemons() bool {
-	return kind == CommandLogin || kind == CommandLoginCode
+	return kind == CommandLogin || kind == CommandLoginCode || kind == CommandHostKeys
+}
+
+// HostKeys are the forges' ssh host keys the server distributes: each
+// of Lines is a known_hosts line, "host keytype key". The daemon writes
+// them to a known_hosts file of its own, replacing what it held, and its
+// ssh checks a remote's host key against that file.
+type HostKeys struct {
+	Lines []string `json:"lines"`
 }
 
 // LoginCode is the code the owner copied from the page the

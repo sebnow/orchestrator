@@ -113,8 +113,9 @@ type loginRun struct {
 	done    chan struct{}
 }
 
-// applyDaemonCommand applies a command to the daemon itself, in the
-// background, so that the command stream is not held up.
+// applyDaemonCommand applies a command to the daemon itself. A login
+// runs in the background, so that the command stream is not held up;
+// host keys are written before the next command applies.
 func (s *service) applyDaemonCommand(command protocol.Command) {
 	switch command.Kind {
 	case protocol.CommandLogin:
@@ -126,6 +127,8 @@ func (s *service) applyDaemonCommand(command protocol.Command) {
 			return
 		}
 		s.giveLoginCode(code)
+	case protocol.CommandHostKeys:
+		s.applyHostKeys(command)
 	default:
 		s.log.Warn("command not applied", "command", command.ID, "kind", command.Kind, "error", "unknown command kind")
 	}

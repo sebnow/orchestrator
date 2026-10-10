@@ -48,14 +48,15 @@ func attrs(pairs ...string) []html.Attribute {
 }
 
 // Page is a whole document titled title, with children as its content,
-// under a navigation bar that links to the dashboard, the projects and
-// the agents, and logs out.
+// under a navigation bar that links to the dashboard, the projects, the
+// agents and the settings, and logs out.
 func Page(title string, children ...html.Node) html.Node {
 	return document(title, html.El("nav", nil,
 		html.El("div", attrs("class", "links"),
 			html.El("a", attrs("href", "/"), html.Text("Orchestrator")),
 			html.El("a", attrs("href", ProjectsURL), html.Text("Projects")),
-			html.El("a", attrs("href", AgentsURL), html.Text("Agents"))),
+			html.El("a", attrs("href", AgentsURL), html.Text("Agents")),
+			html.El("a", attrs("href", SettingsURL), html.Text("Settings"))),
 		html.El("form", attrs("method", "post", "action", "/logout"), Button("Log out", VariantPlain, "", "")),
 	), children...)
 }

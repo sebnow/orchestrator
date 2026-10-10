@@ -81,6 +81,13 @@ func (s *Store) issueDaemonCommand(ctx context.Context, daemon protocol.DaemonID
 	if !known {
 		return protocol.Command{}, fmt.Errorf("%w: %q", errUnknownDaemon, daemon)
 	}
+	// A host_keys command replaces the daemon's earlier ones, so that the
+	// log keeps the latest only.
+	if kind == protocol.CommandHostKeys {
+		if _, err := tx.ExecContext(ctx, `DELETE FROM commands WHERE daemon_id = ? AND kind = ?`, string(daemon), string(kind)); err != nil {
+			return protocol.Command{}, fmt.Errorf("replace the %s of daemon %q: %w", kind, daemon, err)
+		}
+	}
 	command := protocol.Command{DaemonID: daemon, Kind: kind, Time: time.Now().UTC(), Payload: payload}
 	var stored any
 	if payload != nil {

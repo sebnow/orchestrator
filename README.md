@@ -293,9 +293,10 @@ local user who learns the socket's path can use the daemon's ssh keys;
 the directory's mode keeps others from listing it to learn the name.
 Without `SSH_AUTH_SOCK` the harness gets no ssh agent. The daemon's
 own ssh runs as the daemon's user and, with a harness user, offers the
-remote only the daemon's key, not the keys in its ssh agent;
-`known_hosts` must list the repository's host in the daemon user's
-`~/.ssh` or in the system's `/etc/ssh/ssh_known_hosts`.
+remote only the daemon's key, not the keys in its ssh agent. It checks
+the remote's host key against the keys the server sends (see [Forge
+host keys](#forge-host-keys)) and the system's
+`/etc/ssh/ssh_known_hosts`, not the daemon user's `~/.ssh/known_hosts`.
 
 The harness user's Claude Code is logged in from the daemon's page (see
 [Logging a daemon in](#logging-a-daemon-in)), and tasks spend that
@@ -315,14 +316,18 @@ ignores both keeps running. A daemon that restarts and finds a harness
 its previous run left sends that harness's sudo SIGTERM.
 
 Checklist for a machine with a daemon user `orchestrator` and a harness
-user `orch-agent`. A container check runs steps 1 to 3, the
-`known_hosts` part of step 4, and steps 6 to 11 on Linux, with a stub
+user `orch-agent`. A container check runs steps 1 to 3, the host key
+part of step 4, and steps 6 to 11 on Linux, with a stub
 in place of `claude`, and asserts each. It also checks that the daemon
 sends sudo SIGTERM when a stopped harness outlasts the 30 s timeout,
 and that a restarted daemon terminates the harness its previous run
 left. It checks the private key's mode and that the harness user
 cannot read it, that the daemon's page shows the public key, and that
-the workspace's `origin` is the mirror. The stub starts logged out:
+the workspace's `origin` is the mirror. It gives the server the test
+remote's host key, which `ssh-keyscan` prints, through the owner API,
+and checks that the daemon writes it to `<state-dir>/known_hosts` with
+mode 0600 and that the daemon user has no `known_hosts` of its own.
+The stub starts logged out:
 the check sees the daemon report `login=no`, the dashboard flag it, and
 a task for it wait; it then logs the daemon in through the owner API,
 checks that the daemon reported the stub's URL without the hyperlink's
@@ -331,7 +336,8 @@ facts report the stub's account, sudo's log show `claude auth login`
 and `claude auth status --json` run as the harness user, and the
 waiting task run. From the logs of sshd, sudo and
 an ssh wrapper, it checks that the push left the mirror as the daemon's
-user offering only the daemon's key, and that the fetch into the
+user offering only the daemon's key and checking host keys against the
+server's alone, and that the fetch into the
 mirror ran `upload-pack` as the harness user. The test remote accepts
 only the daemon's key, so a successful push shows the daemon used it.
 With Docker running, from the repository root:
@@ -371,10 +377,9 @@ macOS forms of steps 1 and 3 stay manual.
    `/Users/Shared/orchestrator-workspaces` there.
 4. Once the daemon runs (step 6), log `orch-agent` in to Claude Code
    from the daemon's page (see [Logging a daemon
-   in](#logging-a-daemon-in)). As `orchestrator`, add each repository host's
-   key to `~/.ssh/known_hosts`, such as with `ssh-keyscan HOST >>
-   ~/.ssh/known_hosts`, after comparing its fingerprint with the one
-   the host publishes.
+   in](#logging-a-daemon-in)). Add each repository host's key on the
+   server's Settings page (see [Forge host keys](#forge-host-keys)),
+   unless the host is `github.com`.
 5. On macOS, confirm where Claude Code keeps its login and that a
    process started through sudo can read it. As `orchestrator`,
    `sudo -n -u orch-agent -D / -- /usr/local/bin/claude -p 'Reply OK'`
@@ -489,11 +494,10 @@ connects. The VPS's state is then `enrolled`, shown as `connected`
 while its daemon has its command stream open; log the daemon in from
 its page like any other (see [Logging a daemon
 in](#logging-a-daemon-in)). Later starts use the stored certificate and
-ignore the spent token. Provisioning does not add a `known_hosts`
-entry for the repository host, which step 4 of the checklist in
-[Running the harness as another
-user](#running-the-harness-as-another-user) asks for; add it before
-running tasks that push.
+ignore the spent token. The daemon gets the forges' host keys from the
+server when it connects (see [Forge host keys](#forge-host-keys)), so
+nothing is added on the VPS; give the server the keys of any forge
+other than GitHub before running tasks that push there.
 
 Each VPS row has a Destroy button, and scripts call `POST
 /v1/daemons/{daemon}/destroy`. The VPS is `destroying` while the
@@ -645,6 +649,42 @@ owner API:
   `started`, `code_sent` and `finished`; `url`, from `started` on; and
   `ok` and `error`, once `finished`.
 
+### Forge host keys
+
+A daemon's ssh checks a forge's host key against the keys the server
+sends it, so that a daemon on a fresh machine verifies the forge it
+pushes to with nothing done on the machine. The server holds two sets:
+
+- the owner's: `known_hosts` lines, `host keytype key` as `ssh-keyscan
+  HOST` prints them, on the **Settings** page under "Forge host keys".
+  Compare each key's fingerprint, `ssh-keygen -lf <file>`, with the one
+  the forge publishes before saving. Blank lines and lines starting
+  with `#` are allowed and not sent; `@cert-authority` and `@revoked`
+  lines are accepted. The server refuses a line whose key is not valid
+  base64 of a key of the named type, and names the line.
+- GitHub's: the server fetches `https://api.github.com/meta` when it
+  starts and every 24 hours, an hour after a fetch that failed, and
+  keeps the `ssh_keys` it lists as lines for `github.com`. The last keys
+  fetched stay, across restarts too, until a fetch succeeds.
+  `-github-meta-url ''` turns the fetch off.
+
+The server sends their union, the owner's lines first, to each daemon
+as a `host_keys` command when the daemon connects and whenever the
+union changes; each such command replaces the daemon's earlier one in
+the command log. The daemon writes the lines to
+`<state-dir>/known_hosts`, mode 0600, replacing the file, and its ssh
+checks host keys against that file (see [Tasks](#tasks)). A server
+with no keys sends nothing to a daemon it never sent keys to.
+
+Scripts use the owner API:
+
+- `GET /v1/host-keys` answers with `forge`, the owner's text; `github`,
+  GitHub's lines, and `github_fetched_at`, once fetched; and `lines`,
+  the union the daemons get.
+- `PUT /v1/host-keys` with the body `{"forge": "..."}` replaces the
+  owner's lines and answers as `GET` does, or 400 naming the line that
+  is not a `known_hosts` line.
+
 ### Backups
 
 The server backs up its database on a schedule and on demand
@@ -770,6 +810,10 @@ task filler; an agent whose tasks are filler makes the task filler
 whether it is ticked or not, and only the owner API's `"filler": false`
 overrides that.
 
+The Settings page, linked from the navigation bar, holds the forges'
+ssh host keys that the daemons get (see [Forge host
+keys](#forge-host-keys)).
+
 Each task page:
 
 - shows the transcript;
@@ -836,7 +880,7 @@ Server flags:
 - `-db` (required): the SQLite database file, created with its directory
   when missing. It holds every daemon, task, event and command, the
   agents and projects, the owner token's hash and the login sessions.
-  The server brings an older database to its schema, version 26, when it
+  The server brings an older database to its schema, version 27, when it
   starts, and refuses a database of a later version.
 - `-listen`: the address to serve on, `127.0.0.1:8080` by default.
 - `-tls-cert`, `-tls-key` (required unless `-insecure-loopback`): the
@@ -862,6 +906,9 @@ Server flags:
   daemon dials it.
 - `-daemon-binary-url`: the `https://` URL a provisioned VPS downloads
   the daemon binary from.
+- `-github-meta-url`: GitHub's meta API, `https://api.github.com/meta`
+  by default, from which the server fetches `github.com`'s ssh host
+  keys (see [Forge host keys](#forge-host-keys)); empty fetches none.
 - `-backup-dir`: the directory backups are written to, `backups/`
   beside `-db` by default (see [Backups](#backups)).
 - `-backup-every`: the time between scheduled backups, 6 hours by
@@ -1022,12 +1069,17 @@ GIT_TERMINAL_PROMPT=0`), and runs ssh in batch mode with the daemon's
 key, `ssh -i <state-dir>/ssh_ed25519 -o BatchMode=yes`. Without
 `-harness-user`, ssh also offers the keys of the daemon's ssh agent,
 such as the owner's, when `SSH_AUTH_SOCK` is set; with it, ssh adds
-`-o IdentitiesOnly=yes` and offers the daemon's key alone. ssh
-otherwise reads the daemon user's `~/.ssh`, and `known_hosts` there
-must already list the host, since batch mode fails the fetch or the
-push on an unknown host key rather than waiting. A repository over
-https that needs credentials fails to fetch, as no credential helper
-applies.
+`-o IdentitiesOnly=yes` and offers the daemon's key alone. ssh checks
+the remote's host key with `-o StrictHostKeyChecking=yes -o
+UserKnownHostsFile=<state-dir>/known_hosts`, the file the server's
+host keys are written to (see [Forge host keys](#forge-host-keys)),
+and the system's `/etc/ssh/ssh_known_hosts`; without `-harness-user`,
+`UserKnownHostsFile` also names the daemon user's
+`~/.ssh/known_hosts`, so that a daemon on the owner's machine still
+reaches the hosts the owner has. A host found in none of them fails
+the fetch or the push rather than being added. ssh otherwise reads the
+daemon user's `~/.ssh/config`. A repository over https that needs
+credentials fails to fetch, as no credential helper applies.
 
 What credentials the agent can reach depends on `-harness-user`.
 Without it, the harness and the agent it runs inherit the daemon's

@@ -226,7 +226,13 @@ func Serve(ctx context.Context, cfg Config) error {
 	}
 	// Without a harness user ssh also offers the keys of the owner's
 	// agent, when the daemon has one; with one, the daemon's key alone.
-	run.mirrors = newMirrors(stateDir, key.Path, run.as.Other())
+	// ssh checks host keys against the ones the server sends and, without
+	// a harness user, the daemon user's own as well.
+	home, err := os.UserHomeDir()
+	if err != nil && !run.as.Other() {
+		cfg.Log.Warn("no home directory; ssh checks host keys against the server's alone", "error", err)
+	}
+	run.mirrors = newMirrors(stateDir, key.Path, run.as.Other(), knownHostsFiles(stateDir, home, run.as.Other())...)
 	if run.as.Other() {
 		cfg.Log.Info("running tasks as the harness user", "user", run.as.Name, "git", run.gitCmd, "rm", run.rmCmd, "workspace_dir", workspaceDir, "ssh_agent", run.as.SSHAuthSock != "")
 	}

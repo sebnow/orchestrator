@@ -230,8 +230,8 @@ mirror_checks() {
 	check "mirror: the mirror holds the pushed commit on the task branch" test -n "$out" -a "$out" = "$(jq -r .commit <<<"$pushed")"
 	echo "# $SSH_CALLS:"
 	evidence <"$SSH_CALLS"
-	check "mirror: the push to the remote ran from the mirror as orchestrator, offering the daemon's key alone" \
-		grep -qE "^user=orchestrator parents=.*<git push --quiet origin refs/heads/orchestrator/$task:refs/heads/orchestrator/$task.* args=-i $DAEMON_KEY -o BatchMode=yes -o IdentitiesOnly=yes .*git-receive-pack" "$SSH_CALLS"
+	check "mirror: the push to the remote ran from the mirror as orchestrator, offering the daemon's key alone and checking the server's host keys" \
+		grep -qE "^user=orchestrator parents=.*<git push --quiet origin refs/heads/orchestrator/$task:refs/heads/orchestrator/$task.* args=-i $DAEMON_KEY -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile=$STATE/known_hosts .*git-receive-pack" "$SSH_CALLS"
 	check "mirror: no user but orchestrator ran ssh" test -z "$(grep -v '^user=orchestrator ' "$SSH_CALLS")"
 	out=$(grep 'Accepted publickey for git' "$SSHD_LOG")
 	echo "# $SSHD_LOG, accepted keys:"
@@ -287,12 +287,6 @@ as_user git sh -c "git init --quiet --bare -b main $BARE &&
 	git -c user.name=seed -c user.email=seed@localhost commit --quiet -m seed &&
 	git push --quiet $BARE main" || die "seed the bare repository"
 
-# Checklist step 4, the part without Claude Code: known_hosts for the
-# daemon's user, who alone reaches the remote.
-as_orch sh -c 'ssh-keyscan -t ed25519 localhost >~/.ssh/known_hosts 2>/dev/null'
-check "step 4: the daemon user's known_hosts lists localhost" \
-	grep -q '^localhost ssh-ed25519 ' $OHOME/.ssh/known_hosts
-
 as_orch ssh-agent -a $AGENT_SOCK >/dev/null || die "ssh-agent for orchestrator"
 as_orch env SSH_AUTH_SOCK=$AGENT_SOCK ssh-add -q $OHOME/.ssh/id_ed25519 || die "ssh-add for orchestrator"
 fingerprint=$(ssh-keygen -lf $OHOME/.ssh/id_ed25519.pub | awk '{print $2}')
@@ -305,8 +299,23 @@ install -d -o orchestrator -g orchestrator -m 0755 $PKI
 install -o orchestrator -g orchestrator -m 0644 $SERVER_DIR/pki/daemons/ct-1/daemon.crt $PKI/daemon.crt
 install -o orchestrator -g orchestrator -m 0600 $SERVER_DIR/pki/daemons/ct-1/daemon.key $PKI/daemon.key
 $BIN/server -insecure-loopback -listen 127.0.0.1:8080 -db $SERVER_DIR/server.db \
-	-permissions allow-all >>"$SERVER_LOG" 2>&1 &
+	-permissions allow-all -github-meta-url '' >>"$SERVER_LOG" 2>&1 &
 wait_until 20 curl -sf -o /dev/null $API/v1/tasks || die "the server did not answer"
+
+# Checklist step 4, the part without Claude Code: the remote's host key,
+# given to the server, which sends it to the daemon. The daemon user
+# has no known_hosts of its own.
+# OpenSSH 10 prints a comment line before the key, which the server
+# takes and does not send.
+keyscan=$(ssh-keyscan -t ed25519 localhost 2>/dev/null)
+echo "# ssh-keyscan -t ed25519 localhost:"
+evidence <<<"$keyscan"
+host_key=$(grep -v '^#' <<<"$keyscan")
+out=$(jq -n --arg forge "$keyscan" '{forge: $forge}' | curl -sf -X PUT --data-binary @- $API/v1/host-keys)
+echo "# PUT /v1/host-keys: $out"
+check "step 4: the server takes the remote's host key" \
+	jq_true --arg line "$host_key" '.lines == [$line]' <<<"$out"
+check "step 4: the daemon user has no known_hosts of its own" test ! -e $OHOME/.ssh/known_hosts
 
 # --- Checklist steps 1 to 3.
 echo "# id orch-agent"
@@ -356,6 +365,12 @@ out=$(sudo -u orch-agent -i env SSH_AUTH_SOCK=$AGENT_SOCK ssh-add -l 2>&1)
 echo "# as orch-agent: SSH_AUTH_SOCK=$AGENT_SOCK ssh-add -l"
 evidence <<<"$out"
 check "ssh agent relay: orch-agent cannot open the daemon user's own agent socket" grep -q 'Permission denied' <<<"$out"
+
+# --- Checklist step 4: the host keys the server sent the daemon.
+check "host keys: the daemon wrote the server's host keys to its known_hosts" \
+	wait_until 10 sh -c '[ "$(cat "$1")" = "$2" ]' - $STATE/known_hosts "$host_key"
+echo "# host keys: $(stat -c '%a %U %n' $STATE/known_hosts)"
+check "host keys: known_hosts has mode 0600, owned by orchestrator" test "$(stat -c '%a %U' $STATE/known_hosts)" = "600 orchestrator"
 
 # --- Checklist step 6: the daemon's own key, generated at its first
 # start and shown on its page, registered at the remote by the owner.

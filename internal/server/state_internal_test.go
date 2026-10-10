@@ -8,6 +8,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"slices"
 	"testing"
 	"time"
 
@@ -360,8 +361,8 @@ func TestGivenVersionOneDatabaseWhenOpeningStoreThenItIsMigratedAndItsTasksKeepP
 	if err := store.db.QueryRowContext(t.Context(), `SELECT version FROM schema_version`).Scan(&version); err != nil {
 		t.Fatal(err)
 	}
-	if version != schemaVersion || schemaVersion != 26 {
-		t.Errorf("schema version = %d (server knows %d), want 26", version, schemaVersion)
+	if version != schemaVersion || schemaVersion != 27 {
+		t.Errorf("schema version = %d (server knows %d), want 27", version, schemaVersion)
 	}
 	if old := readTask(t, store, "old"); old.Project != "" || old.Purpose != "" {
 		t.Errorf("migrated task project %q, purpose %q; want none", old.Project, old.Purpose)
@@ -686,6 +687,60 @@ func TestGivenCommandsWithChildRowsBeforeVersion22WhenMigratedThenForeignKeysHol
 	}
 	if seq < 2 {
 		t.Errorf("sqlite_sequence for commands = %d, want at least 2", seq)
+	}
+}
+
+func TestGivenCommandsBeforeVersion27WhenMigratedThenTheyStayWithTheirChildRowsAndHostKeysAreTheDaemons(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "server.db")
+	createVersionOneDatabase(t, path)
+	db, err := sql.Open("sqlite", (&url.URL{Scheme: "file", Path: path, RawQuery: "_pragma=foreign_keys(1)"}).String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	// migrations[:25] takes the schema from version 1 to version 26, the
+	// last version before host_keys commands.
+	for _, statement := range append(migrations[:25:25],
+		`INSERT INTO commands (id, daemon_id, task_id, kind, time) VALUES (1, 'laptop', 'old', 'prompt', '2026-10-07T10:00:02Z')`,
+		`INSERT INTO commands (id, daemon_id, kind, time) VALUES (2, 'laptop', 'login', '2026-10-07T10:00:03Z')`,
+		`INSERT INTO turns (task_id, kind, origin, filler, created_at, admitted_command_id) VALUES ('old', 'prompt', 'owner', 0, '2026-10-07T10:00:02Z', 1)`,
+		`UPDATE schema_version SET version = 26`) {
+		if _, err := db.ExecContext(t.Context(), statement); err != nil {
+			t.Fatalf("%s: %v", statement, err)
+		}
+	}
+	db.Close()
+
+	store, err := OpenStore(t.Context(), path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+
+	keys, err := store.issueDaemonCommand(t.Context(), "laptop", protocol.CommandHostKeys, []byte(`{"lines":[]}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	all, err := store.commandsAfter(t.Context(), "laptop", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	kinds := make([]protocol.CommandKind, len(all))
+	for idx, command := range all {
+		kinds[idx] = command.Kind
+	}
+	if keys.ID != 3 || !slices.Equal(kinds, []protocol.CommandKind{protocol.CommandPrompt, protocol.CommandLogin, protocol.CommandHostKeys}) {
+		t.Errorf("host keys id %d, commands %v; want 3 after the prompt and the login", keys.ID, kinds)
+	}
+	if _, err := store.db.ExecContext(t.Context(), `INSERT INTO commands (daemon_id, task_id, kind, time) VALUES ('laptop', 'old', 'host_keys', '2026-10-07T10:00:04Z')`); err == nil {
+		t.Error("a task's host_keys command was stored")
+	}
+	rows, err := store.db.QueryContext(t.Context(), `PRAGMA foreign_key_check`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	if rows.Next() {
+		t.Error("the migrated database has foreign key violations")
 	}
 }
 
