@@ -1,6 +1,7 @@
 ---
-status: accepted
+status: superseded
 date: 2026-10-06
+superseded-by: docs/adr/2026-10-10-harness-login.md
 source: [initial brainstorm](../design/2026-10-06-brainstorm.md), decision 8
 ---
 
