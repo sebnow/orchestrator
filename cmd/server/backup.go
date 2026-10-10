@@ -111,6 +111,35 @@ func restore(args []string, stdout, stderr io.Writer) int {
 	return 0
 }
 
+// restoreTempPrefix starts the name of the file a restore of dbPath
+// writes the backup to before putting it in place.
+func restoreTempPrefix(dbPath string) string {
+	return "." + filepath.Base(dbPath) + ".restore-"
+}
+
+// removeRestoreLeftovers removes, from the directory of the database at
+// dbPath, what restores cut short by the process ending left there: the
+// file a restore writes the backup to, and SQLite's files beside it. It
+// returns the paths it removed.
+func removeRestoreLeftovers(dbPath string) ([]string, error) {
+	entries, err := os.ReadDir(filepath.Dir(dbPath))
+	if err != nil {
+		return nil, fmt.Errorf("remove leftover restores: %w", err)
+	}
+	var removed []string
+	for _, entry := range entries {
+		if !entry.Type().IsRegular() || !strings.HasPrefix(entry.Name(), restoreTempPrefix(dbPath)) {
+			continue
+		}
+		path := filepath.Join(filepath.Dir(dbPath), entry.Name())
+		if err := os.Remove(path); err != nil {
+			return removed, fmt.Errorf("remove leftover restores: %w", err)
+		}
+		removed = append(removed, path)
+	}
+	return removed, nil
+}
+
 // restoreTimeout bounds restoring the database from the bucket at start.
 const restoreTimeout = 30 * time.Minute
 
@@ -163,7 +192,7 @@ func replaceDatabase(ctx context.Context, dbPath, from string, client *s3.Client
 	if err := os.MkdirAll(filepath.Dir(dbPath), 0o700); err != nil {
 		return 0, err
 	}
-	temp, err := os.CreateTemp(filepath.Dir(dbPath), "."+filepath.Base(dbPath)+".restore-*.tmp")
+	temp, err := os.CreateTemp(filepath.Dir(dbPath), restoreTempPrefix(dbPath)+"*.tmp")
 	if err != nil {
 		return 0, err
 	}

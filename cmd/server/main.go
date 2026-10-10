@@ -217,6 +217,12 @@ func serve(args []string, stderr io.Writer) int {
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+	// No backup or restore runs yet, so what they left is from an
+	// earlier run that ended during one.
+	removed, err := server.RemoveBackupLeftovers(*backupDir)
+	logLeftovers(log, "backup", removed, err)
+	removed, err = removeRestoreLeftovers(*dbPath)
+	logLeftovers(log, "restore", removed, err)
 	if backupBucket != nil {
 		if err := restoreAtStart(ctx, log, backupBucket, *backupPrefix, *dbPath); err != nil {
 			log.Error("restore the database from the bucket; refusing to start without it", "error", err)
@@ -329,6 +335,18 @@ func serve(args []string, stderr io.Writer) int {
 	srv.BackUpOnShutdown(backupCtx)
 	cancelBackup()
 	return status
+}
+
+// logLeftovers logs what removing the leftovers of an earlier run's
+// backups or restores, as what names, removed, and why it failed if it
+// did. Leftovers only take room, so the failure does not stop the server.
+func logLeftovers(log *slog.Logger, what string, removed []string, err error) {
+	if len(removed) > 0 {
+		log.Info("removed what a "+what+" of an earlier run left", "paths", removed)
+	}
+	if err != nil {
+		log.Warn("remove what a "+what+" of an earlier run left", "error", err)
+	}
 }
 
 // exitCode is the status of a run whose flags did not parse: 0 when help

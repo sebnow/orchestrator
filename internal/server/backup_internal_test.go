@@ -456,3 +456,47 @@ func TestGivenABackupRunningWhenBackupsAreRequestedSeveralTimesThenExactlyOneMor
 		t.Errorf("the backup directory holds %v, want the first backup and one more", names)
 	}
 }
+
+func TestGivenWhatInterruptedBackupsLeftWhenRemovedThenOnlyTheirTemporaryFilesGo(t *testing.T) {
+	dir := t.TempDir()
+	at := time.Date(2026, 10, 10, 14, 30, 5, 0, time.UTC)
+	left := []string{"." + backupName(at) + ".123.tmp", "." + backupName(at) + ".gz.456.tmp"}
+	kept := []string{backupName(at), "notes.txt", ".hidden.tmp"}
+	for _, name := range append(slices.Clone(left), kept...) {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte("x"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	removed, err := RemoveBackupLeftovers(dir)
+
+	if err != nil {
+		t.Fatal(err)
+	}
+	var want []string
+	for _, name := range left {
+		want = append(want, filepath.Join(dir, name))
+	}
+	slices.Sort(want)
+	slices.Sort(removed)
+	if !slices.Equal(removed, want) {
+		t.Errorf("removed %q, want %q", removed, want)
+	}
+	entries, _ := os.ReadDir(dir)
+	var names []string
+	for _, entry := range entries {
+		names = append(names, entry.Name())
+	}
+	slices.Sort(kept)
+	if !slices.Equal(names, kept) {
+		t.Errorf("left %q, want %q", names, kept)
+	}
+}
+
+func TestGivenNoBackupDirectoryWhenLeftoversAreRemovedThenNoneAre(t *testing.T) {
+	removed, err := RemoveBackupLeftovers(filepath.Join(t.TempDir(), "backups"))
+
+	if err != nil || len(removed) != 0 {
+		t.Errorf("removed %q, %v; want nothing", removed, err)
+	}
+}

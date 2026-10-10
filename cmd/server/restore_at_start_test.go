@@ -201,3 +201,36 @@ func TestGivenNoScheduleWhenTheServerShutsDownThenItBacksUpOnceMoreAndUploadsIt(
 		t.Errorf("the bucket holds %q, want the shutdown's gzipped upload", uploads)
 	}
 }
+
+func TestGivenWhatAnInterruptedBackupAndRestoreLeftWhenTheServerStartsThenItIsRemovedAndLogged(t *testing.T) {
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "server.db")
+	backupDir := filepath.Join(dir, "backups")
+	if err := os.MkdirAll(backupDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	leftovers := []string{
+		filepath.Join(backupDir, ".server-2026-10-10T14:30:05Z.db.123.tmp"),
+		filepath.Join(dir, ".server.db.restore-456.tmp"),
+		filepath.Join(dir, ".server.db.restore-456.tmp-wal"),
+	}
+	for _, path := range leftovers {
+		if err := os.WriteFile(path, []byte("x"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	status, logs := serveUntilSignalled(t, "-insecure-loopback", "-listen", "127.0.0.1:0", "-db", dbPath, "-backup-dir", backupDir, "-backup-every", "0")
+
+	if status != 0 {
+		t.Fatalf("status %d, want 0:\n%s", status, logs)
+	}
+	for _, path := range leftovers {
+		if _, err := os.Stat(path); !errors.Is(err, fs.ErrNotExist) {
+			t.Errorf("%s is still there: %v", path, err)
+		}
+		if !strings.Contains(logs, filepath.Base(path)) {
+			t.Errorf("logs do not name %s:\n%s", path, logs)
+		}
+	}
+}

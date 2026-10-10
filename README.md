@@ -791,7 +791,9 @@ backups; each later one is due an interval after the backup before it,
 whatever started that one. After each backup the server deletes the
 oldest copies beyond
 `-backup-keep`, 14 by default. It deletes only files named like a
-backup.
+backup. When it starts, it removes the temporary files that a backup or
+a restore left when an earlier run ended during it, in `-backup-dir`
+and beside `-db`, and logs what it removed.
 
 If a bucket is configured, the server also uploads each copy to
 S3-compatible object storage, such as Hetzner's, and deletes the

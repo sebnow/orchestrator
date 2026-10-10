@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"net/http"
 	"net/url"
 	"os"
@@ -236,6 +237,34 @@ type backupAttempt struct {
 	File       string    `json:"file,omitempty"`
 	UploadedTo string    `json:"uploaded_to,omitempty"`
 	Error      string    `json:"error,omitempty"`
+}
+
+// RemoveBackupLeftovers removes from dir, the backup directory, the
+// temporary files that backups cut short by the process ending left
+// there: the copy VACUUM INTO was writing and the gzipped copy being
+// uploaded. Only a process that makes no backup at the time may call it.
+// It returns the paths it removed; a dir that does not exist holds none.
+func RemoveBackupLeftovers(dir string) ([]string, error) {
+	entries, err := os.ReadDir(dir)
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("remove leftover backups: %w", err)
+	}
+	var removed []string
+	for _, entry := range entries {
+		name := entry.Name()
+		if !entry.Type().IsRegular() || !strings.HasPrefix(name, "."+backupPrefix) || !strings.HasSuffix(name, ".tmp") {
+			continue
+		}
+		path := filepath.Join(dir, name)
+		if err := os.Remove(path); err != nil {
+			return removed, fmt.Errorf("remove leftover backups: %w", err)
+		}
+		removed = append(removed, path)
+	}
+	return removed, nil
 }
 
 // localBackups returns the names of the copies in dir, oldest first.
