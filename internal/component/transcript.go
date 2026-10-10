@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"reflect"
 	"strconv"
 	"time"
 
@@ -24,8 +25,12 @@ func Transcript(entries []transcript.Entry) html.Node {
 // tool call that started the subagent: in that call's list when the call
 // is among entries, appended to the list on the page out of band when
 // the call is among shown, and otherwise in a list of its own, titled by
-// the call's id, where its first entry falls.
+// the call's id, where its first entry falls. A permission request the
+// policy answered, with its answer among entries, is folded into the
+// tool call it asked about, as policyAnswers matches them, or else shown
+// with its answer as one entry; one the owner answered is not folded.
 func TranscriptEntries(entries, shown []transcript.Entry) html.Node {
+	folded, merged, skip := policyAnswers(entries)
 	onPage := make(map[string]bool)
 	for _, entry := range shown {
 		if call, ok := entry.Body.(transcript.ToolCall); ok {
@@ -54,20 +59,23 @@ func TranscriptEntries(entries, shown []transcript.Entry) html.Node {
 		return nodes
 	}
 	render = func(entry transcript.Entry) html.Node {
-		call, ok := entry.Body.(transcript.ToolCall)
-		if !ok {
-			return transcriptEntry(entry, nil)
+		switch b := entry.Body.(type) {
+		case transcript.ToolCall:
+			return transcriptEntryAnswered(entry, subagent(b.ID, subagentTitle(b), renderAll(nested[b.ID])...), folded[b.ID])
+		case transcript.PermissionRequested:
+			return transcriptEntryAnswered(entry, nil, merged[b.RequestID])
 		}
-		return transcriptEntry(entry, subagent(call.ID, subagentTitle(call), renderAll(nested[call.ID])...))
+		return transcriptEntry(entry, nil)
 	}
 
 	var nodes []html.Node
 	var appended []string
 	toAppend := make(map[string][]html.Node)
 	orphans := make(map[string]bool)
-	for _, entry := range entries {
+	for idx, entry := range entries {
 		parent := transcript.ParentToolUseID(entry.Body)
 		switch {
+		case skip[idx]:
 		case parent == "":
 			nodes = append(nodes, render(entry))
 		case onPage[parent]:
@@ -87,6 +95,67 @@ func TranscriptEntries(entries, shown []transcript.Entry) html.Node {
 		nodes = append(nodes, html.El("ol", attrs("hx-swap-oob", "beforeend:#"+subagentListID(parent)), toAppend[parent]...))
 	}
 	return html.Fragment(nodes...)
+}
+
+// policyAnswers pairs each permission request among entries with the
+// policy's answer to it, when that is among entries too. folded holds,
+// by tool call id, the answer to a request that matches a tool call
+// before it among entries, by tool and input, the latest one unmatched;
+// merged holds, by request id, the answer to a request that matches
+// none. skip marks the indexes of the entries their tool call or request
+// shows instead.
+func policyAnswers(entries []transcript.Entry) (folded, merged map[string]*transcript.PermissionAnswered, skip map[int]bool) {
+	folded = make(map[string]*transcript.PermissionAnswered)
+	merged = make(map[string]*transcript.PermissionAnswered)
+	skip = make(map[int]bool)
+	answers := make(map[string]int)
+	for idx, entry := range entries {
+		if answer, ok := entry.Body.(transcript.PermissionAnswered); ok && answer.By == transcript.AnsweredByPolicy {
+			answers[answer.RequestID] = idx
+		}
+	}
+	for idx, entry := range entries {
+		request, ok := entry.Body.(transcript.PermissionRequested)
+		if !ok {
+			continue
+		}
+		at, ok := answers[request.RequestID]
+		if !ok {
+			continue
+		}
+		answer := entries[at].Body.(transcript.PermissionAnswered)
+		skip[at] = true
+		call := askedAbout(entries[:idx], request, folded)
+		if call == "" {
+			merged[request.RequestID] = &answer
+			continue
+		}
+		folded[call] = &answer
+		skip[idx] = true
+	}
+	return folded, merged, skip
+}
+
+// askedAbout returns the id of the latest tool call among entries that
+// request asks to run, by tool and input, and that taken has no answer
+// for; "" when there is none.
+func askedAbout(entries []transcript.Entry, request transcript.PermissionRequested, taken map[string]*transcript.PermissionAnswered) string {
+	for idx := len(entries) - 1; idx >= 0; idx-- {
+		call, ok := entries[idx].Body.(transcript.ToolCall)
+		if ok && call.Name == request.Tool && taken[call.ID] == nil && sameJSON(call.Input, request.Input) {
+			return call.ID
+		}
+	}
+	return ""
+}
+
+// sameJSON reports whether a and b hold the same JSON value.
+func sameJSON(a, b json.RawMessage) bool {
+	var va, vb any
+	if json.Unmarshal(a, &va) != nil || json.Unmarshal(b, &vb) != nil {
+		return false
+	}
+	return reflect.DeepEqual(va, vb)
 }
 
 // subagent is the list of what the subagent that the tool call id started
@@ -128,6 +197,34 @@ func TranscriptEntry(entry transcript.Entry) html.Node {
 		return transcriptEntry(entry, subagent(call.ID, subagentTitle(call)))
 	}
 	return transcriptEntry(entry, nil)
+}
+
+// transcriptEntryAnswered is entry, a tool call or a permission
+// request, with nested after its body, saying how the policy answered
+// the request when answer is not nil.
+func transcriptEntryAnswered(entry transcript.Entry, nested html.Node, answer *transcript.PermissionAnswered) html.Node {
+	if answer == nil {
+		return transcriptEntry(entry, nested)
+	}
+	verdict := "denied"
+	if answer.Allow {
+		verdict = "allowed"
+	}
+	var label string
+	var input html.Node
+	switch b := entry.Body.(type) {
+	case transcript.ToolCall:
+		label, input = "Agent called "+b.Name, Details("Input", preformatted(prettyJSON(b.Input)))
+	case transcript.PermissionRequested:
+		label, input = "Agent asked to run "+b.Tool, Details("Input", preformatted(prettyJSON(b.Input)))
+	}
+	var message html.Node
+	if answer.Message != "" {
+		message = preformatted(answer.Message)
+	}
+	return html.El("li", attrs("class", "entry from-agent"),
+		html.El("header", nil, timestamp(entry.Time), html.Text(" "+label+"; request "+answer.RequestID+" "+verdict+" by policy")),
+		input, message, nested)
 }
 
 // transcriptEntry is entry, with nested after its body.

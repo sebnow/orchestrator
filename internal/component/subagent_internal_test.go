@@ -51,3 +51,56 @@ func TestGivenSubagentEntriesWhoseCallIsNowhereWhenRenderedThenTheyAreGroupedUnd
 		t.Errorf("orphaned subagent entries are not grouped once: %s", got)
 	}
 }
+
+func TestGivenToolCallThePolicyAllowedWhenRenderedThenItIsOneEntrySayingSo(t *testing.T) {
+	input := json.RawMessage(`{"command":"ls"}`)
+	entries := []transcript.Entry{
+		{Source: transcript.Source{Seq: 1}, Body: transcript.ToolCall{ID: "call-1", Name: "Bash", Input: input}},
+		{Source: transcript.Source{Seq: 2}, Body: transcript.PermissionRequested{RequestID: "req-1", Tool: "Bash", Input: json.RawMessage(`{ "command": "ls" }`)}},
+		{Source: transcript.Source{CommandID: 1}, Body: transcript.PermissionAnswered{RequestID: "req-1", Allow: true, By: transcript.AnsweredByPolicy}},
+		{Source: transcript.Source{Seq: 3}, Body: transcript.ToolResult{ToolCallID: "call-1", Content: "README.md"}},
+	}
+
+	got := render(t, Transcript(entries))
+
+	if n := strings.Count(got, `<li class="entry`); n != 2 {
+		t.Errorf("%d entries, want the call and its result:\n%s", n, got)
+	}
+	if !strings.Contains(got, "Agent called Bash; request req-1 allowed by policy") || strings.Contains(got, "asked to run") {
+		t.Errorf("the call does not say the policy allowed it:\n%s", got)
+	}
+}
+
+func TestGivenRequestThePolicyDeniedWithoutItsCallWhenRenderedThenRequestAndAnswerAreOneEntry(t *testing.T) {
+	entries := []transcript.Entry{
+		{Source: transcript.Source{Seq: 2}, Body: transcript.PermissionRequested{RequestID: "req-1", Tool: "Agent", Input: json.RawMessage(`{"isolation":"remote"}`)}},
+		{Source: transcript.Source{CommandID: 1}, Body: transcript.PermissionAnswered{RequestID: "req-1", Message: "Run it locally.", By: transcript.AnsweredByPolicy}},
+	}
+	shown := []transcript.Entry{{Source: transcript.Source{Seq: 1}, Body: transcript.ToolCall{ID: "call-1", Name: "Agent", Input: json.RawMessage(`{"isolation":"remote"}`)}}}
+
+	got := render(t, TranscriptEntries(entries, shown))
+
+	if n := strings.Count(got, `<li class="entry`); n != 1 {
+		t.Errorf("%d entries, want one:\n%s", n, got)
+	}
+	if !strings.Contains(got, "Agent asked to run Agent; request req-1 denied by policy") || !strings.Contains(got, "Run it locally.") {
+		t.Errorf("the request does not say the policy denied it and why:\n%s", got)
+	}
+}
+
+func TestGivenRequestTheOwnerAnsweredWhenRenderedThenRequestAndAnswerStayApart(t *testing.T) {
+	entries := []transcript.Entry{
+		{Source: transcript.Source{Seq: 1}, Body: transcript.ToolCall{ID: "call-1", Name: "Bash", Input: json.RawMessage(`{}`)}},
+		{Source: transcript.Source{Seq: 2}, Body: transcript.PermissionRequested{RequestID: "req-1", Tool: "Bash", Input: json.RawMessage(`{}`)}},
+		{Source: transcript.Source{CommandID: 1}, Body: transcript.PermissionAnswered{RequestID: "req-1", Allow: true, By: transcript.AnsweredByOwner}},
+	}
+
+	got := render(t, Transcript(entries))
+
+	if n := strings.Count(got, `<li class="entry`); n != 3 {
+		t.Errorf("%d entries, want three:\n%s", n, got)
+	}
+	if !strings.Contains(got, "Agent asked to run Bash") || !strings.Contains(got, "Owner allowed request req-1") {
+		t.Errorf("the owner's answer is not shown apart:\n%s", got)
+	}
+}

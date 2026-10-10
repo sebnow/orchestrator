@@ -1412,7 +1412,7 @@ func TestLiveGivenAllowAllWhenTheAgentAsksForARemoteSubagentThenTheServerDeniesI
 	}
 	page := sys.page(t, "/tasks/"+string(task))
 	for _, req := range remoteRequests {
-		if !strings.Contains(page, "Request "+req.RequestID+" denied by policy") {
+		if !strings.Contains(page, "request "+req.RequestID+" denied by policy") {
 			t.Errorf("the task page does not show request %s denied by policy", req.RequestID)
 		}
 	}

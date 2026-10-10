@@ -42,7 +42,7 @@ func TestGivenAllowAllWhenAPermissionRequestIsStoredThenTheServerAllowsItAndTheT
 		t.Errorf("state = %s, want running", p.State)
 	}
 	page := getPage(t, srv.url+"/tasks/"+string(task))
-	requireContains(t, page, "Request toolu_01KYWDtRqQK6PRLSQzHm7bag allowed by policy")
+	requireContains(t, page, "Agent asked to run Bash; request toolu_01KYWDtRqQK6PRLSQzHm7bag allowed by policy")
 	requireLacks(t, page, `<h2>Permission requested</h2>`, "Owner allowed")
 }
 
@@ -103,7 +103,7 @@ func TestGivenADenyingPolicyWhenAPermissionRequestIsStoredThenTheServerDeniesItW
 		t.Errorf("last command = %s %s, want the policy's denial", last.Kind, last.Payload)
 	}
 	page := getPage(t, srv.url+"/tasks/"+string(task))
-	requireContains(t, page, "Request toolu_01KYWDtRqQK6PRLSQzHm7bag denied by policy", "not on this server")
+	requireContains(t, page, "Agent asked to run Bash; request toolu_01KYWDtRqQK6PRLSQzHm7bag denied by policy", "not on this server")
 }
 
 func TestGivenAskOwnerWhenAPermissionRequestIsStoredThenItWaitsForTheOwnerWhoseAnswerSaysOwner(t *testing.T) {
@@ -164,7 +164,7 @@ func TestGivenAnyPolicyWhenTheAgentAsksToRunASubagentRemotelyThenTheServerDenies
 			if p := readProgress(t, srv.store, task); p.State != TaskRunning {
 				t.Errorf("state = %s, want running", p.State)
 			}
-			requireContains(t, getPage(t, srv.url+"/tasks/"+string(task)), "Request toolu_01RemoteAgentRequest denied by policy")
+			requireContains(t, getPage(t, srv.url+"/tasks/"+string(task)), "Agent asked to run Agent; request toolu_01RemoteAgentRequest denied by policy")
 		})
 	}
 }
