@@ -494,7 +494,7 @@ func TestGivenTwoPromptsQueuedForAFinishedTaskWhileItsDaemonIsAwayWhenItIsLostTh
 func refuseStream(t *testing.T, srv testServer, daemon protocol.DaemonID) {
 	t.Helper()
 	status, body := openStreamOnce(t, srv, daemon, "0123456789abcdef0123456789abcdef:1")
-	requireRefused(t, status, body, protocol.RefusedUnknownLineage)
+	requireRefused(t, status, body, protocol.RefusedUnknownEpoch)
 }
 
 // keepSeen has daemon ask for its acknowledgements, which any other

@@ -50,7 +50,7 @@ type streamRefusal struct {
 //     refused as daemon_ahead.
 //   - In an earlier epoch of the lineage, the server was restored, and the
 //     stream goes on from the position through every later epoch.
-//   - An epoch outside the lineage is refused as unknown_lineage: the
+//   - An epoch outside the lineage is refused as unknown_epoch: the
 //     daemon's state is not from this database's history, as after a
 //     restore to a backup older than an earlier restore.
 func (s *Store) openCommandStream(ctx context.Context, daemon protocol.DaemonID, last protocol.CommandPosition) (protocol.CommandPosition, error) {
@@ -116,7 +116,7 @@ func judgeStream(ctx context.Context, tx *sql.Tx, last protocol.CommandPosition)
 		err = tx.QueryRowContext(ctx, `SELECT ordinal FROM epochs WHERE id = ?`, string(epoch)).Scan(&ordinal)
 	}
 	if errors.Is(err, sql.ErrNoRows) {
-		return &streamRefusedError{Reason: protocol.RefusedUnknownLineage, Message: fmt.Sprintf(
+		return &streamRefusedError{Reason: protocol.RefusedUnknownEpoch, Message: fmt.Sprintf(
 			"the daemon last applied command %d of epoch %s, which is not in this server's lineage; the server's current epoch is %s",
 			last.ID, last.Epoch, current)}, nil
 	}

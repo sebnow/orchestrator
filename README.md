@@ -1072,7 +1072,7 @@ its `Last-Event-ID`:
   each later epoch, in order.
 - An epoch the lineage does not hold, as after a restore to a backup
   older than an earlier restore: the server refuses the stream with 409
-  and the reason `unknown_lineage`.
+  and the reason `unknown_epoch`.
 
 The answer to a refused stream is JSON with the `reason` and a `message`
 that names the server's current epoch. The dashboard's daemon list
@@ -1087,7 +1087,7 @@ often it sends events or asks for acknowledgements, so after
 (see [Lost daemons](#lost-daemons)). It stays lost until a stream of its
 is accepted.
 
-To reset a daemon refused with `unknown_lineage`, stop it, set
+To reset a daemon refused with `unknown_epoch`, stop it, set
 `command_epoch` in its `state.json` to the current epoch the message
 names and `last_command` to `0`, and start it. It then receives every
 command the server has issued to it in the current epoch, none of which

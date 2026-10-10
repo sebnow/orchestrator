@@ -135,7 +135,7 @@ the daemon reports:
   or the daemon applied commands of an epoch that the restored backup
   predates, as when a second restore uses a backup taken before the
   first. The server refuses the stream with the reason
-  `unknown_lineage`, and the owner resets the epoch and command id the
+  `unknown_epoch`, and the owner resets the epoch and command id the
   daemon stores by hand, as the
   [README](../../README.md#command-ids-and-epochs) describes.
 
@@ -189,7 +189,7 @@ accepts one.
   daemon stops sending them and they stay in its journal.
 - After a restore, a daemon receives the new epoch's commands even when
   their ids repeat ones it applied before the restore.
-- A daemon refused with `unknown_lineage` or `daemon_ahead` takes no
+- A daemon refused with `unknown_epoch` or `daemon_ahead` takes no
   commands until its stored epoch and id are corrected, and after the
   daemon timeout its tasks move to other daemons, starting their work
   again there.

@@ -15,11 +15,11 @@ const (
 	// the server's current epoch that the server has not issued. The
 	// daemon's state is not from this server.
 	RefusedDaemonAhead RefusalReason = "daemon_ahead"
-	// RefusedUnknownLineage: the daemon's Last-Event-ID names an epoch
+	// RefusedUnknownEpoch: the daemon's Last-Event-ID names an epoch
 	// the server's database has no record of, as after a restore to a
 	// backup older than an earlier restore. The owner resets the
 	// daemon's last command by hand (docs/adr/2026-10-10-server-loss.md).
-	RefusedUnknownLineage RefusalReason = "unknown_lineage"
+	RefusedUnknownEpoch RefusalReason = "unknown_epoch"
 )
 
 // StreamRefused is the JSON body of the server's 409 Conflict answer to a

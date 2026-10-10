@@ -132,12 +132,12 @@ func TestGivenAnEpochOutsideTheLineageWhenTheStreamOpensThenItIsRefusedAsUnknown
 
 	status, body := openStreamOnce(t, srv, "laptop", "0123456789abcdef0123456789abcdef:1")
 
-	refused := requireRefused(t, status, body, protocol.RefusedUnknownLineage)
+	refused := requireRefused(t, status, body, protocol.RefusedUnknownEpoch)
 	if !strings.Contains(refused.Message, string(epoch)) {
 		t.Errorf("message %q does not name the current epoch %s", refused.Message, epoch)
 	}
-	if listed := listedRefusal(t, srv, "laptop"); listed == nil || listed.Reason != protocol.RefusedUnknownLineage {
-		t.Errorf("the daemon list shows %+v, want the unknown_lineage refusal", listed)
+	if listed := listedRefusal(t, srv, "laptop"); listed == nil || listed.Reason != protocol.RefusedUnknownEpoch {
+		t.Errorf("the daemon list shows %+v, want the unknown_epoch refusal", listed)
 	}
 }
 

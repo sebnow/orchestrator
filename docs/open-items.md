@@ -139,7 +139,7 @@ Known gaps and UNVERIFIED behaviours, from the workers' reports, grouped by area
   later replaces the earlier locally and in the bucket.
 - Restore at start, gzipped uploads and the R2 bucket are tested only
   against the in-process fake bucket until the live round trip runs.
-- A daemon refused with `unknown_lineage` needs its `state.json` edited
+- A daemon refused with `unknown_epoch` needs its `state.json` edited
   by hand; the server offers no reset.
 
 ## Docs
