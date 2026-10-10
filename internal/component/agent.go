@@ -22,8 +22,11 @@ func agentURL(name string) string { return AgentsURL + "/" + url.PathEscape(name
 type AgentInput struct {
 	Name, Description, SystemPrompt, Models string
 	// Effort is one of protocol.Efforts, or empty for the harness's default.
-	Effort               string
-	Tools                []string
+	Effort string
+	Tools  []string
+	// ToolClasses holds the names of the ticked classes of harness tools,
+	// none for every tool.
+	ToolClasses          []string
 	Acknowledge, Cleanup string
 	Priority             string
 	Filler               string
@@ -32,13 +35,13 @@ type AgentInput struct {
 
 // AgentSummary is an agent as the agent list shows it.
 type AgentSummary struct {
-	Name, Description string
-	Models, Tools     []string
-	Requires          string
+	Name, Description          string
+	Models, Tools, ToolClasses []string
+	Requires                   string
 }
 
 // AgentColumns head a Table of AgentRows.
-var AgentColumns = []string{"Agent", "Description", "Tools", "Models", "Requires"}
+var AgentColumns = []string{"Agent", "Description", "Tools", "Harness tools", "Models", "Requires"}
 
 // AgentRow is an agent in the agent list, linking to its page.
 func AgentRow(agent AgentSummary) html.Node {
@@ -54,9 +57,33 @@ func AgentRow(agent AgentSummary) html.Node {
 		cell(link(agentURL(agent.Name), agent.Name)),
 		cell(description),
 		cell(html.Text(tools)),
+		cell(html.Text(harnessTools(agent.ToolClasses))),
 		cell(html.Text(orNone(strings.Join(agent.Models, ", ")))),
 		cell(html.Text(orNone(agent.Requires))),
 	)
+}
+
+// harnessTools words an agent's tool classes: every tool, when it has
+// none.
+func harnessTools(classes []string) string {
+	if len(classes) == 0 {
+		return "all"
+	}
+	return strings.Join(classes, ", ")
+}
+
+// checkboxes are boxes named name, one for each of values, ticked for
+// those of checked.
+func checkboxes(name string, values, checked []string) []html.Node {
+	boxes := make([]html.Node, len(values))
+	for idx, value := range values {
+		box := attrs("type", "checkbox", "name", name, "value", value)
+		if slices.Contains(checked, value) {
+			box = append(box, html.Attr("checked", ""))
+		}
+		boxes[idx] = html.El("label", attrs("class", "checkbox"), html.El("input", box), html.Text(" "+value))
+	}
+	return boxes
 }
 
 // AgentForm creates an agent, or, when editing, updates the agent named
@@ -69,14 +96,6 @@ func AgentForm(input AgentInput, editing bool, tools []string, problem string) h
 	if editing {
 		action, submit = agentURL(input.Name), "Save agent"
 		name = nil
-	}
-	boxes := make([]html.Node, len(tools))
-	for idx, tool := range tools {
-		box := attrs("type", "checkbox", "name", "tools", "value", tool)
-		if slices.Contains(input.Tools, tool) {
-			box = append(box, html.Attr("checked", ""))
-		}
-		boxes[idx] = html.El("label", attrs("class", "checkbox"), html.El("input", box), html.Text(" "+tool))
 	}
 	efforts := []Option{{Value: "", Label: "the harness's default"}}
 	for _, effort := range protocol.Efforts {
@@ -92,7 +111,10 @@ func AgentForm(input AgentInput, editing bool, tools []string, problem string) h
 		Field(FieldSpec{Kind: FieldTextarea, Name: "system_prompt", Label: "System prompt", Value: input.SystemPrompt, Rows: 16}),
 		Field(FieldSpec{Kind: FieldTextarea, Name: "models", Label: "Models, one per line, most preferred first; harness:model for one harness only", Value: input.Models,
 			Placeholder: "none: the task's or the server's default"}),
-		html.El("fieldset", nil, html.El("legend", nil, html.Text("Tools it may call besides the permission and pause tools")), html.Fragment(boxes...)),
+		html.El("fieldset", nil, html.El("legend", nil, html.Text("Tools it may call besides the permission and pause tools")),
+			html.Fragment(checkboxes("tools", tools, input.Tools)...)),
+		html.El("fieldset", nil, html.El("legend", nil, html.Text("Harness tools it may use, by class; none ticked for every tool")),
+			html.Fragment(checkboxes("tool_classes", protocol.ToolClasses, input.ToolClasses)...)),
 		Field(FieldSpec{Kind: FieldSelect, Name: "effort", Label: "Effort", Value: input.Effort, Options: efforts}),
 		Field(FieldSpec{Kind: FieldSelect, Name: "priority", Label: "Priority", Value: input.Priority, Options: priorities}),
 		Field(FieldSpec{Kind: FieldCheckbox, Name: "filler", Label: "Filler: runs only on spare budget, and yields to other work", Value: input.Filler}),

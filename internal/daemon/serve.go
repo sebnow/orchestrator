@@ -209,6 +209,15 @@ func Serve(ctx context.Context, cfg Config) error {
 	case run.as.Other():
 		d.processes = psTable{terminate: true}
 	}
+	d.toolsChecked = func(task protocol.TaskID, check harness.ToolCheck) {
+		switch {
+		case !check.Enforceable():
+			cfg.Log.Warn("harness offers tools the task's tool classes do not cover; stopping it before its first turn",
+				"task", task, "unclassified", check.Unclassified, "excess", check.Excess)
+		case len(check.Unclassified) > 0:
+			cfg.Log.Info("harness offers tools no tool class names; the task is not restricted, so it runs", "task", task, "unclassified", check.Unclassified)
+		}
+	}
 	d.harnessStarted = func(task protocol.TaskID, pid int) {
 		started, err := d.processes.started(pid)
 		if err != nil {
@@ -509,7 +518,7 @@ func (s *service) startTask(command protocol.Command) *Task {
 	}
 	// The settings make the task resumable, so they are recorded once its
 	// workspace is ready.
-	settings := taskSettings{Prompt: start.Prompt, Model: start.Model, Effort: start.Effort, SystemPrompt: start.SystemPrompt, Acknowledge: limits.Acknowledge, Cleanup: limits.Cleanup, Tools: start.Tools}
+	settings := taskSettings{Prompt: start.Prompt, Model: start.Model, Effort: start.Effort, ToolClasses: start.ToolClasses, SystemPrompt: start.SystemPrompt, Acknowledge: limits.Acknowledge, Cleanup: limits.Cleanup, Tools: start.Tools}
 	if err := s.state.updateTask(task, func(rec *taskRecord) { rec.Settings = &settings }); err != nil {
 		return s.failStart(task, j, fmt.Errorf("%s: record task settings: %w", harnessCannotStart, err))
 	}
@@ -519,6 +528,7 @@ func (s *service) startTask(command protocol.Command) *Task {
 		Workdir:      workdir,
 		Model:        start.Model,
 		Effort:       start.Effort,
+		ToolClasses:  start.ToolClasses,
 		SystemPrompt: start.SystemPrompt,
 		Pause:        limits,
 		Tools:        start.Tools,
@@ -574,6 +584,7 @@ func (s *service) resume(task protocol.TaskID, followUp string) (*Task, error) {
 		Workdir:      s.daemon.workspace(task),
 		Model:        rec.Settings.Model,
 		Effort:       rec.Settings.Effort,
+		ToolClasses:  rec.Settings.ToolClasses,
 		SystemPrompt: rec.Settings.SystemPrompt,
 		Pause:        rec.Settings.limits(),
 		Session:      rec.Session,

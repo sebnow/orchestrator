@@ -226,7 +226,8 @@ func projectWorkspace(p Project, asked *protocol.Workspace) (*protocol.Workspace
 }
 
 // applyAgent fills in what start leaves out from agent a: its effort, its
-// tools, and its pause limits, or the default ones when a has none. It returns a's
+// tools, its tool classes, and its pause limits, or the default ones when
+// a has none. It returns a's
 // models when start names no model and a has some, for placement to
 // choose from, and nil otherwise.
 func applyAgent(start *protocol.StartTask, a Agent) []string {
@@ -239,6 +240,9 @@ func applyAgent(start *protocol.StartTask, a Agent) []string {
 	}
 	if start.Tools == nil {
 		start.Tools = a.Tools
+	}
+	if len(start.ToolClasses) == 0 {
+		start.ToolClasses = a.ToolClasses
 	}
 	if start.PauseLimits == (protocol.PauseLimits{}) {
 		start.PauseLimits = defaultPauseLimits
@@ -270,7 +274,24 @@ func validateStart(start protocol.StartTask) error {
 	if err := validateEffort(start.Effort); err != nil {
 		return err
 	}
+	if err := validateToolClasses(start.ToolClasses); err != nil {
+		return err
+	}
 	return validateTools(start.Tools)
+}
+
+// validateToolClasses checks that classes names classes of harness tools,
+// each once.
+func validateToolClasses(classes []string) error {
+	for idx, class := range classes {
+		if !slices.Contains(protocol.ToolClasses, class) {
+			return fmt.Errorf("tool_classes: %q is not one of %s", class, strings.Join(protocol.ToolClasses, ", "))
+		}
+		if slices.Contains(classes[:idx], class) {
+			return fmt.Errorf("tool_classes: %q is given twice", class)
+		}
+	}
+	return nil
 }
 
 // validateEffort checks that effort is one of protocol.Efforts, or empty

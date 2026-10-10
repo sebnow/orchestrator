@@ -9,6 +9,7 @@ import (
 	"io"
 	"path/filepath"
 	"slices"
+	"strings"
 	"sync"
 
 	"github.com/sebnow/orchestrator/internal/harness"
@@ -43,6 +44,9 @@ type Daemon struct {
 	// that a restart finds it recorded. It runs on the goroutine reading
 	// the harness's output.
 	sessionSeen func(protocol.TaskID, string)
+	// toolsChecked, when set, hears how the tools each harness process
+	// offers compare with its task's tool classes, once per process.
+	toolsChecked func(protocol.TaskID, harness.ToolCheck)
 	// harnessStarted, when set, hears the pid of each harness process right
 	// after it starts, before its start is journaled, so that a restart
 	// can find the process if it outlives the daemon.
@@ -89,7 +93,10 @@ type TaskSpec struct {
 	Workdir string
 	Model   string
 	// Effort is the start's effort, empty for the harness's default.
-	Effort       string
+	Effort string
+	// ToolClasses restricts the harness's own tools, as
+	// protocol.StartTask.ToolClasses does; empty leaves every tool.
+	ToolClasses  []string
 	SystemPrompt string
 	Pause        PauseLimits
 	// Session, when set, is the harness session the process resumes.
@@ -143,7 +150,9 @@ type Task struct {
 	observe func(protocol.Event)
 	// sessionSeen is the daemon's, for this task; nil when it has none.
 	sessionSeen func(string)
-	done        chan struct{}
+	// toolsChecked is the daemon's, for this task; nil when it has none.
+	toolsChecked func(harness.ToolCheck)
+	done         chan struct{}
 
 	// commands serialises the commands that write to the harness, so state
 	// changes and stdin writes happen in the same order without holding mu
@@ -167,6 +176,10 @@ type Task struct {
 	// a running turn, until a prompt starts another; nil otherwise.
 	cutShort     func(session string, own protocol.HarnessExited) string
 	exitCutShort bool
+	// refused, once set, is why the task stopped its process before its
+	// first turn: its tool restriction cannot be enforced. It is the
+	// error of the process's exit, however the harness exits.
+	refused string
 }
 
 type pendingPermission struct {
@@ -225,6 +238,9 @@ func (d *Daemon) start(ctx context.Context, j *journal, spec TaskSpec) (*Task, e
 	if d.sessionSeen != nil {
 		t.sessionSeen = func(session string) { d.sessionSeen(spec.ID, session) }
 	}
+	if d.toolsChecked != nil {
+		t.toolsChecked = func(check harness.ToolCheck) { d.toolsChecked(spec.ID, check) }
+	}
 	url, unregister, err := d.gateway.register(spec.ID, spec.Tools, gatewayTask{
 		permission:       t.askPermission,
 		acknowledgePause: t.acknowledgePause,
@@ -240,6 +256,7 @@ func (d *Daemon) start(ctx context.Context, j *journal, spec TaskSpec) (*Task, e
 		Workdir:      spec.Workdir,
 		Model:        spec.Model,
 		Effort:       spec.Effort,
+		ToolClasses:  spec.ToolClasses,
 		SystemPrompt: spec.SystemPrompt,
 		Resume:       spec.Session,
 		RunAs:        d.runner.as,
@@ -349,6 +366,14 @@ func (t *Task) run(unregister func()) {
 				continue
 			}
 		}
+		if out.Tools != nil {
+			if t.toolsChecked != nil {
+				t.toolsChecked(*out.Tools)
+			}
+			if !out.Tools.Enforceable() {
+				t.refuse(unenforceable(*out.Tools))
+			}
+		}
 		// The settlement is journaled before the next line is read, so it
 		// precedes the harness's exit.
 		settled, turnOver, next := t.handleOutput(out)
@@ -387,6 +412,11 @@ func (t *Task) run(unregister func()) {
 	}
 	cancel()
 	exit, cutShort := t.reportCutShort(exit)
+	t.mu.Lock()
+	if t.refused != "" {
+		exit, cutShort = protocol.HarnessExited{ExitCode: -1, Error: t.refused, Stderr: exit.Stderr}, false
+	}
+	t.mu.Unlock()
 	t.record(protocol.KindHarnessExited, exit)
 	unregister()
 	t.journal.close()
@@ -398,6 +428,47 @@ func (t *Task) run(unregister func()) {
 	t.notifyLocked()
 	t.mu.Unlock()
 	close(t.done)
+}
+
+// refuse stops the process before its first turn, because its tool
+// restriction cannot be enforced, with why as the error of its exit: it
+// interrupts the turn the task's prompt started and closes the
+// harness's input, and the process takes no more commands
+// (docs/adr/2026-10-10-agent-models-and-capacity.md).
+func (t *Task) refuse(why string) {
+	t.commands.Lock()
+	defer t.commands.Unlock()
+	t.mu.Lock()
+	t.refused = why
+	closed := t.closing
+	t.closing = true
+	t.notifyLocked()
+	t.mu.Unlock()
+	t.proc.Interrupt()
+	if !closed {
+		t.proc.CloseInput()
+	}
+}
+
+// unenforceable words why a process whose tools check failed was
+// stopped, naming the tools.
+func unenforceable(check harness.ToolCheck) string {
+	var reasons []string
+	if len(check.Unclassified) > 0 {
+		reasons = append(reasons, toolList(check.Unclassified)+" not classified")
+	}
+	if len(check.Excess) > 0 {
+		reasons = append(reasons, toolList(check.Excess)+" of a class the agent is not allowed, yet offered")
+	}
+	return strings.Join(reasons, ", and ") + "; the agent's tool restriction cannot be enforced"
+}
+
+// toolList words tools as the subject of unenforceable's sentence.
+func toolList(tools []string) string {
+	if len(tools) == 1 {
+		return "harness tool " + tools[0] + " is"
+	}
+	return "harness tools " + strings.Join(tools, ", ") + " are"
 }
 
 // reportCutShort returns the exit to journal for the harness's own exit

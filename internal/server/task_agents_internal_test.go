@@ -264,3 +264,36 @@ func TestGivenParentWithAnEffortWhenItSpawnsThenAChildTakesItsAgentsEffortOrElse
 		}
 	}
 }
+
+func TestGivenAgentWithToolClassesWhenTasksAreStartedAndSpawnedThenTheyCarryTheAgentsClassesOrTheirParents(t *testing.T) {
+	srv := startTestServer(t)
+	doRequest(t, http.MethodGet, srv.url+"/v1/daemons/laptop/acks", "")
+	createAgents(t, srv.store,
+		Agent{Name: "scout", ToolClasses: []string{protocol.ToolClassRead, protocol.ToolClassWeb}, Tools: []string{protocol.ToolSpawnTask}, Priority: PriorityNormal, Requires: Labels{}},
+		Agent{Name: "editor", ToolClasses: []string{protocol.ToolClassEdit}, Tools: []string{}, Priority: PriorityNormal, Requires: Labels{}})
+	turn := postForTurn(t, srv.url+"/v1/tasks", `{"daemon_id":"laptop","agent":"scout","prompt":"Look."}`, http.StatusCreated)
+	status, body := doRequest(t, http.MethodPost, srv.url+"/v1/tasks", `{"daemon_id":"laptop","prompt":"p","tool_classes":["files"],"pause_limits":{"acknowledge":"1m","cleanup":"5m"}}`)
+	admitTurns(t, srv.store)
+	if _, err := srv.store.db.ExecContext(t.Context(), `UPDATE tasks SET state = 'running' WHERE id = ?`, string(turn.TaskID)); err != nil {
+		t.Fatal(err)
+	}
+
+	for child, agent := range map[protocol.TaskID]string{"bare": "", "edits": "editor"} {
+		if _, err := srv.store.spawnTask(t.Context(), "laptop", turn.TaskID, child, protocol.Spawn{Prompt: "Work.", Agent: agent}); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	if got := readTask(t, srv.store, turn.TaskID).Start.ToolClasses; !reflect.DeepEqual(got, []string{"read", "web"}) {
+		t.Errorf("task tool classes = %q, want the scout's", got)
+	}
+	if got := readTask(t, srv.store, "bare").Start.ToolClasses; !reflect.DeepEqual(got, []string{"read", "web"}) {
+		t.Errorf("agentless child tool classes = %q, want its parent's", got)
+	}
+	if got := readTask(t, srv.store, "edits").Start.ToolClasses; !reflect.DeepEqual(got, []string{"edit"}) {
+		t.Errorf("editor child tool classes = %q, want its agent's", got)
+	}
+	if status != http.StatusBadRequest || !strings.Contains(body, `"files" is not one of`) {
+		t.Errorf("unknown class: %d %s, want 400", status, body)
+	}
+}

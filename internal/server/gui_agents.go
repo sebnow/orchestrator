@@ -25,7 +25,7 @@ func (s *Server) routeAgentsGUI(mux *http.ServeMux) {
 func agentInput(a Agent) component.AgentInput {
 	input := component.AgentInput{
 		Name: a.Name, Description: a.Description, SystemPrompt: a.SystemPrompt, Models: strings.Join(a.Models, "\n"), Effort: a.Effort,
-		Tools: a.Tools, Priority: string(a.Priority), Requires: a.Requires.String(),
+		Tools: a.Tools, ToolClasses: a.ToolClasses, Priority: string(a.Priority), Requires: a.Requires.String(),
 	}
 	if a.PauseLimits != nil {
 		input.Acknowledge, input.Cleanup = a.PauseLimits.Acknowledge.String(), a.PauseLimits.Cleanup.String()
@@ -51,7 +51,7 @@ func (s *Server) writeAgentsPage(w http.ResponseWriter, r *http.Request, status 
 	rows := make([]html.Node, len(agents))
 	for idx, a := range agents {
 		rows[idx] = component.AgentRow(component.AgentSummary{
-			Name: a.Name, Description: a.Description, Models: a.Models, Tools: a.Tools, Requires: a.Requires.String(),
+			Name: a.Name, Description: a.Description, Models: a.Models, Tools: a.Tools, ToolClasses: a.ToolClasses, Requires: a.Requires.String(),
 		})
 	}
 	s.writeHTML(w, status, component.Page("Agents",
@@ -97,6 +97,7 @@ func (s *Server) postAgentForm(w http.ResponseWriter, r *http.Request) {
 		Models:       r.PostForm.Get("models"),
 		Effort:       r.PostForm.Get("effort"),
 		Tools:        r.PostForm["tools"],
+		ToolClasses:  r.PostForm["tool_classes"],
 		Acknowledge:  strings.TrimSpace(r.PostForm.Get("acknowledge")),
 		Cleanup:      strings.TrimSpace(r.PostForm.Get("cleanup")),
 		Priority:     r.PostForm.Get("priority"),
@@ -141,7 +142,7 @@ func (s *Server) postAgentForm(w http.ResponseWriter, r *http.Request) {
 func agentFromInput(input component.AgentInput) (Agent, string) {
 	a := Agent{
 		Name: input.Name, Description: input.Description, SystemPrompt: input.SystemPrompt, Models: strings.Fields(input.Models), Effort: input.Effort,
-		Tools: input.Tools, Priority: Priority(input.Priority), Filler: input.Filler != "",
+		Tools: input.Tools, ToolClasses: input.ToolClasses, Priority: Priority(input.Priority), Filler: input.Filler != "",
 	}
 	switch {
 	case input.Acknowledge == "" && input.Cleanup == "":

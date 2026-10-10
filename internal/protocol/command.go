@@ -61,6 +61,10 @@ type Command struct {
 // Effort is one of Efforts, which the harness adapter maps to its own
 // levels; empty leaves the harness's default
 // (docs/adr/2026-10-10-agent-models-and-capacity.md).
+//
+// ToolClasses restricts the harness's own tools to those of the classes
+// it names, of ToolClasses; nil or empty leaves every tool. The gateway
+// tools are not harness tools and Tools alone governs them.
 type StartTask struct {
 	Prompt       string      `json:"prompt"`
 	SystemPrompt string      `json:"system_prompt,omitempty"`
@@ -69,7 +73,29 @@ type StartTask struct {
 	Effort       string      `json:"effort,omitempty"`
 	PauseLimits  PauseLimits `json:"pause_limits"`
 	Tools        []string    `json:"tools,omitzero"`
+	ToolClasses  []string    `json:"tool_classes,omitempty"`
 }
+
+// The neutral classes of harness tools an agent may be restricted to,
+// which each harness adapter maps to its own tools.
+const (
+	// ToolClassRead reads and searches files.
+	ToolClassRead = "read"
+	// ToolClassEdit writes and edits files.
+	ToolClassEdit = "edit"
+	// ToolClassShell runs commands.
+	ToolClassShell = "shell"
+	// ToolClassWeb searches and fetches from the web.
+	ToolClassWeb = "web"
+	// ToolClassSubagents starts the harness's own subagents.
+	ToolClassSubagents = "subagents"
+	// ToolClassMCP is the tools of MCP servers other than the daemon's
+	// gateway.
+	ToolClassMCP = "mcp"
+)
+
+// ToolClasses are the classes StartTask.ToolClasses chooses among.
+var ToolClasses = []string{ToolClassRead, ToolClassEdit, ToolClassShell, ToolClassWeb, ToolClassSubagents, ToolClassMCP}
 
 // The neutral effort scale an agent and a task's start choose from.
 const (

@@ -1581,3 +1581,73 @@ func bashCalls(events []protocol.Event) int {
 	}
 	return count
 }
+
+// initTools returns the tools of the first system/init among events.
+func initTools(events []protocol.Event) []string {
+	for _, event := range events {
+		if event.Kind != protocol.KindHarnessOutput {
+			continue
+		}
+		if msg, err := claude.Parse(event.Payload); err == nil {
+			if started, ok := msg.Init(); ok {
+				return started.Tools
+			}
+		}
+	}
+	return nil
+}
+
+// Cost: `claude --version` and two claude sessions of one short turn
+// each, as an agent restricted to the read and web classes: one asked to
+// create a file, the other to start a subagent. Neither has the tool to
+// do it (docs/adr/2026-10-10-agent-models-and-capacity.md).
+func TestLiveGivenAgentRestrictedToReadAndWebWhenAskedToCreateAFileOrStartASubagentThenTheHarnessOffersNeitherTool(t *testing.T) {
+	ctx, cancel := context.WithTimeout(t.Context(), 6*time.Minute)
+	defer cancel()
+	sys := startLiveSystem(t, "-permissions", "allow-all")
+	sys.answeredByPolicy = true
+	t.Cleanup(func() {
+		if sessions := sys.sessions(t); sessions > 2 {
+			t.Errorf("the daemon ran %d claude sessions, over the budget of 2", sessions)
+		}
+	})
+	scout := map[string]any{"name": "live-scout", "description": "Reads and searches.", "tools": []string{},
+		"tool_classes": []string{"read", "web"}, "system_prompt": "You answer questions from files and the web."}
+	if status := call(t, http.MethodPost, sys.server+"/v1/agents", scout, nil); status != http.StatusCreated {
+		t.Fatalf("create agent: %d", status)
+	}
+	allowed := []string{"Read", "Grep", "Glob", "WebSearch", "WebFetch"}
+	stateDir := sys.daemonArgs[slices.Index(sys.daemonArgs, "-state-dir")+1]
+
+	for _, tc := range []struct {
+		name, prompt string
+		forbidden    []string
+	}{
+		{"file", "Create a file named created.txt in the current directory containing the word HELLO. " +
+			"If none of your tools can create a file, do not try anything else: reply with the single word UNABLE.",
+			[]string{"Write", "Edit", "NotebookEdit", "Bash"}},
+		{"subagent", "Start a subagent with your subagent tool and have it reply PONG. " +
+			"If none of your tools can start a subagent, do not try anything else: reply with the single word UNABLE.",
+			[]string{"Agent", "Task"}},
+	} {
+		task := sys.startTaskViaGUI(t, ctx, tc.prompt, "agent", "live-scout")
+		events := sys.waitForState(t, ctx, task, "finished", 1, nil)
+		_, results := sessionsAndResults(t, events)
+
+		tools := initTools(events)
+		t.Logf("%s: init tools %q, results %q", tc.name, tools, results)
+		for _, tool := range tools {
+			if !slices.Contains(allowed, tool) && !strings.HasPrefix(tool, "mcp__orchestrator__") {
+				t.Errorf("%s: the harness offered %s, outside read and web", tc.name, tool)
+			}
+		}
+		for _, call := range toolCalls(events) {
+			if slices.Contains(tc.forbidden, call.Name) {
+				t.Errorf("%s: the agent called %s", tc.name, call.Name)
+			}
+		}
+		if _, err := os.Stat(filepath.Join(stateDir, "workspaces", string(task), "created.txt")); err == nil {
+			t.Errorf("%s: created.txt exists in the workspace", tc.name)
+		}
+	}
+}

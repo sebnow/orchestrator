@@ -184,6 +184,12 @@ var migrations = [...]string{
 	// (docs/adr/2026-10-10-agent-models-and-capacity.md).
 	`ALTER TABLE agents ADD COLUMN effort TEXT NOT NULL DEFAULT '' CHECK (effort IN ('', 'low', 'medium', 'high', 'max'));
 	ALTER TABLE tasks ADD COLUMN effort TEXT NOT NULL DEFAULT '';`,
+	// Version 20 keeps the classes of harness tools each agent's tasks
+	// are restricted to, a JSON array, empty for every tool, and each
+	// task's, NULL for every tool
+	// (docs/adr/2026-10-10-agent-models-and-capacity.md).
+	`ALTER TABLE agents ADD COLUMN tool_classes TEXT NOT NULL DEFAULT '[]';
+	ALTER TABLE tasks ADD COLUMN tool_classes TEXT;`,
 }
 
 // schemaVersion is the version this server migrates databases to. A

@@ -205,6 +205,14 @@ func insertTask(ctx context.Context, tx *sql.Tx, task newTask, fx *effects) (que
 		}
 		tools = string(encoded)
 	}
+	var classes any
+	if len(start.ToolClasses) > 0 {
+		encoded, err := json.Marshal(start.ToolClasses)
+		if err != nil {
+			return queuedTurn{}, fmt.Errorf("encode tool classes: %w", err)
+		}
+		classes = string(encoded)
+	}
 	var models any
 	if task.Models != nil {
 		encoded, err := json.Marshal(task.Models)
@@ -220,11 +228,11 @@ func insertTask(ctx context.Context, tx *sql.Tx, task newTask, fx *effects) (que
 	created := formatTime(time.Now().UTC())
 	_, err = tx.ExecContext(ctx, `
 		INSERT INTO tasks (id, daemon_id, parent_id, state, created_at, last_activity_at, prompt, system_prompt, workspace_repo, workspace_ref, model,
-			pause_acknowledge_ns, pause_cleanup_ns, priority, filler, placement, agent, tools, requires, project, purpose, continues, models, effort)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			pause_acknowledge_ns, pause_cleanup_ns, priority, filler, placement, agent, tools, requires, project, purpose, continues, models, effort, tool_classes)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		string(task.ID), string(task.Daemon), nullableID(task.Parent), string(TaskQueued), created, created, start.Prompt, start.SystemPrompt, repo, ref,
 		start.Model, int64(start.PauseLimits.Acknowledge), int64(start.PauseLimits.Cleanup), string(task.Priority), task.Filler, string(task.Placement),
-		nullable(task.Agent), tools, encodeLabels(task.Requires), nullable(task.Project), task.Purpose, nullableID(task.Continues), models, start.Effort)
+		nullable(task.Agent), tools, encodeLabels(task.Requires), nullable(task.Project), task.Purpose, nullableID(task.Continues), models, start.Effort, classes)
 	if err != nil {
 		return queuedTurn{}, fmt.Errorf("create task %q: %w", task.ID, err)
 	}

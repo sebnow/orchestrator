@@ -12,7 +12,7 @@ import (
 )
 
 const juniorAgent = `{"name":"junior","description":"Does what it is told.","system_prompt":"You are a junior engineer.",` +
-	`"models":["claude-code:haiku","haiku"],"effort":"medium","tools":["send_message"],"pause_limits":{"acknowledge":"30s","cleanup":"2m"},"priority":"low","filler":true,"requires":{"os":"linux"}}`
+	`"models":["claude-code:haiku","haiku"],"effort":"medium","tools":["send_message"],"tool_classes":["read","web"],"pause_limits":{"acknowledge":"30s","cleanup":"2m"},"priority":"low","filler":true,"requires":{"os":"linux"}}`
 
 func TestGivenAgentWhenCreatedThenItIsListedAndReadBackAsGiven(t *testing.T) {
 	srv := startTestServer(t)
@@ -24,7 +24,7 @@ func TestGivenAgentWhenCreatedThenItIsListedAndReadBackAsGiven(t *testing.T) {
 
 	want := Agent{
 		Name: "junior", Description: "Does what it is told.", SystemPrompt: "You are a junior engineer.", Models: []string{"claude-code:haiku", "haiku"}, Effort: protocol.EffortMedium,
-		Tools: []string{"send_message"}, PauseLimits: &protocol.PauseLimits{Acknowledge: 30 * time.Second, Cleanup: 2 * time.Minute},
+		Tools: []string{"send_message"}, ToolClasses: []string{"read", "web"}, PauseLimits: &protocol.PauseLimits{Acknowledge: 30 * time.Second, Cleanup: 2 * time.Minute},
 		Priority: PriorityLow, Filler: true, Requires: Labels{"os": "linux"},
 	}
 	status, body = doRequest(t, http.MethodGet, srv.url+"/v1/agents/junior", "")
@@ -44,7 +44,7 @@ func TestGivenAgentWithOnlyANameWhenCreatedThenItHasNoToolsNormalPriorityAndNoRe
 
 	status, body := doRequest(t, http.MethodPost, srv.url+"/v1/agents", `{"name":"bare"}`)
 
-	want := `{"name":"bare","description":"","system_prompt":"","models":[],"tools":[],"priority":"normal","filler":false,"requires":{}}` + "\n"
+	want := `{"name":"bare","description":"","system_prompt":"","models":[],"tools":[],"tool_classes":[],"priority":"normal","filler":false,"requires":{}}` + "\n"
 	if status != http.StatusCreated || body != want {
 		t.Errorf("create: %d %s\nwant %s", status, body, want)
 	}
@@ -66,6 +66,8 @@ func TestGivenInvalidAgentWhenCreatedThenBadRequest(t *testing.T) {
 		"model twice":      `{"name":"a","models":["haiku","haiku"]}`,
 		"empty model":      `{"name":"a","models":[""]}`,
 		"unknown effort":   `{"name":"a","effort":"xhigh"}`,
+		"unknown class":    `{"name":"a","tool_classes":["Bash"]}`,
+		"class twice":      `{"name":"a","tool_classes":["read","read"]}`,
 	} {
 		t.Run(name, func(t *testing.T) {
 			if status, response := doRequest(t, http.MethodPost, srv.url+"/v1/agents", body); status != http.StatusBadRequest {

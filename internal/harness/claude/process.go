@@ -130,7 +130,8 @@ func (h *Harness) startProcess(ctx context.Context, spec harness.Spec, promptFil
 	if err := cmd.Start(); err != nil {
 		return nil, fmt.Errorf("start %s: %w", h.path, err)
 	}
-	return &process{cmd: cmd, stdin: stdin, stdout: bufio.NewReader(stdout), stderr: stderr, viaSudo: spec.RunAs.Other()}, nil
+	return &process{cmd: cmd, stdin: stdin, stdout: bufio.NewReader(stdout), stderr: stderr, viaSudo: spec.RunAs.Other(),
+		turn: turn{classes: spec.ToolClasses}}, nil
 }
 
 // writeSystemPrompt writes spec's system prompt to a file in spec.FileDir
@@ -215,6 +216,11 @@ func arguments(spec harness.Spec, promptFile string) ([]string, error) {
 		// machine, not other tasks; a task must use the gateway's tools
 		// (docs/adr/2026-10-08-inbox-delivery.md, Consequences).
 		"--disallowedTools", strings.Join(crossSessionTools, ","),
+	}
+	if len(spec.ToolClasses) > 0 {
+		// --tools leaves only the built-in tools it names; --allowedTools
+		// would only spare them the permission prompt.
+		args = append(args, "--tools", strings.Join(allowedTools(spec.ToolClasses), ","))
 	}
 	if spec.Effort != "" {
 		effort, ok := efforts[spec.Effort]
@@ -361,6 +367,10 @@ type turn struct {
 	// answering collects the prompt ids echoed by results that did not
 	// end the turn, for the result that does.
 	answering []string
+	// classes are the process's tool classes; checked is set once the
+	// tools of its first system/init have been compared with them.
+	classes []string
+	checked bool
 }
 
 // classify keeps a line that does not parse as opaque output: it is still
@@ -372,10 +382,15 @@ func (t *turn) classify(line []byte) harness.Output {
 		return out
 	}
 	t.track(msg)
-	_, isInit := msg.Init()
+	started, isInit := msg.Init()
 	_, isResult := msg.Result()
 	if isInit || isResult {
 		out.SessionID = msg.SessionID
+	}
+	if isInit && !t.checked {
+		t.checked = true
+		check := checkTools(started.Tools, t.classes)
+		out.Tools = &check
 	}
 	out.Answering = msg.Answering()
 	if isResult {

@@ -535,9 +535,10 @@ func readTaskDetail(ctx context.Context, tx *sql.Tx, task protocol.TaskID) (task
 	var repo, ref, tools sql.NullString
 	var acknowledge, cleanup int64
 	row := tx.QueryRowContext(ctx, `
-		SELECT `+summaryColumns+`, prompt, system_prompt, workspace_repo, workspace_ref, pause_acknowledge_ns, pause_cleanup_ns, tools, effort
+		SELECT `+summaryColumns+`, prompt, system_prompt, workspace_repo, workspace_ref, pause_acknowledge_ns, pause_cleanup_ns, tools, effort, tool_classes
 		FROM tasks WHERE id = ?`, string(task))
-	summary, err := scanSummary(row, &detail.Start.Prompt, &detail.Start.SystemPrompt, &repo, &ref, &acknowledge, &cleanup, &tools, &detail.Start.Effort)
+	var classes sql.NullString
+	summary, err := scanSummary(row, &detail.Start.Prompt, &detail.Start.SystemPrompt, &repo, &ref, &acknowledge, &cleanup, &tools, &detail.Start.Effort, &classes)
 	if errors.Is(err, sql.ErrNoRows) {
 		return taskDetail{}, fmt.Errorf("%w: %q", errUnknownTask, task)
 	}
@@ -563,6 +564,11 @@ func readTaskDetail(ctx context.Context, tx *sql.Tx, task protocol.TaskID) (task
 	if tools.Valid {
 		if err := json.Unmarshal([]byte(tools.String), &detail.Start.Tools); err != nil {
 			return taskDetail{}, fmt.Errorf("read tools of task %q: %w", task, err)
+		}
+	}
+	if classes.Valid {
+		if err := json.Unmarshal([]byte(classes.String), &detail.Start.ToolClasses); err != nil {
+			return taskDetail{}, fmt.Errorf("read tool classes of task %q: %w", task, err)
 		}
 	}
 	if detail.HasSession, err = hasSession(ctx, tx, task); err != nil {

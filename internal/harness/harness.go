@@ -33,6 +33,10 @@ type Spec struct {
 	// Effort is one of protocol.Efforts, which the harness maps to its own
 	// levels; empty leaves the harness's default.
 	Effort string
+	// ToolClasses restricts the harness's own tools to those of these
+	// classes, of protocol.ToolClasses; empty leaves every tool. The
+	// gateway's tools are always available.
+	ToolClasses []string
 	// SystemPrompt is added to the harness's own; empty adds nothing.
 	SystemPrompt string
 	// Resume names the harness session to continue, as reported in
@@ -101,6 +105,29 @@ type Output struct {
 	// reports one; Spec.Resume continues that session in a new process.
 	SessionID string
 	Quota     *protocol.QuotaObserved
+	// Tools, set on the first line of a process that lists the tools the
+	// harness offers, says how they compare with the process's
+	// restriction (docs/adr/2026-10-10-agent-models-and-capacity.md).
+	Tools *ToolCheck
+}
+
+// ToolCheck compares the tools a harness offers at the start of a
+// process with Spec.ToolClasses. Unclassified lists the tools the
+// adapter places in no class, whether the process is restricted or not.
+// Excess lists those of a class the restriction leaves out that the
+// harness offers anyway. Restricted says Spec.ToolClasses was set: a
+// restricted process with Unclassified or Excess tools cannot be held
+// to its restriction, and must not run its turn.
+type ToolCheck struct {
+	Restricted   bool
+	Unclassified []string
+	Excess       []string
+}
+
+// Enforceable reports whether the restriction holds: an unrestricted
+// process, or a restricted one offering only tools of its classes.
+func (c ToolCheck) Enforceable() bool {
+	return !c.Restricted || len(c.Unclassified) == 0 && len(c.Excess) == 0
 }
 
 type PermissionRequest struct {

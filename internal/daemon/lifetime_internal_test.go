@@ -126,7 +126,8 @@ func TestGivenFinishedTaskWhenTheOwnerPromptsThenANewProcessResumesItsSessionInT
 	srv := startServer(t)
 	d := runDaemon(t, srv.url, t.TempDir())
 	task := srv.createTask(t, testDaemon, protocol.StartTask{
-		Prompt: "The codeword is MARMALADE.", Model: "fake-model", Effort: protocol.EffortHigh, SystemPrompt: "Be brief.", PauseLimits: testPauseLimits,
+		Prompt: "The codeword is MARMALADE.", Model: "fake-model", Effort: protocol.EffortHigh, ToolClasses: []string{protocol.ToolClassRead},
+		SystemPrompt: "Be brief.", PauseLimits: testPauseLimits,
 	})
 	first := d.nextProcess(t)
 	if first.spec.Effort != protocol.EffortHigh {
@@ -142,7 +143,7 @@ func TestGivenFinishedTaskWhenTheOwnerPromptsThenANewProcessResumesItsSessionInT
 	second := d.nextProcess(t)
 	spec := second.spec
 	if spec.Resume != "session-1" || spec.Workdir != first.spec.Workdir || spec.Model != "fake-model" || spec.Effort != protocol.EffortHigh ||
-		spec.SystemPrompt != first.spec.SystemPrompt || !strings.HasSuffix(spec.SystemPrompt, "\n\nBe brief.") {
+		!slices.Equal(spec.ToolClasses, []string{protocol.ToolClassRead}) || spec.SystemPrompt != first.spec.SystemPrompt || !strings.HasSuffix(spec.SystemPrompt, "\n\nBe brief.") {
 		t.Errorf("second spec = %+v, first workdir %s", spec, first.spec.Workdir)
 	}
 	if in := finishTurn(t, second, "session-1"); in.text != "What is the codeword?" {
