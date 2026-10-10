@@ -61,8 +61,8 @@ Living document; revise in place. Decisions live in docs/adr, findings in docs/d
   trust on first use rejected): the owner's keys as a setting plus
   GitHub's from its meta API, sent to each daemon as a `host_keys`
   command and written to `<state-dir>/known_hosts`; [README.md](../README.md),
-  "Forge host keys". No record yet; it amends the ssh wording of
-  [docs/adr/2026-10-10-daemon-push-identity.md](adr/2026-10-10-daemon-push-identity.md).
+  "Forge host keys". Record:
+  [docs/adr/2026-10-10-forge-host-keys.md](adr/2026-10-10-forge-host-keys.md).
 - Daemon binaries served by the server (`-daemon-binaries-dir`, owner
   decision 2026-10-10): [README.md](../README.md), "Provisioning a VPS".
 
