@@ -132,6 +132,15 @@ func Serve(ctx context.Context, cfg Config) error {
 	if err := os.MkdirAll(stateDir, 0o700); err != nil {
 		return fmt.Errorf("state directory %s: %w", stateDir, err)
 	}
+	// The harness user clones workspaces from the mirrors in the state
+	// directory, which it may pass through by name but not list. Every
+	// other file there is the daemon's user's alone, by its own mode or
+	// its directory's.
+	if cfg.HarnessUser.Other() {
+		if err := os.Chmod(stateDir, 0o711); err != nil {
+			return fmt.Errorf("state directory %s: %w", stateDir, err)
+		}
+	}
 	if cfg.Client == nil {
 		cfg.Client = &http.Client{}
 	}
@@ -165,6 +174,9 @@ func Serve(ctx context.Context, cfg Config) error {
 	if err != nil {
 		return err
 	}
+	// Without a harness user ssh also offers the keys of the owner's
+	// agent, when the daemon has one; with one, the daemon's key alone.
+	run.mirrors = newMirrors(stateDir, key.Path, run.as.Other())
 	if run.as.Other() {
 		cfg.Log.Info("running tasks as the harness user", "user", run.as.Name, "git", run.gitCmd, "rm", run.rmCmd, "workspace_dir", workspaceDir, "ssh_agent", run.as.SSHAuthSock != "")
 	}

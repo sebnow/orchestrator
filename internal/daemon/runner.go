@@ -35,6 +35,10 @@ type runner struct {
 	as     runas.User
 	gitCmd string
 	rmCmd  string
+	// mirrors are the daemon's mirrors of the task repositories, which
+	// every git command against a remote runs in, as the daemon's own
+	// user; nil has none, and a task with a repository cannot start.
+	mirrors *mirrors
 }
 
 // newRunner returns the runner for commands run as user. For a harness

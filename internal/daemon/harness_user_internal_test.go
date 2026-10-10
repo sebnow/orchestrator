@@ -325,7 +325,8 @@ func TestGivenHarnessUserWhenServingThenTheHarnessRunsAsThatUserInTheWorkspaceDi
 	srv := startServer(t)
 	workspaces := t.TempDir()
 	sudo := newFakeSudo(t, nil)
-	d := runDaemonAs(t, srv.url, t.TempDir(), func(cfg *Config) {
+	stateDir := t.TempDir()
+	d := runDaemonAs(t, srv.url, stateDir, func(cfg *Config) {
 		cfg.WorkspaceDir = workspaces
 		cfg.HarnessUser = runas.User{Name: "orch-agent", SSHAuthSock: "/tmp/agent.sock", Sudo: sudo.path}
 	})
@@ -341,6 +342,12 @@ func TestGivenHarnessUserWhenServingThenTheHarnessRunsAsThatUserInTheWorkspaceDi
 	}
 	if info, err := os.Stat(proc.spec.Workdir); err != nil || !info.IsDir() {
 		t.Errorf("workspace: %v", err)
+	}
+	if info, err := os.Stat(stateDir); err != nil || info.Mode().Perm() != 0o711 {
+		t.Errorf("state directory: %v, %v; want mode 0711, so the harness user can reach the mirrors by path", info, err)
+	}
+	if info, err := os.Stat(filepath.Join(stateDir, "ssh_ed25519")); err != nil || info.Mode().Perm() != 0o600 {
+		t.Errorf("ssh key: %v, %v; want mode 0600", info, err)
 	}
 	if calls := sudo.calls(t); len(calls) == 0 || calls[0].command()[1] != "init" {
 		t.Errorf("sudo calls = %+v; want the workspace made through sudo", calls)
