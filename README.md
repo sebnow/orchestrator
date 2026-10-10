@@ -393,14 +393,15 @@ any other by the start of its prompt. Its form starts a task with:
 - an optional purpose, one line on why the task exists, which the task
   reads at the top of its prompt;
 - its prompt, and an optional repository and ref;
-- the model;
+- the model, which replaces the agent's models;
 - the daemon to run it on, or any connected daemon, and the labels its
   daemon must have (see [Placement](#placement));
 - its priority, and whether it is filler (see [Scheduling](#scheduling));
 - its pause limits, to acknowledge and to clean up.
 
 A field left blank takes the agent's value, or else the default: the
-server's model, no labels, `normal` priority, and pause limits of 1
+agent's models, from which placement chooses, or else the server's
+model, no labels, `normal` priority, and pause limits of 1
 minute to acknowledge and 5 to clean up. The filler box can only make a
 task filler; an agent whose tasks are filler makes the task filler
 whether it is ticked or not, and only the owner API's `"filler": false`
@@ -439,15 +440,20 @@ note).
 
 The Projects and Agents pages, linked from the top of every page, list
 the projects and the agents and create, edit and delete them; a
-project's page also lists the tasks started in it and starts more.
+project's page also lists the tasks started in it and starts more. The
+agent form takes the models one per line, most preferred first, the
+effort from a list, and the classes of harness tools as boxes, none
+ticked for every tool. Until a task of an agent with models is placed,
+its model reads as the candidates, such as "fable or sonnet, once
+placed".
 Each daemon's row on the dashboard links to the daemon's page, which
 shows the facts it reported and sets the labels the owner gives it (see
 [Placement](#placement)). Scripts read the same with `GET /v1/daemons`
 and `GET /v1/daemons/{daemon}`: each daemon's id, labels and facts, its
 ssh key as an `authorized_keys` line (`ssh_public_key`) and as the bare
 key (`ssh_public_key_blob`), when it was last seen, whether it is
-connected, whether it is lost and since when, its slots, and how many
-tasks hold one.
+connected, whether it is lost and since when, its capacity as `slots`, and how
+many tasks hold one as `running`.
 
 A `stopped` or `failed` task's page, and a `failed` task among those
 that need attention, have a Dismiss button. A dismissed task no longer
@@ -466,7 +472,7 @@ Server flags:
 - `-db` (required): the SQLite database file, created with its directory
   when missing. It holds every daemon, task, event and command, the
   agents and projects, the owner token's hash and the login sessions.
-  The server brings an older database to its schema, version 15, when it
+  The server brings an older database to its schema, version 21, when it
   starts, and refuses a database of a later version.
 - `-listen`: the address to serve on, `127.0.0.1:8080` by default.
 - `-tls-cert`, `-tls-key` (required unless `-insecure-loopback`): the
@@ -477,8 +483,8 @@ Server flags:
 - `-insecure-loopback`: serve plain HTTP without authentication; only
   with a loopback IP address as `-listen`, and without `-tls-cert`,
   `-tls-key` and `-client-ca`.
-- `-default-model`: the model of a task started without one, `haiku`
-  by default.
+- `-default-model`: the model of a task started without one whose
+  agent, if any, has no models, `haiku` by default.
 - `-filler-threshold`: the utilization of the account's five-hour quota
   window, from 0 to 1, below which filler tasks run; 0.5 by default
   (see [Scheduling](#scheduling)).
@@ -582,9 +588,9 @@ error. After a push, and after any turn that leaves files uncommitted,
 pushed or not, the task page shows the branch, its commit, how many commits
 the branch holds beyond the ref, how many files the agent left
 uncommitted, and any push error. The dashboard's task list shows each
-task's branch and marks a failed push. The daemon adds to the task's
-system prompt that the agent must commit its work on the branch and
-never push. A `pre-push` hook in the clone refuses to push any other
+task's branch and marks a failed push. The server's system prompt tells
+the agent the branch's name, that it must commit its work there and
+never push, and that its clone's `origin` is the daemon's mirror. A `pre-push` hook in the clone refuses to push any other
 ref, and the daemon refuses to push the ref the task started from or
 the repository's default branch. Work the agent did not commit is not
 delivered. A child task gets a branch of its own, starting at its
@@ -711,10 +717,12 @@ the daemon gives it, `spawn_task(purpose, prompt, agent?, model?,
 requires?)` and `send_message(to, text)`
 ([inbox delivery](docs/adr/2026-10-08-inbox-delivery.md)), unless its
 agent allows it fewer (see [Agents](#agents)). The server explains the
-tools a task may use in a system prompt it gives the task, ahead of the
-agent's system prompt, the project's instructions and any given through
-the owner API, in that order; a task that may spawn is also told the
-name and description of every agent, and what the purpose is for.
+orchestrator's mechanisms in a system prompt it gives the task, ahead
+of the agent's system prompt, the project's instructions and any given
+through the owner API, in that order: the tools the task may use and
+how each works, the name and description of every agent for a task
+that may spawn, a child's parent and purpose, and a task's workspace
+and branch (see [Agents](#agents)).
 
 A spawn must give a purpose: one line saying why the child exists and
 what the parent expects back
@@ -776,16 +784,81 @@ the owner's tasks, which have no parent, never do.
 ### Agents
 
 An agent is a named definition that tasks are started as: its
-description, system prompt, model, which of the agent tools
-`spawn_task` and `send_message` it allows, pause limits, priority, filler flag,
+description, system prompt, models, effort, which of the agent tools
+`spawn_task` and `send_message` it allows, which classes of the
+harness's own tools it may use, pause limits, priority, filler flag,
 and the labels its daemon must have
-([agents and placement](docs/adr/2026-10-09-agents-and-placement.md)).
+([agents and placement](docs/adr/2026-10-09-agents-and-placement.md),
+[agent models and capacity](docs/adr/2026-10-10-agent-models-and-capacity.md)).
 The permission and pause tools are always available. An agent created
 without tools allows neither agent tool, and an agent without pause
-limits gives its tasks the default limits. The owner creates and edits agents on
-the Agents page; an existing instructions file becomes an agent by
-pasting it into the system prompt field. Agents cannot be renamed,
-and the server refuses to delete an agent that any task names. Editing an agent changes only the tasks started afterwards.
+limits gives its tasks the default limits. The owner creates and edits
+agents on the Agents page; an existing instructions file becomes an
+agent by pasting it into the system prompt field. Agents cannot be
+renamed, and the server refuses to delete an agent that any task
+names. Editing an agent changes only the tasks started afterwards.
+
+An agent's system prompt carries its role, its judgment and the shape
+of its report. The server adds what the orchestrator's own mechanisms
+are, a paragraph each, ahead of it: which tools reach other tasks; for
+a task that may spawn, how `spawn_task` works, that a child's report
+arrives as the next prompt once the turn ends, and the agents it may
+name with their descriptions; for one that may message, what
+`send_message` reaches; for a child, its parent and its purpose; and
+for a task with a repository, its branch, the push at the end of each
+turn and the mirror that is its clone's `origin` (see [Tasks](#tasks)).
+
+- **Models.** `models` lists acceptable models, most preferred first,
+  each exactly as a harness accepts it, such as `sonnet` or
+  `claude-opus-5-5`. An entry written `harness:model`, such as
+  `claude-code:fable`, matches only a daemon whose `harness` fact or
+  label is that harness. A task of an agent with models that names no
+  model of its own gets one when it is placed: the first entry that an
+  eligible daemon provides, and it goes only to a daemon that provides
+  it (see [Placement](#placement)). Its page shows the candidates until
+  then, and the chosen model after. A task none of the connected
+  daemons can serve waits with the reason "waiting for a daemon with
+  model X or Y". A task given a model, by the owner or by
+  `spawn_task`, and a task of an agent without models, keep the model
+  they were given, the parent's, or the server's default.
+- **Effort.** `effort` is `low`, `medium`, `high` or `max`, or left out
+  for the harness's default. The Claude Code adapter passes it as
+  `--effort` with the same name; Claude Code's `xhigh` has no neutral
+  level.
+- **Tool classes.** `tool_classes` restricts the harness's own tools
+  to those of the classes it names; left empty, the task has every
+  tool. The gateway's tools, the agent tools included, are not
+  harness tools and are always offered as `tools` allows. The Claude
+  Code adapter maps the classes as follows, in
+  `internal/harness/claude/tools.go`, and passes the built-in tools as
+  `--tools`, which leaves Claude Code offering only those:
+
+  | Class       | Claude Code tools                                      |
+  |-------------|--------------------------------------------------------|
+  | `read`      | `Read`, `Grep`, `Glob`                                 |
+  | `edit`      | `Edit`, `Write`, `NotebookEdit`                        |
+  | `shell`     | `Bash`                                                 |
+  | `web`       | `WebSearch`, `WebFetch`                                |
+  | `subagents` | `Agent`, `Task`                                        |
+  | `mcp`       | every `mcp__` tool of a server other than the gateway  |
+
+  The restriction fails closed. When a restricted task's harness
+  starts, the daemon compares the tools Claude Code lists in its first
+  `system/init` with the table. A tool no class names, or one of a
+  class the agent lacks, stops the task before its first turn: the
+  daemon interrupts the turn and closes the harness's input, and the
+  task fails with an error such as "harness tool Monitor is not
+  classified; the agent's tool restriction cannot be enforced". A task
+  without a restriction runs whatever Claude Code offers; the daemon
+  logs the tools no class names in either case. A Claude Code release
+  that renames or adds a tool thus stops restricted tasks until the
+  table is updated, rather than widening what they can do.
+
+A task takes from its agent each setting the request leaves out. A
+child started as an agent takes the agent's models, effort, pause
+limits and tool classes, or else its parent's model, effort and pause
+limits; a child started as no agent takes its parent's tool classes
+too.
 
 Scripts use the owner API: `GET /v1/agents` lists them, `POST
 /v1/agents` creates one (409 when the name is taken), `GET` and `PUT
@@ -794,15 +867,18 @@ Scripts use the owner API: `GET /v1/agents` lists them, `POST
 project names it as its default agent). An agent
 is JSON such as:
 
-    {"name": "reviewer", "description": "Reviews a change.",
-     "system_prompt": "You review code.", "model": "sonnet",
-     "tools": ["send_message"],
+    {"name": "scout", "description": "Answers questions from the code and the web.",
+     "system_prompt": "You answer the question in the brief.",
+     "models": ["claude-code:haiku", "haiku"], "effort": "medium",
+     "tools": [], "tool_classes": ["read", "web"],
      "pause_limits": {"acknowledge": "1m", "cleanup": "5m"},
      "priority": "normal", "filler": false, "requires": {"os": "linux"}}
 
 `POST /v1/tasks` takes `agent`, and `requires` as such an object; a
 field left out takes the agent's value. It also takes `tools`, a list
-that replaces the agent's.
+that replaces the agent's, `model`, which replaces the agent's models,
+`effort`, and `tool_classes`, which replaces the agent's when not
+empty.
 
 ### Projects
 
@@ -885,8 +961,11 @@ interrupt, stop and permission answers are sent to the daemon at once,
 without queueing.
 
 - **Slots.** Each daemon runs at most as many tasks at once as its
-  capacity (see [Placement](#placement)). A task holds a slot from the
-  admission of its turn until its process exits. A task started without a daemon goes to the connected daemon
+  capacity: the `slots` it reports, capped by the owner's `slots`
+  label, or one when it has neither (see [Placement](#placement)). The
+  dashboard and the daemon's JSON give each daemon's capacity and how
+  many tasks hold a slot. A task holds a slot from the admission of its
+  turn until its process exits. A task started without a daemon goes to the connected daemon
   with the most free slots, and stays on that daemon, where its
   workspace is. Turns for a daemon that is not connected wait until it
   reconnects, or until it is lost (see [Lost daemons](#lost-daemons)).
@@ -918,16 +997,18 @@ queue and the reason it waits.
 
 A daemon has labels, `key=value` pairs, from two sources
 ([agents and placement](docs/adr/2026-10-09-agents-and-placement.md)).
-Each time it opens its command stream the daemon reports facts about
-its machine with `PUT /v1/daemons/{daemon}/facts`: `os` and `arch` as
-Go names them, such as `darwin` and `arm64`; `cpus`; `memory` in bytes,
-on Linux and macOS; `harness` and `harness_version`, such as
-`claude-code` and `2.1.289`; `gpu`, `nvidia` when `nvidia-smi` is on
-its `PATH` or `apple` on darwin/arm64, and absent otherwise; and
+The daemon reports facts about its machine with `PUT
+/v1/daemons/{daemon}/facts` each time it opens its command stream, and
+again whenever they change: `os` and `arch` as Go names them, such as
+`darwin` and `arm64`; `cpus`; `memory` in bytes, on Linux and macOS;
+`harness` and `harness_version`, such as `claude-code` and `2.1.289`;
+`gpu`, `nvidia` when `nvidia-smi` is on its `PATH` or `apple` on
+darwin/arm64, and absent otherwise; `slots`, its capacity (below); and
 `ssh_public_key`, the base64 of its push key's public key, the `<key>`
-of the line shown in [Tasks](#tasks). The owner sets labels on the daemon's page; where a
-label and a fact share a key, the label wins. Keys are letters, digits, `.`, `_` and `-`;
-values are printable characters other than space, `,` and `=`.
+of the line shown in [Tasks](#tasks). The owner sets labels on the
+daemon's page; where a label and a fact share a key, the label wins,
+but for `models` and `slots`. Keys are letters, digits, `.`, `_` and
+`-`; values are printable characters other than space, `,` and `=`.
 
 A task requires the labels of its agent, or those given when it is
 created or spawned, which replace the agent's. A task starts only on a
@@ -938,6 +1019,39 @@ matches only that size; set a label such as `size=large` to place by
 size. If no connected daemon qualifies, the task waits with the reason "no
 daemon has" followed by the pairs that no connected daemon has. A task
 bound to a daemon that lacks them says what that daemon lacks.
+
+A daemon provides the models its owner lists in a `models` label,
+separated by `;` since a label's value holds no comma, such as
+`models=sonnet;haiku;claude-opus-5-5`
+([agent models and capacity](docs/adr/2026-10-10-agent-models-and-capacity.md)).
+A `models` fact, which a harness adapter may report, adds to the label
+rather than giving way to it; the Claude Code adapter reports none, so
+a daemon running Claude Code provides only the models its label names.
+The orchestrator keeps no table of equivalent names: an agent's entry
+matches only a model a daemon lists by the same text. Among the daemons
+that hold a task's required labels, a task of an agent with models
+takes the first entry one of them provides, and goes only to a daemon
+that provides it, its parent's included, even when another daemon with
+a later entry has a free slot.
+
+A daemon's capacity is its `slots` fact, capped by an owner's `slots`
+label: the smaller of the two, the label alone when the daemon reports
+no slots, and one when neither is set. The daemon derives the fact
+from its machine every 30 seconds and whenever a harness starts or
+exits, with this rule as a starting point, not a measure of what a
+harness needs:
+
+    slots = min(running + floor(available memory / 1.5 GiB), cpus)
+            - ceil(load1 - cpus)   when the 1-minute load average exceeds cpus
+
+and never below 0, where running counts the harness processes the
+daemon runs, whose memory is no longer available. Available memory is
+`MemAvailable` of `/proc/meminfo` on Linux and the free, inactive and
+speculative pages of `vm_stat` on macOS; the load average comes from
+`/proc/loadavg` or `sysctl -n vm.loadavg`. Where it cannot read them
+the daemon reports no slots. The owner lowers a daemon's capacity, for
+instance to keep room for the machine's own work, with a label such as
+`slots=1`; the label cannot raise it above the fact.
 
 ### Lost daemons
 
