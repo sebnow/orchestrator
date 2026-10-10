@@ -1,0 +1,7 @@
+{
+  "error": {
+    "code": "locked",
+    "message": "server is locked",
+    "details": null
+  }
+}

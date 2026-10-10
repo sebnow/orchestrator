@@ -1,0 +1,169 @@
+{
+  "servers": [
+    {
+      "id": 42,
+      "name": "vps-ab12cd34",
+      "status": "running",
+      "created": "2016-01-30T23:50:00Z",
+      "public_net": {
+        "ipv4": {
+          "ip": "1.2.3.4",
+          "blocked": false,
+          "dns_ptr": "server01.example.com"
+        },
+        "ipv6": {
+          "ip": "2001:db8::/64",
+          "blocked": false,
+          "dns_ptr": [
+            {
+              "ip": "2001:db8::1",
+              "dns_ptr": "server.example.com"
+            }
+          ]
+        },
+        "floating_ips": [
+          478
+        ],
+        "firewalls": [
+          {
+            "id": 38,
+            "status": "applied"
+          }
+        ]
+      },
+      "private_net": [
+        {
+          "network": 4711,
+          "ip": "10.0.0.2",
+          "alias_ips": [],
+          "mac_address": "86:00:ff:2a:7d:e1"
+        }
+      ],
+      "server_type": {
+        "id": 1,
+        "name": "cpx22",
+        "description": "CPX22",
+        "cores": 2,
+        "memory": 4,
+        "disk": 80,
+        "deprecated": true,
+        "prices": [
+          {
+            "location": "fsn1",
+            "price_hourly": {
+              "net": "1.0000000000",
+              "gross": "1.1900000000000000"
+            },
+            "price_monthly": {
+              "net": "1.0000000000",
+              "gross": "1.1900000000000000"
+            },
+            "included_traffic": 21990232555520,
+            "price_per_tb_traffic": {
+              "net": "1.0000000000",
+              "gross": "1.1900000000000000"
+            }
+          }
+        ],
+        "storage_type": "local",
+        "cpu_type": "shared",
+        "architecture": "x86",
+        "locations": [
+          {
+            "id": 1,
+            "name": "fsn1",
+            "deprecation": null,
+            "available": true,
+            "recommended": true
+          },
+          {
+            "id": 2,
+            "name": "nbg1",
+            "deprecation": {
+              "announced": "2018-02-28T00:00:00Z",
+              "unavailable_after": "2018-05-31T00:00:00Z"
+            },
+            "available": false,
+            "recommended": false
+          }
+        ]
+      },
+      "location": {
+        "id": 1,
+        "name": "fsn1",
+        "description": "Falkenstein DC Park 1",
+        "country": "DE",
+        "city": "Falkenstein",
+        "latitude": 50.47612,
+        "longitude": 12.370071,
+        "network_zone": "eu-central"
+      },
+      "image": {
+        "id": 4711,
+        "type": "snapshot",
+        "status": "available",
+        "name": "ubuntu-24.04",
+        "description": "Ubuntu 24.04 Standard 64 bit",
+        "image_size": 2.3,
+        "disk_size": 10,
+        "created": "2016-01-30T23:50:00Z",
+        "created_from": {
+          "id": 1,
+          "name": "Server"
+        },
+        "bound_to": null,
+        "os_flavor": "ubuntu",
+        "os_version": "24.04",
+        "rapid_deploy": false,
+        "protection": {
+          "delete": false
+        },
+        "deprecated": null,
+        "deprecation": null,
+        "deleted": null,
+        "labels": {
+          "key": "value"
+        },
+        "architecture": "x86"
+      },
+      "iso": {
+        "id": 4711,
+        "name": "FreeBSD-11.0-RELEASE-amd64-dvd1",
+        "description": "FreeBSD 11.0 x64",
+        "type": "public",
+        "deprecation": {
+          "announced": "2018-02-28T00:00:00Z",
+          "unavailable_after": "2018-05-31T00:00:00Z"
+        },
+        "architecture": "x86"
+      },
+      "rescue_enabled": false,
+      "locked": false,
+      "backup_window": "22-02",
+      "outgoing_traffic": 123456,
+      "ingoing_traffic": 123456,
+      "included_traffic": 654321,
+      "protection": {
+        "delete": false,
+        "rebuild": false
+      },
+      "labels": {
+        "orchestrator": "1",
+        "daemon": "vps-ab12cd34"
+      },
+      "volumes": [],
+      "load_balancers": [],
+      "primary_disk_size": 50
+    }
+  ],
+  "meta": {
+    "pagination": {
+      "page": 1,
+      "per_page": 1,
+      "previous_page": null,
+      "next_page": 2,
+      "last_page": 2,
+      "total_entries": 2
+    }
+  }
+}

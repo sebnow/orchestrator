@@ -1,0 +1,28 @@
+{
+  "pricing": {
+    "currency": "EUR",
+    "vat_rate": "19.00",
+    "primary_ips": [],
+    "floating_ips": [],
+    "image": {"price_per_gb_month": {"net": "1.0000", "gross": "1.1900"}},
+    "volume": {"price_per_gb_month": {"net": "1.0000", "gross": "1.1900"}},
+    "server_backup": {"percentage": "20.00"},
+    "server_types": [
+      {
+        "id": 104,
+        "name": "cpx22",
+        "prices": [
+          {
+            "location": "fsn1",
+            "price_hourly": {"net": "1.0000", "gross": "1.1900"},
+            "price_monthly": {"net": "1.0000", "gross": "1.1900"},
+            "included_traffic": 654321,
+            "price_per_tb_traffic": {"net": "1.0000", "gross": "1.1900"}
+          }
+        ]
+      }
+    ],
+    "load_balancer_types": [],
+    "floating_ip": {"price_monthly": {"net": "1.0000", "gross": "1.1900"}}
+  }
+}
