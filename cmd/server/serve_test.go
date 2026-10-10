@@ -5,6 +5,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -93,4 +94,48 @@ func TestGivenCAKeyThatIsNotTheClientCAsWhenStartingThenTheServerRefusesAndNames
 	if status != 1 || !strings.Contains(stderr, "-ca-key") {
 		t.Errorf("status %d, stderr %q; want 1 naming -ca-key", status, stderr)
 	}
+}
+
+func TestGivenHetznerTokenWhenStartingWithoutWhatProvisioningNeedsThenTheServerRefusesAndNamesIt(t *testing.T) {
+	dir := t.TempDir()
+	mustRun(t, "init-ca", "-pki-dir", dir)
+	mustRun(t, "issue-server-cert", "-pki-dir", dir, "-host", "127.0.0.1")
+	t.Setenv("HETZNER_TOKEN", "test-token-not-a-secret")
+	tlsFlags := []string{"-listen", "127.0.0.1:0", "-db", filepath.Join(dir, "server.db"),
+		"-tls-cert", filepath.Join(dir, "server.crt"), "-tls-key", filepath.Join(dir, "server.key"),
+		"-client-ca", filepath.Join(dir, "ca.crt")}
+	withKey := append(slices.Clone(tlsFlags), "-ca-key", filepath.Join(dir, "ca.key"))
+
+	for _, c := range []struct {
+		args []string
+		want string
+	}{
+		{tlsFlags, "-ca-key"},
+		{append(slices.Clone(withKey), "-daemon-binary-url", "https://example.com/daemon"), "-public-url"},
+		{append(slices.Clone(withKey), "-public-url", "https://orchestrator.example:8443"), "-daemon-binary-url"},
+		{append(slices.Clone(withKey), "-public-url", "http://orchestrator.example:8443", "-daemon-binary-url", "https://example.com/daemon"), "-public-url"},
+	} {
+		status, _, stderr := runCommand(c.args...)
+		if status != 2 || !strings.Contains(stderr, c.want) || strings.Contains(stderr, "test-token-not-a-secret") {
+			t.Errorf("%v: status %d, stderr %q; want 2 naming %s", c.args[len(tlsFlags):], status, stderr, c.want)
+		}
+	}
+}
+
+func TestGivenHetznerTokenFileOthersCanReadWhenStartingThenTheServerRefuses(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "hetzner-token")
+	if err := os.WriteFile(path, []byte("test-token-not-a-secret\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	status, _, stderr := runCommand("-insecure-loopback", "-db", filepath.Join(t.TempDir(), "server.db"), "-hetzner-token-file", path)
+	if status != 1 || !strings.Contains(stderr, "-hetzner-token-file") || strings.Contains(stderr, "test-token-not-a-secret") {
+		t.Errorf("status %d, stderr %q; want 1 naming -hetzner-token-file", status, stderr)
+	}
+}
+
+// TestMain keeps a Hetzner token in the environment of whoever runs the
+// tests from turning provisioning on in the servers they start.
+func TestMain(m *testing.M) {
+	os.Unsetenv("HETZNER_TOKEN")
+	os.Exit(m.Run())
 }

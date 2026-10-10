@@ -44,6 +44,8 @@ type Server struct {
 	// ca issues the certificates of daemons that enrol; nil turns
 	// enrolment off.
 	ca *pki.CA
+	// provisioning creates daemon VPSes; nil turns provisioning off.
+	provisioning *Provisioning
 
 	mu      sync.Mutex
 	streams map[protocol.DaemonID]*commandStream
@@ -94,6 +96,9 @@ type Options struct {
 	// CA, with its key, issues the certificates of daemons that enrol
 	// (docs/adr/2026-10-10-vps-provisioning.md); nil turns enrolment off.
 	CA *pki.CA
+	// Provisioning creates daemon VPSes, whose daemons enrol, so it
+	// needs CA; nil turns provisioning off.
+	Provisioning *Provisioning
 }
 
 // New returns a server over store. The server hears of store's changes
@@ -105,6 +110,7 @@ func New(store *Store, log *slog.Logger, options Options) *Server {
 		defaultModel: options.DefaultModel,
 		insecure:     options.Insecure,
 		ca:           options.CA,
+		provisioning: options.Provisioning,
 		mux:          http.NewServeMux(),
 		streams:      make(map[protocol.DaemonID]*commandStream),
 		ended:        make(chan struct{}),
@@ -151,6 +157,9 @@ func New(store *Store, log *slog.Logger, options Options) *Server {
 	owner.HandleFunc("GET /v1/daemons/{daemon}", s.getDaemon)
 	owner.HandleFunc("POST /v1/daemons/{daemon}/login", s.postDaemonLogin)
 	owner.HandleFunc("POST /v1/daemons/{daemon}/login/code", s.postDaemonLoginCode)
+	owner.HandleFunc("POST /v1/daemons/{daemon}/destroy", s.postDestroy)
+	owner.HandleFunc("POST /v1/provision", s.postProvision)
+	owner.HandleFunc("GET /v1/vpses", s.getVPSes)
 	owner.HandleFunc("GET /v1/agents", s.getAgents)
 	owner.HandleFunc("POST /v1/agents", s.postAgent)
 	owner.HandleFunc("GET /v1/agents/{agent}", s.getAgent)

@@ -37,6 +37,8 @@ func (s *Server) routeGUI(mux *http.ServeMux) {
 	mux.HandleFunc("POST /daemons/{daemon}/login", s.postLoginForm)
 	mux.HandleFunc("POST /daemons/{daemon}/login/code", s.postLoginCodeForm)
 	mux.HandleFunc("GET /daemons/{daemon}/stream", s.streamDaemon)
+	mux.HandleFunc("POST /daemons/{daemon}/destroy", s.postDestroyForm)
+	mux.HandleFunc("POST /vpses", s.postProvisionForm)
 }
 
 // fromHTMX reports whether htmx made the request, in which case the
@@ -196,6 +198,10 @@ func (s *Server) dashboardLists(ctx context.Context, showDismissed bool) (html.N
 	if err != nil {
 		return nil, nil, err
 	}
+	vpses, err := s.store.vpses(ctx, false)
+	if err != nil {
+		return nil, nil, err
+	}
 	var attention []component.Attention
 	taskRows := make([]html.Node, 0, len(summaries))
 	dismissed := 0
@@ -240,7 +246,60 @@ func (s *Server) dashboardLists(ctx context.Context, showDismissed bool) (html.N
 			component.DismissedToggle(dismissed, showDismissed)),
 		component.Section("Budget", s.budget(readings)),
 		component.Section("Daemons", component.Table(component.DaemonColumns, "No daemon has connected yet.", daemonRows...)),
+		component.Section("VPSes", s.vpsList(vpses, connected)),
 	), ids, nil
+}
+
+// vpsList shows the VPSes not destroyed, and the button that provisions
+// another.
+func (s *Server) vpsList(vpses []vps, connected []protocol.DaemonID) html.Node {
+	rows := make([]html.Node, len(vpses))
+	for idx, v := range vpses {
+		view := s.vpsView(v, connected)
+		rows[idx] = component.VPSRow(component.VPS{Daemon: string(view.Daemon), ServerID: int64(view.ServerID),
+			ServerType: view.ServerType, Location: view.Location, CreatedAt: view.CreatedAt, State: string(view.State)})
+	}
+	var serverType, location string
+	if s.provisioning != nil {
+		serverType, location = s.provisioning.ServerType, s.provisioning.Location
+	}
+	return html.Fragment(
+		component.Table(component.VPSColumns, "No VPS provisioned.", rows...),
+		component.Provision(s.provisioning != nil && s.ca != nil, serverType, location),
+	)
+}
+
+// postProvisionForm provisions a VPS and returns the owner to the
+// dashboard, or shows why it failed.
+func (s *Server) postProvisionForm(w http.ResponseWriter, r *http.Request) {
+	if _, err := s.provision(r.Context()); err != nil {
+		s.writeProvisionFailure(w, "Provisioning failed", err)
+		return
+	}
+	redirect(w, r, "/")
+}
+
+// postDestroyForm destroys the VPS the path's daemon runs on and returns
+// the owner to the dashboard, or shows why it failed.
+func (s *Server) postDestroyForm(w http.ResponseWriter, r *http.Request) {
+	daemon, ok := daemonFromPath(w, r)
+	if !ok {
+		return
+	}
+	if _, err := s.destroy(r.Context(), daemon); err != nil {
+		s.writeProvisionFailure(w, "Destroying the VPS failed", err)
+		return
+	}
+	redirect(w, r, "/")
+}
+
+func (s *Server) writeProvisionFailure(w http.ResponseWriter, heading string, err error) {
+	status := provisionStatus(err)
+	if status == http.StatusInternalServerError {
+		s.internalError(w, err)
+		return
+	}
+	s.writeHTML(w, status, component.FailurePage(heading, err.Error()+"."))
 }
 
 // daemonHarness names daemon's harness and its version: those of the

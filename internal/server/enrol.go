@@ -91,6 +91,10 @@ func (s *Store) enrol(ctx context.Context, token protocol.EnrolmentToken, sign f
 	if _, err := tx.ExecContext(ctx, `DELETE FROM enrolment_tokens WHERE secret_sha256 = ?`, hash); err != nil {
 		return nil, fmt.Errorf("enrol daemon %q: %w", token.Daemon, err)
 	}
+	_, err = tx.ExecContext(ctx, `UPDATE vpses SET state = ? WHERE daemon_id = ? AND state = ?`, string(vpsEnrolled), string(token.Daemon), string(vpsCreating))
+	if err != nil {
+		return nil, fmt.Errorf("enrol daemon %q: %w", token.Daemon, err)
+	}
 	if err := tx.Commit(); err != nil {
 		return nil, fmt.Errorf("enrol daemon %q: %w", token.Daemon, err)
 	}

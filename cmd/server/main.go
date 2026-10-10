@@ -23,6 +23,7 @@ import (
 	"net"
 	"net/http"
 	"net/netip"
+	"net/url"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -31,6 +32,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/sebnow/orchestrator/internal/hetzner"
 	"github.com/sebnow/orchestrator/internal/pki"
 	"github.com/sebnow/orchestrator/internal/server"
 )
@@ -101,6 +103,12 @@ func serve(args []string, stderr io.Writer) int {
 	fillerThreshold := flags.Float64("filler-threshold", server.DefaultSchedulePolicy.FillerThreshold, "five-hour window utilization, from 0 to 1, below which filler tasks run")
 	lowThreshold := flags.Float64("low-threshold", server.DefaultSchedulePolicy.LowThreshold, "five-hour window utilization, from 0 to 1, below which low-priority tasks run")
 	daemonTimeout := flags.Duration("daemon-timeout", server.DefaultDaemonTimeout, "how long a daemon may go unseen, with no command stream open, before it is lost and its tasks move to other daemons; at least 1m")
+	hetznerTokenFile := flags.String("hetzner-token-file", "", "file holding the Hetzner Cloud API token, readable by its owner only; without it, the HETZNER_TOKEN environment variable. Either turns provisioning on, which needs -ca-key, -public-url and -daemon-binary-url")
+	hetznerServerType := flags.String("hetzner-server-type", "cx23", "Hetzner server type of a provisioned VPS")
+	hetznerLocation := flags.String("hetzner-location", "fsn1", "Hetzner location of a provisioned VPS")
+	hetznerImage := flags.String("hetzner-image", "debian-13", "Hetzner image of a provisioned VPS")
+	daemonBinaryURL := flags.String("daemon-binary-url", "", "https URL a provisioned VPS downloads the daemon binary from, built for the server type's architecture")
+	publicURL := flags.String("public-url", "", "the server's https URL as a provisioned VPS's daemon dials it, such as https://orchestrator.example:8443")
 	permissions := flags.String("permissions", "allow-all", "who answers the agents' permission requests: allow-all, the server, allowing every one at once; or ask, the owner")
 	if err := flags.Parse(args); err != nil {
 		return exitCode(err)
@@ -161,6 +169,13 @@ func serve(args []string, stderr io.Writer) int {
 			}
 		}
 	}
+	provisioning, status := provisioningFrom(*hetznerTokenFile, ca, *publicURL, *daemonBinaryURL, stderr)
+	if status != 0 {
+		return status
+	}
+	if provisioning != nil {
+		provisioning.ServerType, provisioning.Location, provisioning.Image = *hetznerServerType, *hetznerLocation, *hetznerImage
+	}
 	log := slog.New(slog.NewTextHandler(stderr, nil))
 
 	if err := os.MkdirAll(filepath.Dir(*dbPath), 0o700); err != nil {
@@ -192,8 +207,9 @@ func serve(args []string, stderr io.Writer) int {
 		Insecure:     *insecure,
 		Schedule: server.SchedulePolicy{FillerThreshold: *fillerThreshold, LowThreshold: *lowThreshold,
 			DaemonTimeout: *daemonTimeout},
-		Permissions: policy,
-		CA:          ca,
+		Permissions:  policy,
+		CA:           ca,
+		Provisioning: provisioning,
 	})
 	httpServer := &http.Server{
 		Handler:   srv,
@@ -228,7 +244,8 @@ func serve(args []string, stderr io.Writer) int {
 		}
 		served <- httpServer.ServeTLS(listener, "", "")
 	}()
-	log.Info("serving", "address", listener.Addr().String(), "tls", !*insecure, "db", *dbPath)
+	log.Info("serving", "address", listener.Addr().String(), "tls", !*insecure, "db", *dbPath,
+		"enrolment", ca != nil, "provisioning", provisioning != nil)
 
 	select {
 	case err := <-served:
@@ -274,4 +291,35 @@ func requireLoopback(listen string) error {
 		return fmt.Errorf("-listen %s is not on a loopback IP address such as 127.0.0.1 or [::1]", listen)
 	}
 	return nil
+}
+
+// provisioningFrom returns how the server provisions daemon VPSes: nil
+// when no Hetzner token is configured, in tokenFile or HETZNER_TOKEN.
+// Otherwise it needs ca, with its key, for the VPSes' daemons to enrol,
+// and https URLs for publicURL and daemonURL. It returns the exit status
+// when it cannot.
+func provisioningFrom(tokenFile string, ca *pki.CA, publicURL, daemonURL string, stderr io.Writer) (*server.Provisioning, int) {
+	token := os.Getenv("HETZNER_TOKEN")
+	if tokenFile != "" {
+		var err error
+		if token, err = hetzner.LoadToken(tokenFile); err != nil {
+			fmt.Fprintln(stderr, "server: -hetzner-token-file:", err)
+			return nil, 1
+		}
+	}
+	if token == "" {
+		return nil, 0
+	}
+	if ca == nil {
+		fmt.Fprintln(stderr, "server: provisioning needs -ca-key, so that the VPSes' daemons can enrol")
+		return nil, 2
+	}
+	for name, value := range map[string]string{"-public-url": publicURL, "-daemon-binary-url": daemonURL} {
+		parsed, err := url.Parse(value)
+		if value == "" || err != nil || parsed.Scheme != "https" || parsed.Host == "" {
+			fmt.Fprintf(stderr, "server: provisioning needs %s, an https URL\n", name)
+			return nil, 2
+		}
+	}
+	return &server.Provisioning{Hetzner: hetzner.NewClient(hetzner.Endpoint, token, nil), PublicURL: publicURL, DaemonURL: daemonURL}, 0
 }

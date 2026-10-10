@@ -4,6 +4,8 @@ import (
 	"maps"
 	"net/url"
 	"slices"
+	"strconv"
+	"time"
 
 	"github.com/sebnow/orchestrator/internal/html"
 	"github.com/sebnow/orchestrator/internal/protocol"
@@ -145,4 +147,58 @@ func DaemonLogin(view DaemonLoginView) html.Node {
 			html.El("p", attrs("class", "empty"), html.Text("The daemon is not connected; log it in once it is.")))
 	}
 	return html.Fragment(status, progress, start)
+}
+
+// VPS is a VPS the server provisioned, as the GUI shows it: State is
+// creating, enrolled, connected, destroying or destroyed, and ServerID
+// is 0 until Hetzner answered.
+type VPS struct {
+	Daemon     string
+	ServerID   int64
+	ServerType string
+	Location   string
+	CreatedAt  time.Time
+	State      string
+}
+
+// VPSColumns head a Table of VPSRows.
+var VPSColumns = []string{"Daemon", "Hetzner server", "Type", "Location", "Created", "State", ""}
+
+// VPSRow is a VPS in the VPS list, with the button that destroys it
+// unless it is destroyed.
+func VPSRow(vps VPS) html.Node {
+	server := html.Text("not yet created")
+	if vps.ServerID != 0 {
+		server = html.Text(strconv.FormatInt(vps.ServerID, 10))
+	}
+	var destroy html.Node
+	if vps.State != "destroyed" {
+		destroy = PlainForm(daemonURL(vps.Daemon)+"/destroy", "", Button("Destroy", VariantDanger, "", ""))
+	}
+	return html.El("tr", attrs("class", "vps"),
+		cell(html.Text(vps.Daemon)),
+		cell(server),
+		cell(html.Text(vps.ServerType)),
+		cell(html.Text(vps.Location)),
+		cell(timestamp(vps.CreatedAt)),
+		cell(html.El("span", attrs("class", "vps-state"), html.Text(vps.State))),
+		cell(destroy),
+	)
+}
+
+// Provision is the button that provisions a VPS of serverType in
+// location, or, when enabled is false, a note that provisioning is off.
+func Provision(enabled bool, serverType, location string) html.Node {
+	if !enabled {
+		return html.El("p", attrs("class", "empty"), html.Text("Provisioning is off: the server was started without a Hetzner token."))
+	}
+	return PlainForm("/vpses", "",
+		html.El("p", nil, html.Text("A new VPS is a "+serverType+" in "+location+", billed by the hour until it is destroyed. Its daemon enrols and connects by itself; log it in once it shows here.")),
+		Button("Provision a VPS", VariantPrimary, "", ""))
+}
+
+// FailurePage says that what the owner asked for under heading failed,
+// and why, with a way back to the dashboard.
+func FailurePage(heading, problem string) html.Node {
+	return Page(heading, Section(heading, problemNote(problem), html.El("p", nil, link("/", "Back to the dashboard"))))
 }

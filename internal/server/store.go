@@ -245,6 +245,18 @@ var migrations = [...]string{
 		daemon_id TEXT NOT NULL,
 		expires_at INTEGER NOT NULL
 	) STRICT;`,
+	// Version 25 keeps the VPSes the server provisioned, by the daemon
+	// each runs: its server's id at Hetzner, NULL until Hetzner answers,
+	// its server type and location, when it was created, and its state
+	// (docs/adr/2026-10-10-vps-provisioning.md).
+	`CREATE TABLE vpses (
+		daemon_id TEXT PRIMARY KEY,
+		server_id INTEGER,
+		server_type TEXT NOT NULL,
+		location TEXT NOT NULL,
+		created_at TEXT NOT NULL,
+		state TEXT NOT NULL CHECK (state IN ('creating', 'enrolled', 'destroying', 'destroyed'))
+	) STRICT;`,
 }
 
 // schemaVersion is the version this server migrates databases to. A
