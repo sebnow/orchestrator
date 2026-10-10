@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"slices"
@@ -45,6 +46,49 @@ func (s *Store) Backup(ctx context.Context, path string) error {
 		return fmt.Errorf("back up database: %w", err)
 	}
 	return nil
+}
+
+// VerifyBackup checks that the database at path, opened read-only,
+// passes SQLite's integrity check and has a schema version this server
+// can open, and returns that version.
+func VerifyBackup(ctx context.Context, path string) (int, error) {
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		return 0, fmt.Errorf("verify backup: %w", err)
+	}
+	db, err := sql.Open("sqlite", (&url.URL{Scheme: "file", Path: abs, RawQuery: "mode=ro"}).String())
+	if err != nil {
+		return 0, fmt.Errorf("verify backup: %w", err)
+	}
+	defer db.Close()
+	rows, err := db.QueryContext(ctx, `PRAGMA integrity_check`)
+	if err != nil {
+		return 0, fmt.Errorf("verify backup: %s is not a database: %w", path, err)
+	}
+	var problems []string
+	for rows.Next() {
+		var line string
+		if err := rows.Scan(&line); err != nil {
+			rows.Close()
+			return 0, fmt.Errorf("verify backup: %w", err)
+		}
+		problems = append(problems, line)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return 0, fmt.Errorf("verify backup: %s is not a database: %w", path, err)
+	}
+	if len(problems) != 1 || problems[0] != "ok" {
+		return 0, fmt.Errorf("verify backup: %s fails the integrity check: %s", path, strings.Join(problems, "; "))
+	}
+	var version int
+	if err := db.QueryRowContext(ctx, `SELECT version FROM schema_version`).Scan(&version); err != nil {
+		return 0, fmt.Errorf("verify backup: %s is not the server's database: %w", path, err)
+	}
+	if version < 1 || version > schemaVersion {
+		return 0, fmt.Errorf("verify backup: %s has schema version %d; this server knows versions 1 to %d", path, version, schemaVersion)
+	}
+	return version, nil
 }
 
 // BackupPolicy is where and how often the server backs its database up,

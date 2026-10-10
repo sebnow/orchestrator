@@ -8,7 +8,7 @@
 // -insecure-loopback.
 //
 // Its subcommands create the certificate authority, issue certificates
-// and issue the owner token.
+// and tokens, and restore the database from a backup.
 package main
 
 import (
@@ -63,6 +63,7 @@ var subcommands = map[string]func(args []string, stdout, stderr io.Writer) int{
 	"issue-daemon-cert": issueDaemonCert,
 	"issue-owner-token": issueOwnerToken,
 	"enrol-token":       enrolToken,
+	"restore":           restore,
 }
 
 func run(args []string, stdout, stderr io.Writer) int {
