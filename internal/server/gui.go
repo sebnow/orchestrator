@@ -30,6 +30,7 @@ func (s *Server) routeGUI(mux *http.ServeMux) {
 	mux.HandleFunc("GET /tasks/{task}/stream", s.streamTask)
 	mux.HandleFunc("GET /tasks/{task}/updates", s.getTaskUpdates)
 	s.routeAgentsGUI(mux)
+	s.routeProjectsGUI(mux)
 	mux.HandleFunc("GET /daemons/{daemon}", s.getDaemonPage)
 	mux.HandleFunc("POST /daemons/{daemon}/labels", s.postLabelsForm)
 }
@@ -61,6 +62,7 @@ func guiTask(summary taskSummary, prompt string) component.Task {
 	task := component.Task{
 		ID:             string(summary.ID),
 		Agent:          summary.Agent,
+		Project:        summary.Project,
 		Requires:       summary.Requires,
 		State:          string(summary.State),
 		Daemon:         string(summary.DaemonID),
@@ -125,18 +127,38 @@ func (s *Server) writeDashboard(w http.ResponseWriter, r *http.Request, status i
 	))
 }
 
-// newTaskForm is the new-task form with input, offering daemons and
-// every agent.
+// newTaskForm is the new-task form with input, offering daemons, every
+// agent and every project.
 func (s *Server) newTaskForm(ctx context.Context, input component.NewTask, daemons []string, problem, created string) (html.Node, error) {
-	agents, err := s.store.agents(ctx)
+	choices, err := s.taskChoices(ctx, daemons)
 	if err != nil {
 		return nil, err
 	}
-	names := make([]string, len(agents))
-	for idx, a := range agents {
-		names[idx] = a.Name
+	return component.NewTaskForm(input, choices, problem, created), nil
+}
+
+// taskChoices are what the new-task forms offer: daemons, every agent and
+// every project.
+func (s *Server) taskChoices(ctx context.Context, daemons []string) (component.TaskChoices, error) {
+	agents, err := s.store.agents(ctx)
+	if err != nil {
+		return component.TaskChoices{}, err
 	}
-	return component.NewTaskForm(input, daemons, names, s.defaultModel, defaultPauseLimits.Acknowledge.String(), defaultPauseLimits.Cleanup.String(), problem, created), nil
+	projects, err := s.store.projects(ctx)
+	if err != nil {
+		return component.TaskChoices{}, err
+	}
+	choices := component.TaskChoices{
+		Daemons: daemons, Agents: make([]string, len(agents)), Projects: make([]component.Option, len(projects)),
+		DefaultModel: s.defaultModel, DefaultAcknowledge: defaultPauseLimits.Acknowledge.String(), DefaultCleanup: defaultPauseLimits.Cleanup.String(),
+	}
+	for idx, a := range agents {
+		choices.Agents[idx] = a.Name
+	}
+	for idx, p := range projects {
+		choices.Projects[idx] = component.Option{Value: p.ID, Label: p.Name}
+	}
+	return choices, nil
 }
 
 // dashboardLists renders the tasks needing attention, every task, newest
@@ -313,6 +335,7 @@ func (s *Server) postTaskForm(w http.ResponseWriter, r *http.Request) {
 	}
 	input := component.NewTask{
 		Agent:       r.PostForm.Get("agent"),
+		Project:     r.PostForm.Get("project"),
 		Requires:    strings.TrimSpace(r.PostForm.Get("requires")),
 		Prompt:      r.PostForm.Get("prompt"),
 		Repo:        strings.TrimSpace(r.PostForm.Get("repo")),
@@ -350,7 +373,7 @@ func (s *Server) postTaskForm(w http.ResponseWriter, r *http.Request) {
 			s.internalError(w, err)
 			return
 		}
-		fresh := component.NewTask{Agent: input.Agent, Daemon: input.Daemon, Acknowledge: input.Acknowledge, Cleanup: input.Cleanup, Priority: input.Priority, Filler: input.Filler}
+		fresh := component.NewTask{Agent: input.Agent, Project: input.Project, Daemon: input.Daemon, Acknowledge: input.Acknowledge, Cleanup: input.Cleanup, Priority: input.Priority, Filler: input.Filler}
 		form, err := s.newTaskForm(r.Context(), fresh, daemons, "", string(task))
 		if err != nil {
 			s.internalError(w, err)
@@ -383,10 +406,23 @@ func (s *Server) startTaskFromForm(ctx context.Context, input component.NewTask)
 			return "", "Choose low, normal or high priority.", nil
 		}
 	}
+	// A task naming no agent in a project is started as the project's
+	// default agent, if it has one.
+	agent := input.Agent
+	if input.Project != "" && agent == "" {
+		p, err := s.store.project(ctx, input.Project)
+		if errors.Is(err, errUnknownProject) {
+			return "", "There is no project " + input.Project + ".", nil
+		}
+		if err != nil {
+			return "", "", err
+		}
+		agent = p.DefaultAgent
+	}
 	// Blank pause limits are the agent's, or else the defaults.
 	var limits protocol.PauseLimits
 	switch {
-	case input.Acknowledge == "" && input.Cleanup == "" && input.Agent != "":
+	case input.Acknowledge == "" && input.Cleanup == "" && agent != "":
 	case input.Acknowledge == "" && input.Cleanup == "":
 		limits = defaultPauseLimits
 	case input.Acknowledge == "" || input.Cleanup == "":
@@ -426,12 +462,15 @@ func (s *Server) startTaskFromForm(ctx context.Context, input component.NewTask)
 		}
 		requires = &parsed
 	}
-	turn, err := s.startTask(ctx, taskRequest{Daemon: daemon, Agent: input.Agent, Requires: requires, Priority: priority, Filler: filler, Start: start})
+	turn, err := s.startTask(ctx, taskRequest{Daemon: daemon, Agent: input.Agent, Project: input.Project, Requires: requires, Priority: priority, Filler: filler, Start: start})
 	if errors.Is(err, errInvalidTask) {
 		return "", "The task was not started: " + strings.TrimPrefix(err.Error(), errInvalidTask.Error()+": ") + ".", nil
 	}
 	if errors.Is(err, errUnknownAgent) {
-		return "", "There is no agent " + input.Agent + ".", nil
+		return "", "There is no agent " + agent + ".", nil
+	}
+	if errors.Is(err, errUnknownProject) {
+		return "", "There is no project " + input.Project + ".", nil
 	}
 	if errors.Is(err, errUnknownDaemon) {
 		return "", "Daemon " + input.Daemon + " has not connected yet.", nil

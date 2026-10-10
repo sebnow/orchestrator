@@ -115,7 +115,7 @@ func TestGivenNoControlsOfferedWhenRenderedThenThereIsNoForm(t *testing.T) {
 }
 
 func TestGivenNewTaskFormWhenRenderedThenTheRepositoryFieldSaysWhichAddressesTheDaemonAccepts(t *testing.T) {
-	got := render(t, NewTaskForm(NewTask{}, []string{"laptop"}, nil, "haiku", "1m0s", "5m0s", "", ""))
+	got := render(t, NewTaskForm(NewTask{}, TaskChoices{Daemons: []string{"laptop"}, DefaultModel: "haiku", DefaultAcknowledge: "1m0s", DefaultCleanup: "5m0s"}, "", ""))
 
 	if !strings.Contains(got, "Repository (https:// or ssh:// URL, or ssh address such as git@host:path)") {
 		t.Errorf("form lacks the note on accepted addresses: %s", got)

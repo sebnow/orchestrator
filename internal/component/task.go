@@ -18,6 +18,10 @@ type Task struct {
 	ID string
 	// Agent names the agent the task was started as; empty for none.
 	Agent string
+	// Project is the id of the project the task belongs to, and
+	// ProjectName its name; both empty for none. An empty ProjectName
+	// shows the id.
+	Project, ProjectName string
 	// Requires are the labels the task's daemon must have.
 	Requires       map[string]string
 	State          string
@@ -219,7 +223,10 @@ func TaskHeader(task Task, controls html.Node) html.Node {
 	term := func(name string, value html.Node) html.Node {
 		return html.Fragment(html.El("dt", nil, html.Text(name)), html.El("dd", nil, value))
 	}
-	var parent, children, queue, dismissed, agent, requires html.Node
+	var parent, children, queue, dismissed, agent, requires, project html.Node
+	if task.Project != "" {
+		project = term("Project", projectLink(task.Project, task.ProjectName))
+	}
 	if len(task.Requires) > 0 {
 		requires = term("Requires", LabelList(task.Requires))
 	}
@@ -254,6 +261,7 @@ func TaskHeader(task Task, controls html.Node) html.Node {
 		html.El("dl", nil,
 			term("State", queueBadges(task)),
 			queue,
+			project,
 			agent,
 			requires,
 			term("Priority", html.Text(task.Priority)),
@@ -402,10 +410,11 @@ func PromptSubmit(closed string) html.Node {
 }
 
 // NewTask is what the owner entered to start a task. An empty Agent is
-// none, and an empty Daemon any connected daemon. What is left empty,
-// or Filler unticked, takes the agent's value, or the default.
+// none, or the project's default agent, an empty Project none, and an
+// empty Daemon any connected daemon. What is left empty, or Filler
+// unticked, takes the agent's value, or the default.
 type NewTask struct {
-	Agent string
+	Agent, Project string
 	// Requires are key=value labels the task's daemon must have.
 	Requires                         string
 	Prompt, Repo, Ref, Model, Daemon string
@@ -419,47 +428,96 @@ type NewTask struct {
 // Priorities are the priorities a task can have, lowest first.
 var Priorities = []string{"low", "normal", "high"}
 
-// NewTaskForm starts a task, as one of agents or none, on one of
-// daemons, or on any. The defaults are what a field left empty without
-// an agent gives. created, when set, is the id of the task the last
-// submission started.
-func NewTaskForm(input NewTask, daemons, agents []string, defaultModel, defaultAcknowledge, defaultCleanup, problem, created string) html.Node {
-	var notice, noDaemons html.Node
+// TaskChoices are what the new-task forms offer: the daemons, the agents
+// and the projects, by id and name, and what a field left empty without
+// an agent gives.
+type TaskChoices struct {
+	Daemons, Agents                                  []string
+	Projects                                         []Option
+	DefaultModel, DefaultAcknowledge, DefaultCleanup string
+}
+
+// NewTaskForm starts a task, in one of the projects or none, as one of
+// the agents or none, on one of the daemons, or on any. created, when
+// set, is the id of the task the last submission started.
+func NewTaskForm(input NewTask, choices TaskChoices, problem, created string) html.Node {
+	var notice html.Node
 	if created != "" {
 		notice = html.El("p", attrs("class", "notice"), html.Text("Started task "), link(taskURL(created), created), html.Text("."))
 	}
-	if len(daemons) == 0 {
+	// Without projects the form offers none, and says nothing of them.
+	var project html.Node
+	noAgent, noRepo := "None", "none: an empty directory"
+	if len(choices.Projects) > 0 {
+		projects := append([]Option{{Value: "", Label: "None"}}, choices.Projects...)
+		project = Field(FieldSpec{Kind: FieldSelect, Name: "project", Label: "Project", Value: input.Project, Options: projects})
+		noAgent, noRepo = "None, or the project's default", "the project's, or none: an empty directory"
+	}
+	workspace := html.Fragment(
+		Field(FieldSpec{Name: "repo", Label: "Repository (https:// or ssh:// URL, or ssh address such as git@host:path)", Value: input.Repo, Placeholder: noRepo}),
+		Field(FieldSpec{Name: "ref", Label: "Ref", Value: input.Ref}),
+	)
+	return html.Fragment(notice, Form("/tasks", problem,
+		append([]html.Node{project}, taskFields(input, choices, noAgent, workspace)...)...))
+}
+
+// ProjectTaskForm starts a task in project, as one of the agents or the
+// project's default, in the project's repository, or when it has none,
+// in the one given. Unlike NewTaskForm it leaves the browser to follow
+// the response, the new task's page.
+func ProjectTaskForm(input NewTask, choices TaskChoices, project ProjectInput) html.Node {
+	noAgent := "None"
+	if project.DefaultAgent != "" {
+		noAgent = "The project's default, " + project.DefaultAgent
+	}
+	workspace := html.El("p", nil, html.Text("Repository: "), repository(project.Repo, project.Ref), html.Text(", the project's."))
+	if project.Repo == "" {
+		workspace = html.Fragment(
+			Field(FieldSpec{Name: "repo", Label: "Repository (https:// or ssh:// URL, or ssh address such as git@host:path)", Value: input.Repo, Placeholder: "none: an empty directory"}),
+			Field(FieldSpec{Name: "ref", Label: "Ref", Value: input.Ref}),
+		)
+	}
+	return PlainForm("/tasks", "",
+		append([]html.Node{Field(FieldSpec{Kind: FieldHidden, Name: "project", Value: project.ID})},
+			taskFields(input, choices, noAgent, workspace)...)...)
+}
+
+// taskFields are the new-task forms' fields after the project: the
+// agent, whose empty choice is labelled noAgent, the prompt, workspace,
+// and the rest.
+func taskFields(input NewTask, choices TaskChoices, noAgent string, workspace html.Node) []html.Node {
+	var noDaemons html.Node
+	if len(choices.Daemons) == 0 {
 		noDaemons = html.El("p", attrs("class", "empty"), html.Text("No daemon has connected yet."))
 	}
 	daemonOptions := []Option{{Value: "", Label: "Any connected daemon"}}
-	for _, daemon := range daemons {
+	for _, daemon := range choices.Daemons {
 		daemonOptions = append(daemonOptions, Option{Value: daemon, Label: daemon})
 	}
-	agentOptions := []Option{{Value: "", Label: "None"}}
-	for _, agent := range agents {
+	agentOptions := []Option{{Value: "", Label: noAgent}}
+	for _, agent := range choices.Agents {
 		agentOptions = append(agentOptions, Option{Value: agent, Label: agent})
 	}
 	priorityOptions := []Option{{Value: "", Label: "The agent's, or normal"}}
 	for _, priority := range Priorities {
 		priorityOptions = append(priorityOptions, Option{Value: priority, Label: priority})
 	}
-	return html.Fragment(notice, Form("/tasks", problem,
+	return []html.Node{
 		Field(FieldSpec{Kind: FieldSelect, Name: "agent", Label: "Agent", Value: input.Agent, Options: agentOptions}),
 		Field(FieldSpec{Kind: FieldTextarea, Name: "prompt", Label: "Prompt", Value: input.Prompt, Required: true}),
-		Field(FieldSpec{Name: "repo", Label: "Repository (https:// or ssh:// URL, or ssh address such as git@host:path)", Value: input.Repo, Placeholder: "none: an empty directory"}),
-		Field(FieldSpec{Name: "ref", Label: "Ref", Value: input.Ref}),
-		Field(FieldSpec{Name: "model", Label: "Model", Value: input.Model, Placeholder: "the agent's, or " + defaultModel}),
+		workspace,
+		Field(FieldSpec{Name: "model", Label: "Model", Value: input.Model, Placeholder: "the agent's, or " + choices.DefaultModel}),
 		Field(FieldSpec{Kind: FieldSelect, Name: "daemon", Label: "Daemon", Value: input.Daemon, Options: daemonOptions}),
 		Field(FieldSpec{Name: "requires", Label: "Requires labels (key=value, separated by commas)", Value: input.Requires, Placeholder: "the agent's, or none"}),
 		noDaemons,
 		Field(FieldSpec{Kind: FieldSelect, Name: "priority", Label: "Priority", Value: input.Priority, Options: priorityOptions}),
 		Field(FieldSpec{Kind: FieldCheckbox, Name: "filler", Label: "Filler: runs only on spare budget, and yields to other work; unticked leaves the agent's choice", Value: input.Filler}),
 		Details("Pause limits",
-			Field(FieldSpec{Name: "acknowledge", Label: "Acknowledge within", Value: input.Acknowledge, Placeholder: "the agent's, or " + defaultAcknowledge}),
-			Field(FieldSpec{Name: "cleanup", Label: "Clean up within", Value: input.Cleanup, Placeholder: "the agent's, or " + defaultCleanup}),
+			Field(FieldSpec{Name: "acknowledge", Label: "Acknowledge within", Value: input.Acknowledge, Placeholder: "the agent's, or " + choices.DefaultAcknowledge}),
+			Field(FieldSpec{Name: "cleanup", Label: "Clean up within", Value: input.Cleanup, Placeholder: "the agent's, or " + choices.DefaultCleanup}),
 		),
 		Button("Start task", VariantPrimary, "", ""),
-	))
+	}
 }
 
 // Daemon is a daemon as the GUI shows it. Quota is its latest reading,
