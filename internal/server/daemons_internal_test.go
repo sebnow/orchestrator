@@ -102,3 +102,19 @@ func TestDaemonHarnessPrefersTheLatestEventsHarnessOverTheFacts(t *testing.T) {
 		})
 	}
 }
+
+func TestGivenDaemonThatReportedItsSSHKeyWhenItsPageIsShownThenTheKeysLineIsThereToCopy(t *testing.T) {
+	srv := startTestServer(t)
+	key := "AAAAC3NzaC1lZDI1NTE5AAAAINUZukIJ+vKsP7bTdxRjE93dbMEuScRvX+q1pD16tdex"
+	doRequest(t, http.MethodPut, srv.url+"/v1/daemons/laptop/facts", `{"os":"linux","ssh_public_key":"`+key+`"}`)
+
+	requireContains(t, getPage(t, srv.url+"/daemons/laptop"),
+		`<pre class="ssh-key"><code>ssh-ed25519 `+key+` orchestrator@laptop</code></pre>`)
+}
+
+func TestGivenDaemonThatReportedNoSSHKeyWhenItsPageIsShownThenItSaysSo(t *testing.T) {
+	srv := startTestServer(t)
+	doRequest(t, http.MethodPut, srv.url+"/v1/daemons/laptop/facts", `{"os":"linux"}`)
+
+	requireContains(t, getPage(t, srv.url+"/daemons/laptop"), "The daemon has not reported a key.")
+}

@@ -59,6 +59,8 @@ th, td {
   border-bottom: 1px solid var(--border);
 }
 pre.payload { margin: 0; max-height: 20rem; overflow: auto; }
+/* One click selects the whole key, for copying. */
+pre.ssh-key { user-select: all; }
 
 .badge {
   display: inline-block;

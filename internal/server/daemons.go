@@ -110,7 +110,19 @@ func (s *Server) writeDaemonPage(w http.ResponseWriter, status int, daemon daemo
 	s.writeHTML(w, status, component.Page("Daemon "+string(daemon.ID),
 		component.Section("Daemon "+string(daemon.ID), component.DaemonLabels(string(daemon.ID), daemon.Facts, daemon.Labels, Merge(daemon.Facts, daemon.Labels))),
 		component.Section("Labels", component.LabelsForm(string(daemon.ID), labels, problem)),
+		component.Section("Push key", component.DaemonSSHKey(sshKeyLine(daemon))),
 	))
+}
+
+// sshKeyLine is the authorized_keys line of the key daemon reported in
+// its facts, with the comment the daemon writes in its own public key
+// file, or "" when it reported none.
+func sshKeyLine(daemon daemonSummary) string {
+	key := daemon.Facts[protocol.FactSSHPublicKey]
+	if key == "" {
+		return ""
+	}
+	return "ssh-ed25519 " + key + " orchestrator@" + string(daemon.ID)
 }
 
 // postLabelsForm replaces a daemon's labels with those the form gives

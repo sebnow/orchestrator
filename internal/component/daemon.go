@@ -47,3 +47,17 @@ func LabelsForm(id, text, problem string) html.Node {
 		Button("Save labels", VariantPrimary, "", ""),
 	)
 }
+
+// DaemonSSHKey shows line, the authorized_keys line of the key the
+// daemon pushes with, for the owner to register at the forge
+// (docs/adr/2026-10-10-daemon-push-identity.md), or says that the daemon
+// has reported none.
+func DaemonSSHKey(line string) html.Node {
+	if line == "" {
+		return html.El("p", attrs("class", "empty"), html.Text("The daemon has not reported a key."))
+	}
+	return html.Fragment(
+		html.El("p", nil, html.Text("The daemon pushes task branches with this key. Register it at the forge: as a deploy key with write access on each repository its tasks use, or on a machine user with access to them.")),
+		html.El("pre", attrs("class", "ssh-key"), html.El("code", nil, html.Text(line))),
+	)
+}
