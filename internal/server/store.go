@@ -257,6 +257,19 @@ var migrations = [...]string{
 		created_at TEXT NOT NULL,
 		state TEXT NOT NULL CHECK (state IN ('creating', 'enrolled', 'destroying', 'destroyed'))
 	) STRICT;`,
+	// Version 26 keeps the last backup attempt, in its one row: when it
+	// was made, the copy's size in bytes, its file, empty when no copy was
+	// written, where it was uploaded, empty when it was not, and why it
+	// failed, empty when it did not
+	// (docs/adr/2026-10-10-sqlite-backups.md).
+	`CREATE TABLE backups (
+		id INTEGER PRIMARY KEY CHECK (id = 1),
+		at TEXT NOT NULL,
+		size INTEGER NOT NULL,
+		file TEXT NOT NULL,
+		uploaded_to TEXT NOT NULL,
+		error TEXT NOT NULL
+	) STRICT;`,
 }
 
 // schemaVersion is the version this server migrates databases to. A

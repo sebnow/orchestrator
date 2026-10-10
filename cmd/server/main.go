@@ -111,7 +111,9 @@ func serve(args []string, stderr io.Writer) int {
 	publicURL := flags.String("public-url", "", "the server's https URL as a provisioned VPS's daemon dials it, such as https://orchestrator.example:8443")
 	backupDir := flags.String("backup-dir", "", "directory the database's backups are written to, created when missing; backups/ beside -db by default")
 	backupEvery := flags.Duration("backup-every", 6*time.Hour, "time between scheduled backups of the database; 0 backs up only on demand")
-	backupKeep := flags.Int("backup-keep", 14, "how many backups are kept; older ones are deleted after each backup")
+	backupKeep := flags.Int("backup-keep", 14, "how many backups are kept, locally and in the bucket each; older ones are deleted after each backup")
+	bucket := addBucketFlags(flags)
+	backupPrefix := flags.String("backup-s3-prefix", "orchestrator/", "the directory in the bucket that backups are uploaded to")
 	permissions := flags.String("permissions", "allow-all", "who answers the agents' permission requests: allow-all, the server, allowing every one at once; or ask, the owner")
 	if err := flags.Parse(args); err != nil {
 		return exitCode(err)
@@ -133,6 +135,10 @@ func serve(args []string, stderr io.Writer) int {
 	}
 	if *backupDir == "" {
 		*backupDir = filepath.Join(filepath.Dir(*dbPath), "backups")
+	}
+	backupBucket, status := bucket.client(stderr)
+	if status != 0 {
+		return status
 	}
 	policy, ok := permissionPolicies[*permissions]
 	if !ok {
@@ -220,7 +226,8 @@ func serve(args []string, stderr io.Writer) int {
 		Permissions:  policy,
 		CA:           ca,
 		Provisioning: provisioning,
-		Backups:      &server.BackupPolicy{Dir: *backupDir, Every: *backupEvery, Keep: *backupKeep},
+		Backups: &server.BackupPolicy{Dir: *backupDir, Every: *backupEvery, Keep: *backupKeep,
+			Bucket: backupBucket, Prefix: *backupPrefix},
 	})
 	httpServer := &http.Server{
 		Handler:   srv,
@@ -262,7 +269,7 @@ func serve(args []string, stderr io.Writer) int {
 		served <- httpServer.ServeTLS(listener, "", "")
 	}()
 	log.Info("serving", "address", listener.Addr().String(), "tls", !*insecure, "db", *dbPath,
-		"enrolment", ca != nil, "provisioning", provisioning != nil, "backups", *backupDir)
+		"enrolment", ca != nil, "provisioning", provisioning != nil, "backups", *backupDir, "backup-upload", backupBucket != nil)
 
 	select {
 	case err := <-served:

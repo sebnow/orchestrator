@@ -1,18 +1,23 @@
 package server
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
+	"encoding/json"
 	"io"
 	"log/slog"
+	"net/http"
 	"net/url"
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/sebnow/orchestrator/internal/protocol"
+	"github.com/sebnow/orchestrator/internal/s3/s3test"
 )
 
 // checkCopy opens the database copy at path read-only and fails the test
@@ -111,23 +116,18 @@ func TestGivenMoreBackupsThanKeptWhenBackingUpThenTheOldestAreDeletedAndOtherFil
 	seedTask(t, store, "d1", "t1")
 	dir := filepath.Join(t.TempDir(), "backups")
 	start := time.Date(2026, 10, 10, 0, 0, 0, 0, time.UTC)
-	b := &backups{policy: BackupPolicy{Dir: dir, Every: time.Hour, Keep: 2}, store: store, now: steppingClock(start, time.Hour)}
-	var paths []string
+	b := newBackups(BackupPolicy{Dir: dir, Every: time.Hour, Keep: 2}, store, steppingClock(start, time.Hour))
 	for range 3 {
-		path, size, err := b.backUp(t.Context())
-		if err != nil {
-			t.Fatal(err)
+		attempt := b.backUp(t.Context())
+		if attempt.Error != "" || attempt.Size == 0 || attempt.UploadedTo != "" {
+			t.Fatalf("attempt %+v", attempt)
 		}
-		if size == 0 {
-			t.Errorf("%s: size 0", path)
-		}
-		paths = append(paths, path)
 	}
 	if err := os.WriteFile(filepath.Join(dir, "notes.txt"), nil, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if _, _, err := b.backUp(t.Context()); err != nil {
-		t.Fatal(err)
+	if attempt := b.backUp(t.Context()); attempt.Error != "" {
+		t.Fatal(attempt.Error)
 	}
 
 	names, err := localBackups(dir)
@@ -199,7 +199,147 @@ func TestGivenScheduleAndNoCopyWhenTheServerRunsBackupsThenOneIsWrittenAtOnce(t 
 func TestGivenServerWithoutBackupPolicyWhenBackingUpThenItIsRefused(t *testing.T) {
 	store, _ := openTestStore(t)
 	srv := New(store, slog.New(slog.NewTextHandler(io.Discard, nil)), Options{})
-	if _, err := srv.BackUp(t.Context()); err != errBackupsOff {
+	if _, err := srv.backUpNow(t.Context()); err != errBackupsOff {
 		t.Errorf("error %v, want %v", err, errBackupsOff)
+	}
+}
+
+func TestGivenBucketWhenBackingUpThenTheCopyIsUploadedUnderThePrefixAndTheOldestUploadsBeyondTheCountDeleted(t *testing.T) {
+	store, _ := openTestStore(t)
+	seedTask(t, store, "d1", "t1")
+	bucket := s3test.NewServer(t)
+	bucket.PageSize = 1
+	untouched := []string{"orchestrator/notes.txt", "orchestrator/old/" + backupName(time.Unix(0, 0)), "elsewhere/" + backupName(time.Unix(0, 0))}
+	for _, key := range untouched {
+		bucket.SetObject(key, []byte("not a backup of this server"))
+	}
+	start := time.Date(2026, 10, 10, 0, 0, 0, 0, time.UTC)
+	b := newBackups(BackupPolicy{Dir: t.TempDir(), Every: time.Hour, Keep: 2, Bucket: bucket.Client(t), Prefix: "orchestrator"}, store, steppingClock(start, time.Hour))
+
+	var last backupAttempt
+	for range 3 {
+		if last = b.backUp(t.Context()); last.Error != "" {
+			t.Fatal(last.Error)
+		}
+	}
+
+	newest := "orchestrator/" + backupName(start.Add(2*time.Hour))
+	if last.UploadedTo != "s3://"+s3test.Bucket+"/"+newest {
+		t.Errorf("uploaded to %q, want s3://%s/%s", last.UploadedTo, s3test.Bucket, newest)
+	}
+	objects := bucket.Objects()
+	var keys []string
+	for key := range objects {
+		keys = append(keys, key)
+	}
+	slices.Sort(keys)
+	want := append([]string{"elsewhere/" + backupName(time.Unix(0, 0)), "orchestrator/notes.txt", "orchestrator/old/" + backupName(time.Unix(0, 0))},
+		"orchestrator/"+backupName(start.Add(time.Hour)), newest)
+	slices.Sort(want)
+	if !slices.Equal(keys, want) {
+		t.Errorf("bucket holds %q, want %q", keys, want)
+	}
+	local, err := os.ReadFile(last.File)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(objects[newest], local) {
+		t.Errorf("the upload differs from the local copy")
+	}
+}
+
+func TestGivenFailingBucketWhenBackingUpThenTheLocalCopyIsKeptAndTheFailureRecordedAndShown(t *testing.T) {
+	bucket := s3test.NewServer(t)
+	bucket.Fail(http.StatusServiceUnavailable)
+	dir := t.TempDir()
+	srv := startTestServerWith(t, Options{Backups: &BackupPolicy{Dir: dir, Keep: 3, Bucket: bucket.Client(t), Prefix: "orchestrator/"}})
+
+	status, body := doRequest(t, http.MethodPost, srv.url+"/v1/backup", "")
+
+	var attempt backupAttempt
+	if err := json.Unmarshal([]byte(body), &attempt); err != nil {
+		t.Fatalf("status %d %q: %v", status, body, err)
+	}
+	if status != http.StatusInternalServerError || attempt.File == "" || attempt.UploadedTo != "" || !strings.Contains(attempt.Error, "upload backup") || !strings.Contains(attempt.Error, "503") {
+		t.Errorf("status %d, attempt %+v; want 500, a local copy and the upload's failure", status, attempt)
+	}
+	if strings.Contains(body, s3test.Credentials.SecretKey) {
+		t.Errorf("the answer holds the secret key")
+	}
+	if names, _ := localBackups(dir); len(names) != 1 {
+		t.Errorf("local copies %v, want 1", names)
+	}
+	recorded, err := srv.store.lastBackup(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if recorded == nil || !recorded.At.Equal(attempt.At) || recorded.File != attempt.File || recorded.Error != attempt.Error {
+		t.Errorf("recorded %+v, want %+v", recorded, attempt)
+	}
+	page := send(t, http.MethodGet, srv.url+"/", nil, false).body
+	for _, want := range []string{"It failed: ", "upload backup", filepath.Base(attempt.File), "Back up now"} {
+		if !strings.Contains(page, want) {
+			t.Errorf("dashboard lacks %q", want)
+		}
+	}
+	if status, _ := doRequest(t, http.MethodGet, srv.url+"/v1/tasks", ""); status != http.StatusOK {
+		t.Errorf("the server stopped serving after the failure: status %d", status)
+	}
+}
+
+func TestGivenBucketWhenTheOwnerBacksUpFromTheDashboardThenTheLastBackupIsShownUploaded(t *testing.T) {
+	bucket := s3test.NewServer(t)
+	srv := startTestServerWith(t, Options{Backups: &BackupPolicy{Dir: t.TempDir(), Every: 6 * time.Hour, Keep: 14, Bucket: bucket.Client(t), Prefix: "orchestrator/"}})
+	page := send(t, http.MethodGet, srv.url+"/", nil, false).body
+	for _, want := range []string{"No backup yet.", "every 6h0m0s", "keeping the newest 14", "s3://" + s3test.Bucket + "/orchestrator/", `action="/backups"`, "Back up now"} {
+		if !strings.Contains(page, want) {
+			t.Errorf("dashboard before a backup lacks %q", want)
+		}
+	}
+
+	got := send(t, http.MethodPost, srv.url+"/backups", url.Values{}, false)
+
+	if got.status != http.StatusSeeOther || got.header.Get("Location") != "/" {
+		t.Fatalf("backup form: status %d, Location %q", got.status, got.header.Get("Location"))
+	}
+	if len(bucket.Objects()) != 1 {
+		t.Fatalf("bucket holds %d objects, want 1", len(bucket.Objects()))
+	}
+	page = send(t, http.MethodGet, srv.url+"/", nil, false).body
+	for _, want := range []string{"Last backup ", "uploaded to ", "s3://" + s3test.Bucket + "/orchestrator/server-"} {
+		if !strings.Contains(page, want) {
+			t.Errorf("dashboard after a backup lacks %q", want)
+		}
+	}
+	if strings.Contains(page, "It failed") {
+		t.Errorf("dashboard shows a failure")
+	}
+}
+
+func TestGivenNoBackupPolicyWhenTheOwnerBacksUpThenBackupsAreOff(t *testing.T) {
+	srv := startTestServer(t)
+	if status, _ := doRequest(t, http.MethodPost, srv.url+"/v1/backup", ""); status != http.StatusNotFound {
+		t.Errorf("backup: status %d, want 404", status)
+	}
+	if page := send(t, http.MethodGet, srv.url+"/", nil, false).body; !strings.Contains(page, "Backups are off") || strings.Contains(page, "Back up now") {
+		t.Errorf("dashboard does not say backups are off")
+	}
+}
+
+func TestGivenTwoAttemptsWhenRecordedThenOnlyTheLastIsKept(t *testing.T) {
+	store, _ := openTestStore(t)
+	if last, err := store.lastBackup(t.Context()); err != nil || last != nil {
+		t.Fatalf("before any: %+v, %v", last, err)
+	}
+	first := backupAttempt{At: time.Date(2026, 10, 10, 1, 0, 0, 0, time.UTC), Size: 10, File: "/b/1.db", UploadedTo: "s3://b/1.db"}
+	second := backupAttempt{At: time.Date(2026, 10, 10, 2, 0, 0, 0, time.UTC), Error: "back up database: disk full"}
+	for _, attempt := range []backupAttempt{first, second} {
+		if err := store.recordBackup(t.Context(), attempt); err != nil {
+			t.Fatal(err)
+		}
+	}
+	last, err := store.lastBackup(t.Context())
+	if err != nil || last == nil || !last.At.Equal(second.At) || *last != (backupAttempt{At: last.At, Error: second.Error}) {
+		t.Errorf("last %+v, %v; want %+v", last, err, second)
 	}
 }

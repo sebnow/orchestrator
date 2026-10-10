@@ -149,3 +149,50 @@ func TestGivenBadBackupScheduleWhenStartingThenTheServerRefuses(t *testing.T) {
 		}
 	}
 }
+
+func TestGivenPartOfABucketWhenStartingThenTheServerRefusesAndNamesWhatIsMissing(t *testing.T) {
+	credentials := filepath.Join(t.TempDir(), "backup-s3")
+	if err := os.WriteFile(credentials, []byte("access_key=AK\nsecret_key=hidden-secret\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	full := map[string]string{"-backup-s3-endpoint": "https://fsn1.your-objectstorage.com", "-backup-s3-region": "fsn1",
+		"-backup-s3-bucket": "backups", "-backup-s3-credentials": credentials}
+	for missing := range full {
+		args := []string{"-insecure-loopback", "-db", filepath.Join(t.TempDir(), "server.db")}
+		for name, value := range full {
+			if name != missing {
+				args = append(args, name, value)
+			}
+		}
+		status, _, stderr := runCommand(args...)
+		if status != 2 || !strings.Contains(stderr, missing) {
+			t.Errorf("without %s: status %d, stderr %q; want 2 naming it", missing, status, stderr)
+		}
+	}
+	for _, endpoint := range []string{"http://fsn1.your-objectstorage.com", "fsn1.your-objectstorage.com"} {
+		args := []string{"-insecure-loopback", "-db", filepath.Join(t.TempDir(), "server.db")}
+		for name, value := range full {
+			if name == "-backup-s3-endpoint" {
+				value = endpoint
+			}
+			args = append(args, name, value)
+		}
+		status, _, stderr := runCommand(args...)
+		if status != 2 || !strings.Contains(stderr, "-backup-s3-endpoint") {
+			t.Errorf("endpoint %s: status %d, stderr %q; want 2 naming -backup-s3-endpoint", endpoint, status, stderr)
+		}
+	}
+}
+
+func TestGivenBucketCredentialsOthersCanReadWhenStartingThenTheServerRefusesWithoutShowingThem(t *testing.T) {
+	credentials := filepath.Join(t.TempDir(), "backup-s3")
+	if err := os.WriteFile(credentials, []byte("access_key=AK\nsecret_key=hidden-secret\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	status, _, stderr := runCommand("-insecure-loopback", "-db", filepath.Join(t.TempDir(), "server.db"),
+		"-backup-s3-endpoint", "https://fsn1.your-objectstorage.com", "-backup-s3-region", "fsn1",
+		"-backup-s3-bucket", "backups", "-backup-s3-credentials", credentials)
+	if status != 1 || !strings.Contains(stderr, "-backup-s3-credentials") || strings.Contains(stderr, "hidden-secret") {
+		t.Errorf("status %d, stderr %q; want 1 naming -backup-s3-credentials without the secret", status, stderr)
+	}
+}

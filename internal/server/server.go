@@ -135,7 +135,7 @@ func New(store *Store, log *slog.Logger, options Options) *Server {
 	}
 	store.now = now
 	if options.Backups != nil {
-		s.backups = &backups{policy: *options.Backups, store: store, now: now}
+		s.backups = newBackups(*options.Backups, store, now)
 	}
 	store.permissions = options.Permissions
 	s.sched = &scheduler{store: store, log: log, policy: policy, now: now, connected: s.connectedDaemons, upSince: now(), wake: make(chan struct{}, 1)}
@@ -168,6 +168,7 @@ func New(store *Store, log *slog.Logger, options Options) *Server {
 	owner.HandleFunc("POST /v1/daemons/{daemon}/destroy", s.postDestroy)
 	owner.HandleFunc("POST /v1/provision", s.postProvision)
 	owner.HandleFunc("GET /v1/vpses", s.getVPSes)
+	owner.HandleFunc("POST /v1/backup", s.postBackup)
 	owner.HandleFunc("GET /v1/agents", s.getAgents)
 	owner.HandleFunc("POST /v1/agents", s.postAgent)
 	owner.HandleFunc("GET /v1/agents/{agent}", s.getAgent)

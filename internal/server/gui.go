@@ -39,6 +39,7 @@ func (s *Server) routeGUI(mux *http.ServeMux) {
 	mux.HandleFunc("GET /daemons/{daemon}/stream", s.streamDaemon)
 	mux.HandleFunc("POST /daemons/{daemon}/destroy", s.postDestroyForm)
 	mux.HandleFunc("POST /vpses", s.postProvisionForm)
+	mux.HandleFunc("POST /backups", s.postBackupForm)
 }
 
 // fromHTMX reports whether htmx made the request, in which case the
@@ -178,9 +179,10 @@ func (s *Server) taskChoices(ctx context.Context, daemons []string) (component.T
 }
 
 // dashboardLists renders the tasks needing attention, every task, newest
-// first, each budget's quota reading, and every daemon. It also returns
-// the daemons' ids. Dismissed tasks need no attention, and the task list
-// leaves them out unless showDismissed is set.
+// first, each budget's quota reading, every daemon, the VPSes and the
+// last backup. It also returns the daemons' ids. Dismissed tasks need no
+// attention, and the task list leaves them out unless showDismissed is
+// set.
 func (s *Server) dashboardLists(ctx context.Context, showDismissed bool) (html.Node, []string, error) {
 	summaries, err := s.store.tasks(ctx)
 	if err != nil {
@@ -199,6 +201,10 @@ func (s *Server) dashboardLists(ctx context.Context, showDismissed bool) (html.N
 		return nil, nil, err
 	}
 	vpses, err := s.store.vpses(ctx, false)
+	if err != nil {
+		return nil, nil, err
+	}
+	lastBackup, err := s.store.lastBackup(ctx)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -247,6 +253,7 @@ func (s *Server) dashboardLists(ctx context.Context, showDismissed bool) (html.N
 		component.Section("Budget", s.budget(readings)),
 		component.Section("Daemons", component.Table(component.DaemonColumns, "No daemon has connected yet.", daemonRows...)),
 		component.Section("VPSes", s.vpsList(vpses, connected)),
+		component.Section("Backups", s.backupSection(lastBackup)),
 	), ids, nil
 }
 
