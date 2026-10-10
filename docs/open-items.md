@@ -89,6 +89,23 @@ Known gaps and UNVERIFIED behaviours, from the workers' reports, grouped by area
   ran on.
 - `requires` matches `memory`/`cpus` exactly.
 
+## Provisioning
+
+- No `known_hosts` entry for the forge on a fresh VPS, so an ssh push
+  would fail host-key verification. **UNVERIFIED**, not run; decision
+  pending.
+- The live Hetzner lifecycle test has not run: the image name
+  `debian-13`, `cx23` availability in `fsn1`, cloud-init ordering,
+  `ssh_pwauth`, and metadata exposure of user data are all
+  **UNVERIFIED**.
+- A daemon that crashes between the server signing its certificate and
+  the daemon writing it is stuck until the owner issues a new token.
+- Destroying a VPS straight after creating it may hit Hetzner's 423.
+  **UNVERIFIED**.
+- The enrolment token is world-readable in the systemd unit file until
+  spent.
+- How Hetzner bills, per minute or per started hour, is **UNVERIFIED**.
+
 ## Docs
 
 - Several accepted records are amended by later ones rather than

@@ -49,6 +49,10 @@ Living document; revise in place. Decisions live in docs/adr, findings in docs/d
 - Harness login through the server (record and implementation,
   2026-10-10):
   [docs/adr/2026-10-10-harness-login.md](adr/2026-10-10-harness-login.md).
+- VPS provisioning and daemon enrolment (offline-tested; the live
+  Hetzner lifecycle test awaits a token), records
+  [docs/adr/2026-10-10-vps-provisioning.md](adr/2026-10-10-vps-provisioning.md),
+  [docs/adr/2026-10-10-daemon-enrolment.md](adr/2026-10-10-daemon-enrolment.md).
 
 ## Decided, not yet built
 
@@ -100,5 +104,4 @@ Living document; revise in place. Decisions live in docs/adr, findings in docs/d
 
 ## Order as of 2026-10-10
 
-Hetzner provisioning with enrolment ->
 backups -> recurring work -> project memory -> credentials when needed.
