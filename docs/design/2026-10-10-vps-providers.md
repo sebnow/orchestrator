@@ -21,7 +21,7 @@ before any decision is acted on.
 
 ## Hetzner Cloud
 
-2 vCPU/4 GB: CX23 at €3.99/mo or CPX22 at €7.99/mo; CAX11 (arm64) at
+2 vCPU/4 GB: CX23 at €5.99/mo or CPX22 at €7.99/mo; CAX11 (arm64) at
 €4.49/mo. 4 vCPU/8 GB: CX33 at €6.49/mo or CPX32 at €13.99/mo; CAX21
 (arm64) at €7.99/mo. Hourly billing is available, IPv4 costs €0.50/mo,
 and traffic is included. Data centres are in Frankfurt, Helsinki, and
@@ -34,6 +34,13 @@ Storage is S3-compatible, €5/mo per TB, with egress at €1/TB (intra-EU
 free), in an EU region. Hetzner is German-owned. Prices via
 <https://agentdeals.dev/hetzner-pricing-2026> (aggregator) and
 <https://docs.hetzner.cloud/reference/cloud>.
+
+Correction, 2026-10-10: the Hetzner console shows CX23 at €5.99/mo
+(€0.0096/h) in NBG1 and HEL1, not the aggregator's €3.99; the figure
+above and in the table is the console's. The other Hetzner prices
+remain aggregator figures. Object Storage's base tier is €6.49/mo
+including 1 TB of storage and 1 TB of egress, per
+<https://www.hetzner.com/storage/object-storage/>, not €5.
 
 ## Scaleway
 
@@ -154,7 +161,7 @@ S3-compatible; pricing was not found. Linode is an Akamai subsidiary.
 
 | Provider | 2 vCPU/4 GB | 4 vCPU/8 GB | arm64 | REST API | Official Terraform | S3 price | Egress | EU-owned |
 |---|---|---|---|---|---|---|---|---|
-| Hetzner Cloud | CX23 €3.99/mo or CPX22 €7.99/mo (CAX11 €4.49/mo) | CX33 €6.49/mo or CPX32 €13.99/mo (CAX21 €7.99/mo) | Yes | Yes | Yes | €5/mo per TB | €1/TB, intra-EU free | Yes (German) |
+| Hetzner Cloud | CX23 €5.99/mo or CPX22 €7.99/mo (CAX11 €4.49/mo) | CX33 €6.49/mo or CPX32 €13.99/mo (CAX21 €7.99/mo) | Yes | Yes | Yes | €6.49/mo per TB | €1/TB, intra-EU free | Yes (German) |
 | Scaleway | VPS-STORE-2-S €16.49/mo | VPS-PRO-2-M €17.49/mo or VPS-START-2-L €23.49/mo | No | Yes | Yes | €0.00752/GB-month | €0.01/GB after 75 GB free | Yes (French) |
 | OVHcloud | **UNVERIFIED** ~$5.85/mo | **UNVERIFIED** ~$10/mo | No | Yes | Official; VPS coverage **UNVERIFIED** | ~$0.0081/GB-month | None except Asia-Pacific | Yes (French) |
 | UpCloud | $30/mo | $70/mo | No | Yes | Yes | Not found | Not found | Yes (Finnish) |
