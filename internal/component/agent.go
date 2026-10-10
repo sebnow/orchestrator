@@ -13,28 +13,29 @@ const AgentsURL = "/agents"
 
 func agentURL(name string) string { return AgentsURL + "/" + url.PathEscape(name) }
 
-// AgentInput is an agent as the owner entered it in AgentForm. Tools
-// holds the names of the ticked tools; Acknowledge and Cleanup are Go
-// durations, both empty for the task defaults; Filler is "on" when
-// ticked; Requires is key=value pairs.
+// AgentInput is an agent as the owner entered it in AgentForm. Models
+// holds one model per line, most preferred first; Tools holds the names
+// of the ticked tools; Acknowledge and Cleanup are Go durations, both
+// empty for the task defaults; Filler is "on" when ticked; Requires is
+// key=value pairs.
 type AgentInput struct {
-	Name, Description, SystemPrompt, Model string
-	Tools                                  []string
-	Acknowledge, Cleanup                   string
-	Priority                               string
-	Filler                                 string
-	Requires                               string
+	Name, Description, SystemPrompt, Models string
+	Tools                                   []string
+	Acknowledge, Cleanup                    string
+	Priority                                string
+	Filler                                  string
+	Requires                                string
 }
 
 // AgentSummary is an agent as the agent list shows it.
 type AgentSummary struct {
-	Name, Description, Model string
-	Tools                    []string
-	Requires                 string
+	Name, Description string
+	Models, Tools     []string
+	Requires          string
 }
 
 // AgentColumns head a Table of AgentRows.
-var AgentColumns = []string{"Agent", "Description", "Tools", "Model", "Requires"}
+var AgentColumns = []string{"Agent", "Description", "Tools", "Models", "Requires"}
 
 // AgentRow is an agent in the agent list, linking to its page.
 func AgentRow(agent AgentSummary) html.Node {
@@ -50,7 +51,7 @@ func AgentRow(agent AgentSummary) html.Node {
 		cell(link(agentURL(agent.Name), agent.Name)),
 		cell(description),
 		cell(html.Text(tools)),
-		cell(html.Text(orNone(agent.Model))),
+		cell(html.Text(orNone(strings.Join(agent.Models, ", ")))),
 		cell(html.Text(orNone(agent.Requires))),
 	)
 }
@@ -82,7 +83,8 @@ func AgentForm(input AgentInput, editing bool, tools []string, problem string) h
 		name,
 		Field(FieldSpec{Kind: FieldTextarea, Name: "description", Label: "Description, shown to agents that may spawn it", Value: input.Description}),
 		Field(FieldSpec{Kind: FieldTextarea, Name: "system_prompt", Label: "System prompt", Value: input.SystemPrompt, Rows: 16}),
-		Field(FieldSpec{Name: "model", Label: "Model", Value: input.Model, Placeholder: "none: the task's or the server's default"}),
+		Field(FieldSpec{Kind: FieldTextarea, Name: "models", Label: "Models, one per line, most preferred first; harness:model for one harness only", Value: input.Models,
+			Placeholder: "none: the task's or the server's default"}),
 		html.El("fieldset", nil, html.El("legend", nil, html.Text("Tools it may call besides the permission and pause tools")), html.Fragment(boxes...)),
 		Field(FieldSpec{Kind: FieldSelect, Name: "priority", Label: "Priority", Value: input.Priority, Options: priorities}),
 		Field(FieldSpec{Kind: FieldCheckbox, Name: "filler", Label: "Filler: runs only on spare budget, and yields to other work", Value: input.Filler}),

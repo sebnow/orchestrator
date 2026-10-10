@@ -14,15 +14,20 @@ import (
 )
 
 // Agent is an agent definition: what a task started as the agent gets
-// (docs/adr/2026-10-09-agents-and-placement.md). Model, PauseLimits and
-// Requires are what such a task takes when its request leaves them out;
-// a nil PauseLimits leaves the task defaults. Tools are the gateway
-// tools its tasks may call, of protocol.AgentTools; it is never nil.
+// (docs/adr/2026-10-09-agents-and-placement.md,
+// docs/adr/2026-10-10-agent-models-and-capacity.md). Models,
+// PauseLimits and Requires are what such a task takes when its request
+// leaves them out; a nil PauseLimits leaves the task defaults. Models
+// are the acceptable models, most preferred first, each as a harness
+// accepts it, optionally qualified by harness name as harness:model;
+// placement chooses the first one a daemon advertises. Tools are the
+// gateway tools its tasks may call, of protocol.AgentTools. Models and
+// Tools are never nil.
 type Agent struct {
 	Name         string                `json:"name"`
 	Description  string                `json:"description"`
 	SystemPrompt string                `json:"system_prompt"`
-	Model        string                `json:"model,omitempty"`
+	Models       []string              `json:"models"`
 	Tools        []string              `json:"tools"`
 	PauseLimits  *protocol.PauseLimits `json:"pause_limits,omitempty"`
 	Priority     Priority              `json:"priority"`
@@ -37,11 +42,17 @@ var (
 	errAgentInUse = errors.New("agent is in use")
 )
 
-// normalise checks a and fills in what it leaves out: no tools, normal
-// priority, no requirements.
+// normalise checks a and fills in what it leaves out: no models, no
+// tools, normal priority, no requirements.
 func (a *Agent) normalise() error {
 	if _, err := protocol.ParseTaskID(a.Name); err != nil {
 		return fmt.Errorf("name %q must be up to 128 letters, digits, '.', '_' and '-', other than . and ..", a.Name)
+	}
+	if a.Models == nil {
+		a.Models = []string{}
+	}
+	if err := validateModels(a.Models); err != nil {
+		return err
 	}
 	if a.Tools == nil {
 		a.Tools = []string{}
@@ -67,14 +78,17 @@ func (a *Agent) normalise() error {
 }
 
 // agentColumns are an agent's columns, in the order scanAgent reads them.
-const agentColumns = `name, description, system_prompt, model, tools, pause_acknowledge_ns, pause_cleanup_ns, priority, filler, requires`
+const agentColumns = `name, description, system_prompt, models, tools, pause_acknowledge_ns, pause_cleanup_ns, priority, filler, requires`
 
 func scanAgent(row interface{ Scan(...any) error }) (Agent, error) {
 	var a Agent
-	var tools, priority, requires string
+	var models, tools, priority, requires string
 	var acknowledge, cleanup sql.NullInt64
-	if err := row.Scan(&a.Name, &a.Description, &a.SystemPrompt, &a.Model, &tools, &acknowledge, &cleanup, &priority, &a.Filler, &requires); err != nil {
+	if err := row.Scan(&a.Name, &a.Description, &a.SystemPrompt, &models, &tools, &acknowledge, &cleanup, &priority, &a.Filler, &requires); err != nil {
 		return Agent{}, err
+	}
+	if err := json.Unmarshal([]byte(models), &a.Models); err != nil {
+		return Agent{}, fmt.Errorf("agent %q models: %w", a.Name, err)
 	}
 	if err := json.Unmarshal([]byte(tools), &a.Tools); err != nil {
 		return Agent{}, fmt.Errorf("agent %q tools: %w", a.Name, err)
@@ -92,6 +106,10 @@ func scanAgent(row interface{ Scan(...any) error }) (Agent, error) {
 
 // agentValues are a's values for agentColumns.
 func agentValues(a Agent) []any {
+	models, err := json.Marshal(a.Models)
+	if err != nil {
+		panic(err)
+	}
 	tools, err := json.Marshal(a.Tools)
 	if err != nil {
 		panic(err)
@@ -100,7 +118,7 @@ func agentValues(a Agent) []any {
 	if a.PauseLimits != nil {
 		acknowledge, cleanup = int64(a.PauseLimits.Acknowledge), int64(a.PauseLimits.Cleanup)
 	}
-	return []any{a.Name, a.Description, a.SystemPrompt, a.Model, string(tools), acknowledge, cleanup, string(a.Priority), a.Filler, encodeLabels(a.Requires)}
+	return []any{a.Name, a.Description, a.SystemPrompt, string(models), string(tools), acknowledge, cleanup, string(a.Priority), a.Filler, encodeLabels(a.Requires)}
 }
 
 // agents returns every agent, by name.
@@ -174,7 +192,7 @@ func (s *Store) createAgent(ctx context.Context, a Agent) error {
 func (s *Store) updateAgent(ctx context.Context, a Agent) error {
 	values := agentValues(a)
 	result, err := s.db.ExecContext(ctx, `
-		UPDATE agents SET description = ?, system_prompt = ?, model = ?, tools = ?, pause_acknowledge_ns = ?, pause_cleanup_ns = ?,
+		UPDATE agents SET description = ?, system_prompt = ?, models = ?, tools = ?, pause_acknowledge_ns = ?, pause_cleanup_ns = ?,
 			priority = ?, filler = ?, requires = ?, updated_at = ?
 		WHERE name = ?`, append(values[1:], formatTime(time.Now().UTC()), a.Name)...)
 	if err != nil {

@@ -17,7 +17,7 @@ func TestGivenAgentFormWhenSubmittedThenTheAgentIsCreatedAndItsPageShowsItForEdi
 	srv := startTestServer(t)
 
 	got := send(t, http.MethodPost, srv.url+"/agents", url.Values{
-		"name": {"senior"}, "description": {"Owns the design."}, "system_prompt": {pastedPrompt}, "model": {"sonnet"},
+		"name": {"senior"}, "description": {"Owns the design."}, "system_prompt": {pastedPrompt}, "models": {"fable\r\n claude-code:sonnet \r\n"},
 		"tools": {"spawn_task", "send_message"}, "priority": {"high"}, "requires": {"os=linux, gpu=nvidia"},
 		"acknowledge": {"30s"}, "cleanup": {"2m"},
 	}, false)
@@ -27,7 +27,7 @@ func TestGivenAgentFormWhenSubmittedThenTheAgentIsCreatedAndItsPageShowsItForEdi
 	}
 	a, err := srv.store.agent(t.Context(), "senior")
 	want := Agent{
-		Name: "senior", Description: "Owns the design.", SystemPrompt: pastedPrompt, Model: "sonnet",
+		Name: "senior", Description: "Owns the design.", SystemPrompt: pastedPrompt, Models: []string{"fable", "claude-code:sonnet"},
 		Tools: []string{"spawn_task", "send_message"}, PauseLimits: &protocol.PauseLimits{Acknowledge: 30 * time.Second, Cleanup: 2 * time.Minute},
 		Priority: PriorityHigh, Requires: Labels{"os": "linux", "gpu": "nvidia"},
 	}
@@ -36,8 +36,8 @@ func TestGivenAgentFormWhenSubmittedThenTheAgentIsCreatedAndItsPageShowsItForEdi
 	}
 	page := getPage(t, srv.url+"/agents/senior")
 	requireContains(t, page, `<form method="post" action="/agents/senior">`, "\n"+pastedPrompt+"</textarea>",
-		`value="spawn_task" checked=""`, `value="gpu=nvidia, os=linux"`, `<option value="high" selected="">`)
-	requireContains(t, getPage(t, srv.url+"/agents"), `<a href="/agents/senior">senior</a>`, "Owns the design.")
+		"\nfable\nclaude-code:sonnet</textarea>", `value="spawn_task" checked=""`, `value="gpu=nvidia, os=linux"`, `<option value="high" selected="">`)
+	requireContains(t, getPage(t, srv.url+"/agents"), `<a href="/agents/senior">senior</a>`, "Owns the design.", "<td>fable, claude-code:sonnet</td>")
 }
 
 func TestGivenAgentFormWithAProblemWhenSubmittedThenTheFormComesBackWithWhatWasEntered(t *testing.T) {
@@ -47,6 +47,7 @@ func TestGivenAgentFormWithAProblemWhenSubmittedThenTheFormComesBackWithWhatWasE
 		"one pause limit":    {"name": {"a"}, "system_prompt": {"keep me"}, "acknowledge": {"1m"}},
 		"unsafe name":        {"name": {"a b"}, "system_prompt": {"keep me"}},
 		"malformed duration": {"name": {"a"}, "system_prompt": {"keep me"}, "acknowledge": {"soon"}, "cleanup": {"1m"}},
+		"model twice":        {"name": {"a"}, "system_prompt": {"keep me"}, "models": {"haiku\nhaiku"}},
 	} {
 		t.Run(name, func(t *testing.T) {
 			got := send(t, http.MethodPost, srv.url+"/agents", form, false)

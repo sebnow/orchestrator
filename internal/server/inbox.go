@@ -52,14 +52,16 @@ func requireRunning(ctx context.Context, tx *sql.Tx, daemon protocol.DaemonID, t
 // (docs/adr/2026-10-08-scheduling.md). The child works in a fresh copy of
 // parent's workspace, belongs to parent's project, and has spawn's
 // purpose, if any, at the top of its prompt
-// (docs/adr/2026-10-10-projects-and-lineage.md). Started as the agent spawn names, it has the
-// agent's priority and filler flag, the agent's model and pause limits,
-// or else parent's (docs/adr/2026-10-09-agents-and-placement.md), and
-// those of the agent's tools that parent may call; started as none, it
-// has parent's tools and settings
-// (docs/design/2026-10-09-nostr-direction.md, Tool inheritance). A model
-// spawn names wins over both, and so do the labels spawn requires, if it
-// gives them.
+// (docs/adr/2026-10-10-projects-and-lineage.md). Started as the agent
+// spawn names, it has the agent's priority and filler flag, the agent's
+// models, which placement chooses its model from, and pause limits, or
+// else parent's model and pause limits
+// (docs/adr/2026-10-09-agents-and-placement.md,
+// docs/adr/2026-10-10-agent-models-and-capacity.md), and those of the
+// agent's tools that parent may call; started as none, it has parent's
+// tools and settings (docs/design/2026-10-09-nostr-direction.md, Tool
+// inheritance). A model spawn names wins over both, and so do the labels
+// spawn requires, if it gives them.
 // A parent not allowed spawn_task, or a spawn naming no agent there is,
 // is refused with errRefused.
 func (s *Store) spawnTask(ctx context.Context, daemon protocol.DaemonID, parent, child protocol.TaskID, spawn protocol.Spawn) (queuedTurn, error) {
@@ -96,6 +98,7 @@ func (s *Store) spawnTask(ctx context.Context, daemon protocol.DaemonID, parent,
 		Tools:       parentTools,
 	}
 	var agentPrompt string
+	var models []string
 	requires := Labels{}
 	if spawn.Agent != "" {
 		a, err := queryAgent(ctx, tx, spawn.Agent)
@@ -105,8 +108,8 @@ func (s *Store) spawnTask(ctx context.Context, daemon protocol.DaemonID, parent,
 		if err != nil {
 			return queuedTurn{}, err
 		}
-		if a.Model != "" {
-			start.Model = a.Model
+		if len(a.Models) > 0 {
+			start.Model, models = "", a.Models
 		}
 		if a.PauseLimits != nil {
 			start.PauseLimits = *a.PauseLimits
@@ -120,7 +123,7 @@ func (s *Store) spawnTask(ctx context.Context, daemon protocol.DaemonID, parent,
 		}
 	}
 	if spawn.Model != "" {
-		start.Model = spawn.Model
+		start.Model, models = spawn.Model, nil
 	}
 	agents, err := queryAgents(ctx, tx)
 	if err != nil {
@@ -141,7 +144,7 @@ func (s *Store) spawnTask(ctx context.Context, daemon protocol.DaemonID, parent,
 	fx := effects{changed: []protocol.TaskID{parent}}
 	turn, err := insertTask(ctx, tx, newTask{
 		ID: child, Parent: &parent, Daemon: daemon, Placement: placementParent, Agent: spawn.Agent, Project: project, Purpose: purpose, Requires: requires,
-		Priority: Priority(priority), Filler: filler, Start: start, Origin: originServer,
+		Priority: Priority(priority), Filler: filler, Models: models, Start: start, Origin: originServer,
 	}, &fx)
 	if err != nil {
 		return queuedTurn{}, err

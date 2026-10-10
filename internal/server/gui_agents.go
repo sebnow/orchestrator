@@ -24,7 +24,7 @@ func (s *Server) routeAgentsGUI(mux *http.ServeMux) {
 
 func agentInput(a Agent) component.AgentInput {
 	input := component.AgentInput{
-		Name: a.Name, Description: a.Description, SystemPrompt: a.SystemPrompt, Model: a.Model,
+		Name: a.Name, Description: a.Description, SystemPrompt: a.SystemPrompt, Models: strings.Join(a.Models, "\n"),
 		Tools: a.Tools, Priority: string(a.Priority), Requires: a.Requires.String(),
 	}
 	if a.PauseLimits != nil {
@@ -51,7 +51,7 @@ func (s *Server) writeAgentsPage(w http.ResponseWriter, r *http.Request, status 
 	rows := make([]html.Node, len(agents))
 	for idx, a := range agents {
 		rows[idx] = component.AgentRow(component.AgentSummary{
-			Name: a.Name, Description: a.Description, Model: a.Model, Tools: a.Tools, Requires: a.Requires.String(),
+			Name: a.Name, Description: a.Description, Models: a.Models, Tools: a.Tools, Requires: a.Requires.String(),
 		})
 	}
 	s.writeHTML(w, status, component.Page("Agents",
@@ -94,7 +94,7 @@ func (s *Server) postAgentForm(w http.ResponseWriter, r *http.Request) {
 		Name:         strings.TrimSpace(r.PostForm.Get("name")),
 		Description:  r.PostForm.Get("description"),
 		SystemPrompt: r.PostForm.Get("system_prompt"),
-		Model:        strings.TrimSpace(r.PostForm.Get("model")),
+		Models:       r.PostForm.Get("models"),
 		Tools:        r.PostForm["tools"],
 		Acknowledge:  strings.TrimSpace(r.PostForm.Get("acknowledge")),
 		Cleanup:      strings.TrimSpace(r.PostForm.Get("cleanup")),
@@ -139,7 +139,7 @@ func (s *Server) postAgentForm(w http.ResponseWriter, r *http.Request) {
 // refused, as text for the owner.
 func agentFromInput(input component.AgentInput) (Agent, string) {
 	a := Agent{
-		Name: input.Name, Description: input.Description, SystemPrompt: input.SystemPrompt, Model: input.Model,
+		Name: input.Name, Description: input.Description, SystemPrompt: input.SystemPrompt, Models: strings.Fields(input.Models),
 		Tools: input.Tools, Priority: Priority(input.Priority), Filler: input.Filler != "",
 	}
 	switch {

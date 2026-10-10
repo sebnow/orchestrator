@@ -113,6 +113,10 @@ type pendingTurn struct {
 	// Requires are the labels the task's daemon must have
 	// (docs/adr/2026-10-09-agents-and-placement.md).
 	Requires Labels
+	// Models are the models its start chooses from, most preferred
+	// first; nil when its model was given
+	// (docs/adr/2026-10-10-agent-models-and-capacity.md).
+	Models []string
 }
 
 // slotHolder is a task holding a slot on its daemon.
@@ -135,10 +139,12 @@ func holdsSlot(state TaskState) bool {
 
 // schedule is everything the scheduler reads to decide.
 type schedule struct {
-	// slots maps each connected daemon to its slot count, and labels to
-	// its facts and the owner's labels, merged.
+	// slots maps each connected daemon to its slot count, labels to its
+	// facts and the owner's labels, merged, and models to the models it
+	// advertises.
 	slots   map[protocol.DaemonID]int
 	labels  map[protocol.DaemonID]Labels
+	models  map[protocol.DaemonID][]string
 	holders []slotHolder
 	// turns are the waiting turns of tasks that have not ended, oldest
 	// first.
@@ -146,10 +152,12 @@ type schedule struct {
 	reading *quotaReading
 }
 
-// admission is a turn to admit on a daemon.
+// admission is a turn to admit on a daemon. model, set for a start
+// that chooses its model, is the one chosen.
 type admission struct {
 	turn   pendingTurn
 	daemon protocol.DaemonID
+	model  string
 }
 
 // decisions are what the scheduler does in one pass: the turns it
@@ -250,10 +258,10 @@ func decide(s schedule, policy SchedulePolicy, now time.Time) decisions {
 			d.admit = append(d.admit, admission{turn: turn, daemon: turn.Daemon})
 			continue
 		}
-		daemon, reason, wait := place(turn, s.slots, free, s.labels)
+		daemon, model, reason, wait := place(turn, s, free)
 		if daemon != "" {
 			free[daemon]--
-			d.admit = append(d.admit, admission{turn: turn, daemon: daemon})
+			d.admit = append(d.admit, admission{turn: turn, daemon: daemon, model: model})
 			continue
 		}
 		d.reasons[turn.ID] = reason
@@ -296,43 +304,66 @@ func percent(fraction float64) string {
 	return fmt.Sprintf("%.0f%%", fraction*100)
 }
 
-// place picks the daemon with a free slot that turn goes to. When there
-// is none it returns why, and, if the turn waits only for a slot, what
-// it waits on. A start goes only to a daemon whose labels hold what the
-// task requires, and to none the task ran on before.
-func place(turn pendingTurn, slots, free map[protocol.DaemonID]int, labels map[protocol.DaemonID]Labels) (protocol.DaemonID, string, *slotWait) {
-	_, connected := slots[turn.Daemon]
+// place picks the daemon with a free slot that turn goes to, and, for a
+// start that chooses its model, the model. When there is none it
+// returns why, and, if the turn waits only for a slot, what it waits on.
+// A start goes only to a daemon whose labels hold what the task
+// requires, and to none the task ran on before. One that chooses its
+// model takes the first of its models that such a daemon provides, and
+// goes only to a daemon that provides it
+// (docs/adr/2026-10-10-agent-models-and-capacity.md).
+func place(turn pendingTurn, s schedule, free map[protocol.DaemonID]int) (protocol.DaemonID, string, string, *slotWait) {
+	_, connected := s.slots[turn.Daemon]
+	choosing := turn.Kind == turnStart && len(turn.Models) > 0
 	if turn.Kind != turnStart || turn.Placement == placementBound {
 		if !connected {
-			return "", "daemon " + string(turn.Daemon) + " is not connected", nil
+			return "", "", "daemon " + string(turn.Daemon) + " is not connected", nil
 		}
-		if lacks := lacking(turn.Requires, labels[turn.Daemon]); turn.Kind == turnStart && len(lacks) > 0 {
-			return "", "daemon " + string(turn.Daemon) + " does not have " + lacks.String(), nil
+		if lacks := lacking(turn.Requires, s.labels[turn.Daemon]); turn.Kind == turnStart && len(lacks) > 0 {
+			return "", "", "daemon " + string(turn.Daemon) + " does not have " + lacks.String(), nil
+		}
+		var model string
+		if choosing {
+			if model = s.choose(turn.Models, []protocol.DaemonID{turn.Daemon}); model == "" {
+				return "", "", "daemon " + string(turn.Daemon) + " does not have model " + alternatives(turn.Models), nil
+			}
 		}
 		if free[turn.Daemon] > 0 {
-			return turn.Daemon, "", nil
+			return turn.Daemon, model, "", nil
 		}
-		return "", "slots: daemon " + string(turn.Daemon) + " has no free slot", &slotWait{daemon: turn.Daemon}
+		return "", "", "slots: daemon " + string(turn.Daemon) + " has no free slot", &slotWait{daemon: turn.Daemon}
 	}
 	exclude := slices.Clone(turn.Ran)
-	var candidates []protocol.DaemonID
-	for daemon := range slots {
+	var candidates, eligible []protocol.DaemonID
+	for daemon := range s.slots {
 		switch {
 		case slices.Contains(turn.Ran, daemon):
-		case !labels[daemon].Holds(turn.Requires):
+		case !s.labels[daemon].Holds(turn.Requires):
 			exclude = append(exclude, daemon)
 			candidates = append(candidates, daemon)
 		default:
 			candidates = append(candidates, daemon)
+			eligible = append(eligible, daemon)
+		}
+	}
+	var model string
+	if choosing && len(eligible) > 0 {
+		if model = s.choose(turn.Models, eligible); model == "" {
+			return "", "", "waiting for a daemon with model " + alternatives(turn.Models), nil
+		}
+		for _, daemon := range eligible {
+			if !s.serves(daemon, model) {
+				exclude = append(exclude, daemon)
+			}
 		}
 	}
 	parent := connected && turn.Placement == placementParent && !slices.Contains(exclude, turn.Daemon)
 	if parent && free[turn.Daemon] > 0 {
-		return turn.Daemon, "", nil
+		return turn.Daemon, model, "", nil
 	}
 	var best protocol.DaemonID
 	usable := 0
-	for daemon := range slots {
+	for daemon := range s.slots {
 		if slices.Contains(exclude, daemon) {
 			continue
 		}
@@ -342,22 +373,39 @@ func place(turn pendingTurn, slots, free map[protocol.DaemonID]int, labels map[p
 		}
 	}
 	if best != "" {
-		return best, "", nil
+		return best, model, "", nil
 	}
-	if len(slots) == 0 {
-		return "", "no daemon is connected", nil
+	if len(s.slots) == 0 {
+		return "", "", "no daemon is connected", nil
 	}
 	if len(candidates) == 0 {
-		return "", "the task ran on every connected daemon before it was moved; it waits for another daemon", nil
+		return "", "", "the task ran on every connected daemon before it was moved; it waits for another daemon", nil
 	}
 	if usable == 0 {
-		return "", "no daemon has " + unmet(turn.Requires, candidates, labels).String(), nil
+		return "", "", "no daemon has " + unmet(turn.Requires, candidates, s.labels).String(), nil
 	}
 	wait := &slotWait{flexible: true, exclude: exclude}
 	if parent {
 		wait.daemon = turn.Daemon
 	}
-	return "", "slots: no connected daemon has a free slot", wait
+	return "", "", "slots: no connected daemon has a free slot", wait
+}
+
+// serves reports whether daemon provides model, an entry of an agent's
+// models.
+func (s schedule) serves(daemon protocol.DaemonID, model string) bool {
+	return serves(s.labels[daemon][protocol.FactHarness], s.models[daemon], model)
+}
+
+// choose returns the first of models that one of daemons provides, or ""
+// when none does.
+func (s schedule) choose(models []string, daemons []protocol.DaemonID) string {
+	for _, model := range models {
+		if slices.ContainsFunc(daemons, func(daemon protocol.DaemonID) bool { return s.serves(daemon, model) }) {
+			return model
+		}
+	}
+	return ""
 }
 
 // lacking returns the pairs of required that labels does not have.
@@ -511,7 +559,11 @@ func (s *Store) schedule(ctx context.Context, policy SchedulePolicy, now time.Ti
 
 // readSchedule reads what the scheduler decides on.
 func readSchedule(ctx context.Context, tx *sql.Tx, policy SchedulePolicy, connected []protocol.DaemonID) (schedule, error) {
-	s := schedule{slots: make(map[protocol.DaemonID]int, len(connected)), labels: make(map[protocol.DaemonID]Labels, len(connected))}
+	s := schedule{
+		slots:  make(map[protocol.DaemonID]int, len(connected)),
+		labels: make(map[protocol.DaemonID]Labels, len(connected)),
+		models: make(map[protocol.DaemonID][]string, len(connected)),
+	}
 	for _, daemon := range connected {
 		var slots sql.NullInt64
 		var labels, facts string
@@ -535,6 +587,7 @@ func readSchedule(ctx context.Context, tx *sql.Tx, policy SchedulePolicy, connec
 			return schedule{}, fmt.Errorf("read facts of daemon %q: %w", daemon, err)
 		}
 		s.labels[daemon] = Merge(reported, owners)
+		s.models[daemon] = advertisedModels(reported, owners)
 	}
 
 	rows, err := tx.QueryContext(ctx, `
@@ -587,7 +640,7 @@ func queryWaitingTurns(ctx context.Context, tx *sql.Tx) ([]pendingTurn, error) {
 			t.placement, coalesce(t.pause_origin, ''),
 			coalesce((SELECT group_concat(DISTINCT c.daemon_id) FROM commands c WHERE c.task_id = t.id AND c.kind = ?2
 				AND NOT (u.kind = ?2 AND u.origin = ?3 AND c.daemon_id = t.daemon_id)), ''),
-			t.requires
+			t.requires, t.models
 		FROM turns u JOIN tasks t ON t.id = u.task_id
 		WHERE u.admitted_command_id IS NULL AND t.dismissed_at IS NULL
 		ORDER BY u.id`, string(placementParent), string(protocol.CommandStartTask), string(originOwner))
@@ -600,13 +653,19 @@ func queryWaitingTurns(ctx context.Context, tx *sql.Tx) ([]pendingTurn, error) {
 		var turn pendingTurn
 		var id int64
 		var task, kind, state, priority, daemon, placed, pausedBy, ran, requires string
+		var models sql.NullString
 		var payload []byte
-		if err := rows.Scan(&id, &task, &kind, &payload, &turn.Filler, &turn.Reason, &state, &priority, &daemon, &placed, &pausedBy, &ran, &requires); err != nil {
+		if err := rows.Scan(&id, &task, &kind, &payload, &turn.Filler, &turn.Reason, &state, &priority, &daemon, &placed, &pausedBy, &ran, &requires, &models); err != nil {
 			return nil, fmt.Errorf("read waiting turns: %w", err)
 		}
 		var err error
 		if turn.Requires, err = decodeLabels(requires); err != nil {
 			return nil, fmt.Errorf("read waiting turn %d: %w", id, err)
+		}
+		if models.Valid {
+			if err := json.Unmarshal([]byte(models.String), &turn.Models); err != nil {
+				return nil, fmt.Errorf("read waiting turn %d: models: %w", id, err)
+			}
 		}
 		turn.ID, turn.Task, turn.Kind, turn.Payload = uint64(id), protocol.TaskID(task), turnKind(kind), payload
 		turn.State, turn.Priority, turn.Daemon, turn.Placement, turn.PausedBy =
@@ -650,13 +709,23 @@ func queryReading(ctx context.Context, tx *sql.Tx) (*quotaReading, error) {
 }
 
 // admit issues the command of a.turn on a.daemon and records the turn
-// admitted. A start binds its task to a.daemon.
+// admitted. A start binds its task to a.daemon, and records a.model, when
+// set, as the task's model and the start's.
 func admit(ctx context.Context, tx *sql.Tx, a admission, fx *effects) error {
 	turn := a.turn
 	var command protocol.Command
 	var err error
 	switch turn.Kind {
 	case turnStart:
+		payload := turn.Payload
+		if a.model != "" {
+			if payload, err = withModel(payload, a.model); err != nil {
+				return fmt.Errorf("start task %q: %w", turn.Task, err)
+			}
+			if _, err = tx.ExecContext(ctx, `UPDATE tasks SET model = ? WHERE id = ?`, a.model, string(turn.Task)); err != nil {
+				return fmt.Errorf("record the model of task %q: %w", turn.Task, err)
+			}
+		}
 		// A task moved off a lost daemon has events from there; the new
 		// daemon numbers its own from 1, so they are stored after those.
 		_, err = tx.ExecContext(ctx, `
@@ -667,7 +736,7 @@ func admit(ctx context.Context, tx *sql.Tx, a admission, fx *effects) error {
 		if err != nil {
 			return fmt.Errorf("place task %q: %w", turn.Task, err)
 		}
-		command, err = insertCommand(ctx, tx, a.daemon, turn.Task, protocol.CommandStartTask, turn.Payload, fx)
+		command, err = insertCommand(ctx, tx, a.daemon, turn.Task, protocol.CommandStartTask, payload, fx)
 	case turnPrompt:
 		command, err = insertCommand(ctx, tx, a.daemon, turn.Task, protocol.CommandPrompt, turn.Payload, fx)
 	case turnResume:
@@ -690,6 +759,20 @@ func admit(ctx context.Context, tx *sql.Tx, a admission, fx *effects) error {
 		return fmt.Errorf("record turn %d admitted: %w", turn.ID, err)
 	}
 	return nil
+}
+
+// withModel is the start_task payload with model as its model.
+func withModel(payload json.RawMessage, model string) (json.RawMessage, error) {
+	var start protocol.StartTask
+	if err := json.Unmarshal(payload, &start); err != nil {
+		return nil, fmt.Errorf("read the start: %w", err)
+	}
+	start.Model = model
+	encoded, err := json.Marshal(start)
+	if err != nil {
+		return nil, fmt.Errorf("encode the start: %w", err)
+	}
+	return encoded, nil
 }
 
 // scheduler runs passes of Store.schedule whenever it is woken, and when

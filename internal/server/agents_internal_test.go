@@ -12,7 +12,7 @@ import (
 )
 
 const juniorAgent = `{"name":"junior","description":"Does what it is told.","system_prompt":"You are a junior engineer.",` +
-	`"model":"haiku","tools":["send_message"],"pause_limits":{"acknowledge":"30s","cleanup":"2m"},"priority":"low","filler":true,"requires":{"os":"linux"}}`
+	`"models":["claude-code:haiku","haiku"],"tools":["send_message"],"pause_limits":{"acknowledge":"30s","cleanup":"2m"},"priority":"low","filler":true,"requires":{"os":"linux"}}`
 
 func TestGivenAgentWhenCreatedThenItIsListedAndReadBackAsGiven(t *testing.T) {
 	srv := startTestServer(t)
@@ -23,7 +23,7 @@ func TestGivenAgentWhenCreatedThenItIsListedAndReadBackAsGiven(t *testing.T) {
 	}
 
 	want := Agent{
-		Name: "junior", Description: "Does what it is told.", SystemPrompt: "You are a junior engineer.", Model: "haiku",
+		Name: "junior", Description: "Does what it is told.", SystemPrompt: "You are a junior engineer.", Models: []string{"claude-code:haiku", "haiku"},
 		Tools: []string{"send_message"}, PauseLimits: &protocol.PauseLimits{Acknowledge: 30 * time.Second, Cleanup: 2 * time.Minute},
 		Priority: PriorityLow, Filler: true, Requires: Labels{"os": "linux"},
 	}
@@ -44,7 +44,7 @@ func TestGivenAgentWithOnlyANameWhenCreatedThenItHasNoToolsNormalPriorityAndNoRe
 
 	status, body := doRequest(t, http.MethodPost, srv.url+"/v1/agents", `{"name":"bare"}`)
 
-	want := `{"name":"bare","description":"","system_prompt":"","tools":[],"priority":"normal","filler":false,"requires":{}}` + "\n"
+	want := `{"name":"bare","description":"","system_prompt":"","models":[],"tools":[],"priority":"normal","filler":false,"requires":{}}` + "\n"
 	if status != http.StatusCreated || body != want {
 		t.Errorf("create: %d %s\nwant %s", status, body, want)
 	}
@@ -60,6 +60,11 @@ func TestGivenInvalidAgentWhenCreatedThenBadRequest(t *testing.T) {
 		"zero pause limit": `{"name":"a","pause_limits":{"acknowledge":"0s","cleanup":"1m"}}`,
 		"bad label":        `{"name":"a","requires":{"os":"linux mint"}}`,
 		"unknown field":    `{"name":"a","role":"x"}`,
+		"single model":     `{"name":"a","model":"haiku"}`,
+		"model with space": `{"name":"a","models":["claude haiku"]}`,
+		"model with ';'":   `{"name":"a","models":["haiku;sonnet"]}`,
+		"model twice":      `{"name":"a","models":["haiku","haiku"]}`,
+		"empty model":      `{"name":"a","models":[""]}`,
 	} {
 		t.Run(name, func(t *testing.T) {
 			if status, response := doRequest(t, http.MethodPost, srv.url+"/v1/agents", body); status != http.StatusBadRequest {
@@ -78,7 +83,7 @@ func TestGivenExistingAgentWhenCreatedAgainThenConflictAndTheFirstIsKept(t *test
 	if status != http.StatusConflict {
 		t.Errorf("status = %d, want 409", status)
 	}
-	if a, err := srv.store.agent(t.Context(), "junior"); err != nil || a.Model != "haiku" {
+	if a, err := srv.store.agent(t.Context(), "junior"); err != nil || !reflect.DeepEqual(a.Models, []string{"claude-code:haiku", "haiku"}) {
 		t.Errorf("agent = %+v, %v; want the first kept", a, err)
 	}
 }
@@ -93,7 +98,7 @@ func TestGivenAgentWhenUpdatedThenItIsReplacedButItsNameDoesNotChange(t *testing
 		t.Fatalf("update: %d %s", status, body)
 	}
 	a, err := srv.store.agent(t.Context(), "junior")
-	if err != nil || a.SystemPrompt != "You are careful." || a.Model != "" || a.PauseLimits != nil || len(a.Tools) != 0 {
+	if err != nil || a.SystemPrompt != "You are careful." || len(a.Models) != 0 || a.PauseLimits != nil || len(a.Tools) != 0 {
 		t.Errorf("agent = %+v, %v; want it replaced", a, err)
 	}
 	if status, _ := doRequest(t, http.MethodPut, srv.url+"/v1/agents/junior", `{"name":"senior"}`); status != http.StatusBadRequest {

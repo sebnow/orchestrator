@@ -169,6 +169,16 @@ var migrations = [...]string{
 	// reply. A predecessor is not a parent.
 	`ALTER TABLE tasks ADD COLUMN continues TEXT REFERENCES tasks (id);
 	CREATE INDEX tasks_by_continues ON tasks (continues);`,
+	// Version 18 replaces each agent's model with its models, a JSON
+	// array of the acceptable models, most preferred first; an agent's
+	// model becomes its only one
+	// (docs/adr/2026-10-10-agent-models-and-capacity.md). A task gains
+	// the models placement chooses its model from, a JSON array, NULL
+	// when its model was given.
+	`ALTER TABLE agents ADD COLUMN models TEXT NOT NULL DEFAULT '[]';
+	UPDATE agents SET models = json_array(model) WHERE model <> '';
+	ALTER TABLE agents DROP COLUMN model;
+	ALTER TABLE tasks ADD COLUMN models TEXT;`,
 }
 
 // schemaVersion is the version this server migrates databases to. A

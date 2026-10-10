@@ -98,7 +98,8 @@ func (s *Server) postTask(w http.ResponseWriter, r *http.Request) {
 // connected daemon. Agent names the agent the task is started as, if
 // any, whose values the task takes where the request leaves them out:
 // an empty Priority, a nil Filler, a nil Requires, an empty
-// Start.Model, a nil Start.Tools and zero Start.PauseLimits. Project is
+// Start.Model, which takes the agent's models, a nil Start.Tools and
+// zero Start.PauseLimits. Project is
 // the id of the project the task belongs to, if any, whose default agent
 // an empty Agent takes and whose repository the task works in. Purpose,
 // when set, says why the task exists, and is put at the top of its
@@ -124,9 +125,10 @@ var defaultPauseLimits = protocol.PauseLimits{Acknowledge: time.Minute, Cleanup:
 var errInvalidTask = errors.New("invalid task")
 
 // startTask creates the task request asks for under a new id, and
-// returns its queued start. What the request and its agent leave out is
-// the defaults: normal priority, not filler, the server's model, and
-// both gateway tools. The system prompt is composed from the server's
+// returns its queued start. A task that names no model, of an agent with
+// models, has its model chosen from them when it is placed. What the
+// request and its agent leave out is the defaults: normal priority, not
+// filler, the server's model, and both gateway tools. The system prompt is composed from the server's
 // instructions, the agent's system prompt, the project's instructions and
 // the request's.
 func (s *Server) startTask(ctx context.Context, request taskRequest) (queuedTurn, error) {
@@ -148,12 +150,13 @@ func (s *Server) startTask(ctx context.Context, request taskRequest) (queuedTurn
 	priority, filler := request.Priority, false
 	requires := Labels{}
 	var agentPrompt string
+	var models []string
 	if request.Agent != "" {
 		a, err := s.store.agent(ctx, request.Agent)
 		if err != nil {
 			return queuedTurn{}, err
 		}
-		applyAgent(&start, a)
+		models = applyAgent(&start, a)
 		if priority == "" {
 			priority = a.Priority
 		}
@@ -171,7 +174,7 @@ func (s *Server) startTask(ctx context.Context, request taskRequest) (queuedTurn
 	if priority == "" {
 		priority = PriorityNormal
 	}
-	if start.Model == "" {
+	if start.Model == "" && models == nil {
 		start.Model = s.defaultModel
 	}
 	if err := validateStart(start); err != nil {
@@ -199,6 +202,7 @@ func (s *Server) startTask(ctx context.Context, request taskRequest) (queuedTurn
 		Requires:  requires,
 		Priority:  priority,
 		Filler:    filler,
+		Models:    models,
 		Start:     start,
 		Origin:    originOwner,
 		Continues: request.Continues,
@@ -221,11 +225,14 @@ func projectWorkspace(p Project, asked *protocol.Workspace) (*protocol.Workspace
 	return own, nil
 }
 
-// applyAgent fills in what start leaves out from agent a: its model, its
-// tools, and its pause limits, or the default ones when a has none.
-func applyAgent(start *protocol.StartTask, a Agent) {
-	if start.Model == "" {
-		start.Model = a.Model
+// applyAgent fills in what start leaves out from agent a: its tools, and
+// its pause limits, or the default ones when a has none. It returns a's
+// models when start names no model and a has some, for placement to
+// choose from, and nil otherwise.
+func applyAgent(start *protocol.StartTask, a Agent) []string {
+	var models []string
+	if start.Model == "" && len(a.Models) > 0 {
+		models = a.Models
 	}
 	if start.Tools == nil {
 		start.Tools = a.Tools
@@ -236,6 +243,7 @@ func applyAgent(start *protocol.StartTask, a Agent) {
 			start.PauseLimits = *a.PauseLimits
 		}
 	}
+	return models
 }
 
 // spawnable lists agents for a task allowed tools, if those let it spawn.

@@ -65,6 +65,7 @@ func TestGivenProjectWithTasksWhenItsPageIsShownThenItListsItsRootTasksAndItsFor
 	senior := seniorAgent
 	senior.Filler = false
 	createAgents(t, srv.store, senior)
+	advertise(t, srv.store, "laptop", "sonnet")
 	p := createProject(t, srv.store, Project{Name: "tools", Repo: "ssh://git@host/tools.git", Ref: "main", DefaultAgent: "senior"})
 	page := getPage(t, srv.url+"/projects/"+p.ID)
 	requireContains(t, page, "No tasks in this project yet.",

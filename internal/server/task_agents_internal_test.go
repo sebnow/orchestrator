@@ -14,7 +14,7 @@ import (
 
 // seniorAgent may spawn but not message, and sets every default.
 var seniorAgent = Agent{
-	Name: "senior", Description: "Owns the design.", SystemPrompt: "You are the senior engineer.", Model: "sonnet",
+	Name: "senior", Description: "Owns the design.", SystemPrompt: "You are the senior engineer.", Models: []string{"sonnet"},
 	Tools: []string{protocol.ToolSpawnTask}, PauseLimits: &protocol.PauseLimits{Acknowledge: 30 * time.Second, Cleanup: 2 * time.Minute},
 	Priority: PriorityHigh, Filler: true, Requires: Labels{},
 }
@@ -45,7 +45,7 @@ func TestGivenAgentWhenTheOwnerStartsATaskAsItThenTheTaskTakesWhatTheRequestLeav
 	turn := postForTurn(t, srv.url+"/v1/tasks", `{"daemon_id":"laptop","agent":"senior","prompt":"Plan.","system_prompt":"Be brief."}`, http.StatusCreated)
 
 	detail := readTask(t, srv.store, turn.TaskID)
-	if detail.Agent != "senior" || detail.Model != "sonnet" || detail.Priority != PriorityHigh || !detail.Filler ||
+	if detail.Agent != "senior" || detail.Model != "" || !reflect.DeepEqual(detail.Models, []string{"sonnet"}) || detail.Priority != PriorityHigh || !detail.Filler ||
 		detail.Start.PauseLimits != *seniorAgent.PauseLimits || !reflect.DeepEqual(detail.Start.Tools, []string{protocol.ToolSpawnTask}) {
 		t.Errorf("task = %+v, start %+v; want the senior agent's defaults", detail.taskSummary, detail.Start)
 	}
@@ -66,7 +66,7 @@ func TestGivenAgentWhenTheRequestSetsItsOwnValuesThenTheyWin(t *testing.T) {
 		`"tools":["send_message"],"pause_limits":{"acknowledge":"1m","cleanup":"5m"}}`, http.StatusCreated)
 
 	detail := readTask(t, srv.store, turn.TaskID)
-	if detail.Model != "opus" || detail.Priority != PriorityLow || detail.Filler || detail.Start.PauseLimits != defaultPauseLimits ||
+	if detail.Model != "opus" || detail.Models != nil || detail.Priority != PriorityLow || detail.Filler || detail.Start.PauseLimits != defaultPauseLimits ||
 		!reflect.DeepEqual(detail.Start.Tools, []string{protocol.ToolSendMessage}) {
 		t.Errorf("task = %+v, start %+v; want the request's values", detail.taskSummary, detail.Start)
 	}
@@ -96,7 +96,7 @@ func TestGivenNewTaskFormWithAnAgentAndBlankFieldsWhenSubmittedThenTheTaskTakesT
 	task := queueTaskViaForm(t, srv, "laptop", "Plan.", url.Values{"agent": {"senior"}, "acknowledge": {""}, "cleanup": {""}})
 
 	detail := readTask(t, srv.store, task)
-	if detail.Agent != "senior" || detail.Model != "sonnet" || detail.Priority != PriorityHigh || !detail.Filler || detail.Start.PauseLimits != *seniorAgent.PauseLimits {
+	if detail.Agent != "senior" || !reflect.DeepEqual(detail.Models, []string{"sonnet"}) || detail.Priority != PriorityHigh || !detail.Filler || detail.Start.PauseLimits != *seniorAgent.PauseLimits {
 		t.Errorf("task = %+v, start %+v; want the senior agent's values", detail.taskSummary, detail.Start)
 	}
 	requireContains(t, getPage(t, srv.url+"/tasks/"+string(task)), `<dt>Agent</dt><dd><a href="/agents/senior">senior</a></dd>`)
@@ -118,14 +118,14 @@ func TestGivenNewTaskFormWithoutAnAgentAndBlankPauseLimitsWhenSubmittedThenTheTa
 func TestGivenRunningParentWhenItSpawnsAChildAsAnAgentThenTheChildHasTheAgentsSettingsAndTheParentsWhereTheAgentSetsNone(t *testing.T) {
 	store, _ := openTestStore(t)
 	taskIn(t, store, "parent", TaskRunning)
-	createAgents(t, store, Agent{Name: "reviewer", SystemPrompt: "You review.", Model: "opus", Tools: []string{}, Priority: PriorityLow, Requires: Labels{}})
+	createAgents(t, store, Agent{Name: "reviewer", SystemPrompt: "You review.", Models: []string{"opus"}, Tools: []string{}, Priority: PriorityLow, Requires: Labels{}})
 
 	if _, err := store.spawnTask(t.Context(), "laptop", "parent", "child", protocol.Spawn{Prompt: "Review.", Agent: "reviewer"}); err != nil {
 		t.Fatal(err)
 	}
 
 	child, parent := readTask(t, store, "child"), readTask(t, store, "parent")
-	if child.Agent != "reviewer" || child.Model != "opus" || child.Priority != PriorityLow || child.Start.PauseLimits != parent.Start.PauseLimits ||
+	if child.Agent != "reviewer" || child.Model != "" || !reflect.DeepEqual(child.Models, []string{"opus"}) || child.Priority != PriorityLow || child.Start.PauseLimits != parent.Start.PauseLimits ||
 		child.Start.Tools == nil || len(child.Start.Tools) != 0 {
 		t.Errorf("child = %+v, start %+v; want the reviewer's settings and the parent's pause limits", child.taskSummary, child.Start)
 	}

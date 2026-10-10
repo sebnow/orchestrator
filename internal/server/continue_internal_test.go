@@ -63,6 +63,8 @@ func TestGivenFinishedTaskWhenContinuedInANewTaskThenTheNewTaskStartsFromItsFina
 	senior := seniorAgent
 	senior.Filler = false
 	createAgents(t, srv.store, senior)
+	doRequest(t, http.MethodGet, srv.url+"/v1/daemons/laptop/acks", "")
+	advertise(t, srv.store, "laptop", "opus;sonnet")
 	project := createProject(t, srv.store, Project{Name: "tools", Repo: "https://example.com/tools.git", Ref: "main"})
 	old := taskThatReplied(t, srv, `{"daemon_id":"laptop","agent":"senior","project":"`+project.ID+`","purpose":"Fix the parser.","prompt":"Fix it."}`,
 		"Done: the fix is on the branch.")

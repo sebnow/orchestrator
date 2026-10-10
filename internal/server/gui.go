@@ -59,6 +59,15 @@ func redirect(w http.ResponseWriter, r *http.Request, url string) {
 	http.Redirect(w, r, url, http.StatusSeeOther)
 }
 
+// modelText is the task's model, or, until placement chooses it, the
+// models it is chosen from.
+func modelText(summary taskSummary) string {
+	if summary.Model == "" && len(summary.Models) > 0 {
+		return alternatives(summary.Models) + ", once placed"
+	}
+	return summary.Model
+}
+
 func guiTask(summary taskSummary, prompt string) component.Task {
 	task := component.Task{
 		ID:             string(summary.ID),
@@ -68,7 +77,7 @@ func guiTask(summary taskSummary, prompt string) component.Task {
 		Requires:       summary.Requires,
 		State:          string(summary.State),
 		Daemon:         string(summary.DaemonID),
-		Model:          summary.Model,
+		Model:          modelText(summary),
 		Prompt:         prompt,
 		CreatedAt:      summary.CreatedAt,
 		LastActivityAt: summary.LastActivityAt,

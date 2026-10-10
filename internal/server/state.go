@@ -378,9 +378,15 @@ type taskSummary struct {
 	// it; empty for none.
 	Purpose string `json:"purpose,omitempty"`
 	// Requires are the labels the task's daemon must have.
-	Requires       Labels    `json:"requires,omitempty"`
-	State          TaskState `json:"state"`
-	Model          string    `json:"model"`
+	Requires Labels    `json:"requires,omitempty"`
+	State    TaskState `json:"state"`
+	// Model is the task's model: the one it was given, or the one
+	// placement chose from Models; empty until then.
+	Model string `json:"model"`
+	// Models are the agent's models placement chooses Model from; empty
+	// for a task whose model was given
+	// (docs/adr/2026-10-10-agent-models-and-capacity.md).
+	Models         []string  `json:"models,omitempty"`
 	Priority       Priority  `json:"priority"`
 	Filler         bool      `json:"filler"`
 	CreatedAt      time.Time `json:"created_at"`
@@ -418,19 +424,24 @@ type taskDetail struct {
 	ContinuedBy []protocol.TaskID  `json:"continued_by,omitempty"`
 }
 
-const summaryColumns = `id, daemon_id, placement, parent_id, coalesce(agent, ''), coalesce(project, ''), purpose, requires, state, model, priority, filler, created_at, last_activity_at, cost_usd, dismissed_at, continues`
+const summaryColumns = `id, daemon_id, placement, parent_id, coalesce(agent, ''), coalesce(project, ''), purpose, requires, state, model, models, priority, filler, created_at, last_activity_at, cost_usd, dismissed_at, continues`
 
 // scanSummary reads summaryColumns, followed by extra destinations.
 func scanSummary(row interface{ Scan(...any) error }, extra ...any) (taskSummary, error) {
 	var summary taskSummary
 	var id, daemon, placed, requires, state, priority, created, lastActivity string
-	var parent, dismissed, continues sql.NullString
-	dest := append([]any{&id, &daemon, &placed, &parent, &summary.Agent, &summary.Project, &summary.Purpose, &requires, &state, &summary.Model, &priority, &summary.Filler, &created, &lastActivity, &summary.CostUSD, &dismissed, &continues}, extra...)
+	var parent, models, dismissed, continues sql.NullString
+	dest := append([]any{&id, &daemon, &placed, &parent, &summary.Agent, &summary.Project, &summary.Purpose, &requires, &state, &summary.Model, &models, &priority, &summary.Filler, &created, &lastActivity, &summary.CostUSD, &dismissed, &continues}, extra...)
 	if err := row.Scan(dest...); err != nil {
 		return taskSummary{}, err
 	}
 	summary.ID, summary.State, summary.Priority = protocol.TaskID(id), TaskState(state), Priority(priority)
 	var err error
+	if models.Valid {
+		if err := json.Unmarshal([]byte(models.String), &summary.Models); err != nil {
+			return taskSummary{}, fmt.Errorf("task %q models: %w", id, err)
+		}
+	}
 	if summary.Requires, err = decodeLabels(requires); err != nil {
 		return taskSummary{}, fmt.Errorf("task %q requires: %w", id, err)
 	}

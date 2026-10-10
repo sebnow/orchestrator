@@ -32,4 +32,11 @@ const (
 	// base64 of its ssh wire encoding, the second field of its
 	// authorized_keys line. Its line is "ssh-ed25519 <value>".
 	FactSSHPublicKey = "ssh_public_key"
+	// FactModels names the models the daemon's harness provides, each as
+	// the harness accepts it, separated by ';'
+	// (docs/adr/2026-10-10-agent-models-and-capacity.md). The owner's
+	// label of the same key adds models to it rather than replacing it.
+	// An adapter that cannot list its models, as Claude Code's cannot,
+	// leaves it out.
+	FactModels = "models"
 )

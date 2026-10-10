@@ -139,8 +139,11 @@ type newTask struct {
 	Requires Labels
 	Priority Priority
 	Filler   bool
-	Start    protocol.StartTask
-	Origin   turnOrigin
+	// Models are the models placement chooses the task's model from, its
+	// agent's; nil when Start.Model is the task's model.
+	Models []string
+	Start  protocol.StartTask
+	Origin turnOrigin
 	// Continues is the task this one continues; nil for none.
 	Continues *protocol.TaskID
 }
@@ -202,6 +205,14 @@ func insertTask(ctx context.Context, tx *sql.Tx, task newTask, fx *effects) (que
 		}
 		tools = string(encoded)
 	}
+	var models any
+	if task.Models != nil {
+		encoded, err := json.Marshal(task.Models)
+		if err != nil {
+			return queuedTurn{}, fmt.Errorf("encode models: %w", err)
+		}
+		models = string(encoded)
+	}
 	var repo, ref any
 	if start.Workspace != nil {
 		repo, ref = start.Workspace.Repo, start.Workspace.Ref
@@ -209,11 +220,11 @@ func insertTask(ctx context.Context, tx *sql.Tx, task newTask, fx *effects) (que
 	created := formatTime(time.Now().UTC())
 	_, err = tx.ExecContext(ctx, `
 		INSERT INTO tasks (id, daemon_id, parent_id, state, created_at, last_activity_at, prompt, system_prompt, workspace_repo, workspace_ref, model,
-			pause_acknowledge_ns, pause_cleanup_ns, priority, filler, placement, agent, tools, requires, project, purpose, continues)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			pause_acknowledge_ns, pause_cleanup_ns, priority, filler, placement, agent, tools, requires, project, purpose, continues, models)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		string(task.ID), string(task.Daemon), nullableID(task.Parent), string(TaskQueued), created, created, start.Prompt, start.SystemPrompt, repo, ref,
 		start.Model, int64(start.PauseLimits.Acknowledge), int64(start.PauseLimits.Cleanup), string(task.Priority), task.Filler, string(task.Placement),
-		nullable(task.Agent), tools, encodeLabels(task.Requires), nullable(task.Project), task.Purpose, nullableID(task.Continues))
+		nullable(task.Agent), tools, encodeLabels(task.Requires), nullable(task.Project), task.Purpose, nullableID(task.Continues), models)
 	if err != nil {
 		return queuedTurn{}, fmt.Errorf("create task %q: %w", task.ID, err)
 	}
