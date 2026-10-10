@@ -446,7 +446,7 @@ func NewTaskForm(input NewTask, daemons, agents []string, defaultModel, defaultA
 	return html.Fragment(notice, Form("/tasks", problem,
 		Field(FieldSpec{Kind: FieldSelect, Name: "agent", Label: "Agent", Value: input.Agent, Options: agentOptions}),
 		Field(FieldSpec{Kind: FieldTextarea, Name: "prompt", Label: "Prompt", Value: input.Prompt, Required: true}),
-		Field(FieldSpec{Name: "repo", Label: "Repository (https:// only)", Value: input.Repo, Placeholder: "none: an empty directory"}),
+		Field(FieldSpec{Name: "repo", Label: "Repository (https:// or ssh:// URL, or ssh address such as git@host:path)", Value: input.Repo, Placeholder: "none: an empty directory"}),
 		Field(FieldSpec{Name: "ref", Label: "Ref", Value: input.Ref}),
 		Field(FieldSpec{Name: "model", Label: "Model", Value: input.Model, Placeholder: "the agent's, or " + defaultModel}),
 		Field(FieldSpec{Kind: FieldSelect, Name: "daemon", Label: "Daemon", Value: input.Daemon, Options: daemonOptions}),
